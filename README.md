@@ -1,6 +1,6 @@
 # Visuomotor Deep Optics
 
-This repository implements an active deep optics approach, in which an agent model is trained to control an optomechanical system to mazimize episodic reward from an environment that, in turn, contains a task model. We train the
+This repository implements an active deep optics approach, in which an agent model is trained to control an optomechanical system to mazimize episodic reward from an environment that, in turn, contains a task model. 
 
 ## Install
 
@@ -12,7 +12,7 @@ conda create -n dl python=3.10 pip
 conda activate dl
 ```
 
-We build on the dl-schema template by Matthew Phelps, found [here](https://github.com/phelps-matthew/dl-schema.git). A fork of the dl-schema repository is included here. The following instructions will install its dependencies.
+We build on the dl-schema template by Matthew Phelps, found [here](https://github.com/phelps-matthew/dl-schema.git). The following instructions will install its dependencies.
 
 ```
 # install torch and dependencies, assumes cuda version >= 11.0
@@ -97,12 +97,42 @@ pip install hcipy
 You have now completed and verfied installation of all external dependencies. Next, validate build and install the DeepOpticsGym-v0 environment used for this work. 
 
 ```
-
 python deep-optics-gym/run_dasie_via_gym.py
 ```
 
-If successful, this test should run the environment open-loop with live visualization.
+If successful, this test should run the environment open-loop. To see a live visualization, run:
 
-## Model Training
+```
+python deep-optics-gym/run_dasie_via_gym.py --render --record_env_state_info
+
+```
+
+You should see the latest science frame and partial PSF as debug_output.png in the repo top-level directory. To see running times and add an atmosphere, invoke:
+
+```
+python deep-optics-gym/run_dasie_via_gym.py --report_time --num_atmosphere_layers=2
+```
+
+## Adding an agent.
+
+There is an place for an agent in `run_dasie_via_gym.py`. Please don't directly add one to that script. Instead, copy the file and customize it to your needs. Remember to propogate any environment function signature changes back to the original `run_dasie_via_gym.py` before submitting a pull request. If you wanted to be a huge help, you could even write unit tests!
 
 
+## Major Features to be Added
+
+Below is a list of the features that still need to be done. If you complete one of these, first, thank you! When complete, please add an invocation to the readme above demonstrating success, mark it complete below with your initials and date, and submit a pull request for your feature branch back to dev. I'll pull it to main once it's reconciled with other changes. I've tagged the locations
+in the repo at which some of these features should be implemented with "Major Feature" in the relevant TODO.
+
+- [ ] Environment save functionality.
+- [ ] A decent environment rendering functionality.
+- [ ] Flag-selectable wavelengths to model chromaticity.
+- [ ] A SHWFS closed-loop AO model to populate the step reward.
+- [ ] Parallelization of each wavelenth and sub-step of the environment step.
+- [ ] Atmosphere phase screen caching to speed up the simulation step.
+- [ ] Piston/tip/tilt secondaries for the ELF system.
+- [ ] A tensegrity model to map control commands to low-order aberations; update action shape.
+- [ ] Add low-order aberations directly to the segments in the optical system model.
+
+## Known Issues
+
+- There is a very sus correlation between the pupil-focal propogation speed and the atmosphere propogation speed. To see this, run `python deep-optics-gym/run_dasie_via_gym.py --report_time --record_env_state_info --num_atmosphere_layers=2` and inspect the logs to see these two speeds. They vary together, but there's no reason I can find why they should. This suggests that something is being recomputed, which may yield unphysical behavour. The best debug step is to save and then render the atmosphere history of an episode and see if it's continuous.

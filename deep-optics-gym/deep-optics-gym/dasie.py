@@ -102,7 +102,7 @@ class ObjectPlane(object):
                 kwargs['source_vmag'] = np.random.uniform(0.0, 25.0)
                 kwargs['source_position'] = [
                     np.random.uniform(0.0, self.extent_pixels),
-                    np.random.uniform(0.0, self.extent_pixels)
+                    np.random.uniform(0.0, self.extent_pixels)  
                 ]
 
             self.array = self.make_single_object(**kwargs)
@@ -153,13 +153,12 @@ class ObjectPlane(object):
     
     def make_binary_object(self, **kwargs):
 
-        
 
+        # TODO: Obviously this needs to be externalized.
         # primary_source_vmag = kwargs['primary_source_vmag']
         # secondary_source_vmag = kwargs['secondary_source_vmag']
         # binary_separation = kwargs['binary_separation']
         # binary_position_angle = kwargs['binary_position_angle']
-
         
         std = 1.0
         kernel_extent = 8 * std
@@ -196,19 +195,21 @@ class ObjectPlane(object):
         
         # print("seperation_pixels: %s" % seperation_pixels)
         
-
         return primary_source + secondary_source
 
     def make_single_object(self, **kwargs):
 
+        # TODO: Externalize,
         # source_vmag = kwargs['source_vmag']
         # source_position = kwargs['source_position']
 
+        # TODO: Correctly model a single objects intensity and translate to Gaussian std.
         # 0.02 arcsec fwhm
-        # TODO: magnitude_response_function 16-bit value to: mag 9 star will give 5000 counts at 12 ms
-
+        # magnitude_response_function 16-bit value to: mag 9 star will give 5000 counts at 12 ms
         std = 1
         kernel_extent = 8 * std
+
+        # TODO: make mu_y and mu_x determined by source_position.
         # mu_x = self.extent_pixels // 4
         # mu_y = self.extent_pixels // 4
         mu_x = self.extent_pixels // 2
@@ -229,7 +230,7 @@ class OpticalSystem(object):
 
     def __init__(self, **kwargs):
 
-        
+        self.report_time = kwargs["report_time"]
         self.microns_opd_per_actuator_bit = 0.00015
 
         # Parameters for the pupil function
@@ -243,11 +244,13 @@ class OpticalSystem(object):
         aperture_type = kwargs['aperture_type']
         oversampling_factor = 8
 
-        # Parameters for the instrument.
+        # Parameters for the instrument. 
+        # TODO: Make use of these.
         flat_field = 0.00001
         dark_current_rate = 1
 
         # Parameters for the atmosphere. Caution: better seeing = longer runs.
+        # TODO: Externalize.
         seeing = 0.6 # arcsec @ 500nm (convention)
         outer_scale = 40 # meter
         tau0 = 1.0 / 30.0 # seconds (30 hz)
@@ -260,7 +263,9 @@ class OpticalSystem(object):
         )
         velocity = 0.314 * fried_parameter / tau0
 
+        # Extract the provided focal plane pararmeters.
         num_focal_grid_pixels = kwargs['focal_plane_image_size_pixels']
+        # TODO: Externalize.
         kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
         focal_plane_extent_metres = kwargs['focal_plane_image_size_meters']
         
@@ -278,6 +283,7 @@ class OpticalSystem(object):
 
         # sampling = 4
         # num_airy = num_focal_grid_pixels / (sampling * 2)
+        # Print many computed values to aid in debugging.
         print("num_focal_grid_pixels: %s" % num_focal_grid_pixels)
         print("focal_plane_extent_metres: %s" % focal_plane_extent_metres)
         print("focal_plane_pixel_extent_meters: %s" % focal_plane_pixel_extent_meters)
@@ -298,10 +304,9 @@ class OpticalSystem(object):
             object_plane_distance_meters=object_plane_distance_meters
         )
 
+        # Note: this variable toggles an experimental feature.
         use_geometric_optics = True
-
         if not use_geometric_optics:
-
 
             # First, instantiate all of the optical elements.
             self.object_grid = hcipy.make_uniform_grid(
@@ -319,7 +324,7 @@ class OpticalSystem(object):
             self.object_wavefront = hcipy.Wavefront(self.object_field,
                                                     self.wavelength)
             
-            # Instantiate a Fraunhofer propagator from the object to pupil plane.
+            # Instantiate a Fresnel propagator from the object to pupil plane.
             self.object_to_pupil_propagator = hcipy.FresnelPropagator(
                 self.object_grid,
                 distance=self.object_plane.distance_meters
@@ -331,6 +336,7 @@ class OpticalSystem(object):
             diameter=pupil_diameter
         )
 
+        # Initialize a list to store the atmosphere layers.
         self.atmosphere_layers = list()
 
         # Add the atmosphere layers.
@@ -349,7 +355,6 @@ class OpticalSystem(object):
             num_airy,
             spatial_resolution=self.wavelength * focal_length / pupil_diameter,
         )
-
         focal_grid = focal_grid.shifted(focal_grid.delta / 2)
 
         # Instantiate a Fraunhofer propagator from the pupil to focal plane.
@@ -359,6 +364,8 @@ class OpticalSystem(object):
             focal_length
         )
 
+        # Build the selected aperture; elf is the default.
+        # TODO: Someday we should generalize this to accept any HCIPy aperture.
         if aperture_type == "elf":
 
             # Instantiate a segmented aperture.
@@ -369,6 +376,7 @@ class OpticalSystem(object):
                 return_segments=True,
             )
 
+            # Evaluate the aperture, initializing them.
             aperture = hcipy.evaluate_supersampled(aperture,
                                                    self.pupil_grid,
                                                    oversampling_factor)
@@ -381,6 +389,8 @@ class OpticalSystem(object):
             self.aperture = aperture
 
         elif aperture_type == "circular":
+
+            # Instantiate a circular aperture.
             aper_coords = hcipy.SeparatedCoords(
                 (np.array([0.0]), np.array([0.0]))
             )
@@ -388,13 +398,13 @@ class OpticalSystem(object):
             aperture = hcipy.make_circular_aperture(
                 elf_segment_centroid_diameter
             )
-
             segments = hcipy.make_segmented_aperture(
                 aperture,
                 segment_centers,
                 return_segments=True
             )
 
+            # Evaluate the aperture and segments, initializing them.
             aperture = hcipy.evaluate_supersampled(aperture,
                                                    self.pupil_grid,
                                                    oversampling_factor)
@@ -408,9 +418,14 @@ class OpticalSystem(object):
 
         else:
 
+            # Note: if you add aperture types, update this exception.
             raise NotImplementedError(
                 "aperture_type was %s, but only 'elf' and 'circular' are \
                 implemented." % aperture_type)
+        
+        # TODO: Major upgrade: we must add the secondaries for ELF. Thus, this will
+        #       need to become aperture-dependent. It may be best to refactor from 
+        #       'aperture' to 'telescope' once these become coupled for clarity.
 
         # Build a DM on the pupil grid.
         self.dm_influence_functions = hcipy.make_gaussian_influence_functions(
@@ -421,6 +436,7 @@ class OpticalSystem(object):
         self.dm = hcipy.DeformableMirror(self.dm_influence_functions)
         
         # Finally, make a camera.
+        # Note: The camera is noiseless here because we can add noise in the Env step().
         self.camera = hcipy.NoiselessDetector(focal_grid)
     
     def make_object_field(self, array, center=None):
@@ -461,6 +477,9 @@ class OpticalSystem(object):
 
         for layer in self.atmosphere_layers:
 
+            # TODO: Major Feature. This is the Amdahl op. Replace it by caching a set
+            #       of atmosphere layers at a variety of strengths, queuing them from
+            #       disk in parallel, and reading them from the queue in time order.
             layer.evolve_until(episode_time_seconds)
 
         return
@@ -475,11 +494,15 @@ class OpticalSystem(object):
     
     def get_frame(self, integration_seconds=1.0):
 
-        # Now, chain together the wavefronts using the optical elements.
+        
+
+        # Chain together the wavefronts using the optical elements to produce a frame.
 
         # Make a pupil plane wavefront from aperture
+        # Note: this variable toggles an experiemntal feature.
         use_geometric_optics = True
 
+        object_wavefront_start_time = time.time()
         # If I comment this, the focal plane images are garbage.
         if use_geometric_optics:
 
@@ -493,25 +516,45 @@ class OpticalSystem(object):
                 self.object_wavefront
             )
 
+        
+        if self.report_time:
+            print("-- Object Wavefront time: %0.6f" % (time.time() - object_wavefront_start_time))
+
+        atmosphere_forward_start_time = time.time()
         # Propagate the object plane wavefront through the atmosphere layers.
         wf = self.pre_atmosphere_object_wavefront
         for atmosphere_layer in self.atmosphere_layers:
             wf = atmosphere_layer.forward(wf)
         self.post_atmosphere_wavefront = wf
 
+        if self.report_time:
+            print("-- Atmosphere Forward time: %0.6f" % (time.time() - atmosphere_forward_start_time))
+
+
+        segmented_mirror_forward_start_time = time.time()
         # Apply the segmented mirror pupil to the post-atmosphere wavefront.
         self.pupil_wavefront = self.segmented_mirror(
             self.post_atmosphere_wavefront
         )
 
+        if self.report_time:
+            print("-- Segments Forward time: %0.6f" % (time.time() - segmented_mirror_forward_start_time))
+
+
+
+        dm_forawrd_start_time = time.time()
         # Propagate the wavefront from the segmented mirror through the DM.
         # Note: counter-intuitively, the DM must be re-applied after changes.
         self.post_dm_wavefront = self.dm.forward(self.pupil_wavefront)
+
+        if self.report_time:
+            print("-- DM Forward time: %0.6f" % (time.time() - dm_forawrd_start_time))
         # self.post_dm_wavefront = self.dm(self.post_atmosphere_wavefront)
 
         # TODO: Add Fresnel prop m1 -> m2 (focal length: tbd)
         # Propagate from the pupil (M1) to the DM (M2).
       
+        pupil_focal_prop_start_time = time.time()
         # Propagate from the DM (M2) to the focal (image) plane.
         # Note: counter-intutively, the propagator must be re-applied as well.
         # TODO: rename pupil_to_focal_propagator to dm_to_focal_propagator
@@ -519,11 +562,22 @@ class OpticalSystem(object):
             self.post_dm_wavefront
         )
 
-        # Integrate the wavefront, read out, and return.
+        if self.report_time:
+            print("-- Pupil-Focal Propagation time: %0.6f" % (time.time() - pupil_focal_prop_start_time))
+
+
+        integration_start_time = time.time()
+        # Integrate the wavefront, read out, and return. 
         self.camera.integrate(self.focal_plane_wavefront, integration_seconds)
+
+        if self.report_time:
+            print("-- Camera Integration time: %0.6f" % (time.time() - integration_start_time))
+
 
         if use_geometric_optics:
 
+            
+            read_out_start_time = time.time()
             # This is the effective PSF of the system, as the camera is noiseless.
             effective_psf = self.camera.read_out()
 
@@ -533,18 +587,23 @@ class OpticalSystem(object):
                     int(np.sqrt(effective_psf.size))
                 )
             )
+            if self.report_time:
+                print("-- Readout time: %0.6f" % (time.time() - read_out_start_time))
 
+            fft_start_time = time.time()
             # Compute the effective OTF of the system.
             effective_otf = np.fft.fft2(effective_psf)
             
             # Compute the spectrum of the object.
             object_spectrum = np.fft.fft2(self.object_plane.array)
 
-            # Apply system OTF to object spectrum, making the image spectrum.
+            # Hadamard product system OTF to object spectrum, making the image spectrum.
             image_spectrum = object_spectrum * effective_otf
 
             # Compute the image.
             self.readout_image = np.abs(np.fft.fftshift(np.fft.ifft2(image_spectrum)))
+            if self.report_time:
+                print("-- FFT time: %0.6f" % (time.time() - fft_start_time))
 
         else:
             self.readout_image = self.camera.read_out()
@@ -679,12 +738,14 @@ class DasieEnv(gym.Env):
         self.report_time = kwargs['report_time']
         self.render_mode = kwargs['render_mode']
         self.render_dpi = kwargs['render_dpi']
+        self.record_env_state_info = kwargs['record_env_state_info']
 
         # Parse simulation parameters.
         self.render_frequency = kwargs['render_frequency']
         self.control_interval_ms = kwargs['control_interval_ms']
         self.frame_interval_ms = kwargs['frame_interval_ms']
         self.decision_interval_ms = kwargs['decision_interval_ms']
+        self.ao_interval_ms = kwargs['ao_interval_ms']
         # TODO: Externalize.
         self.microns_opd_per_actuator_bit = 0.00015
         self.stroke_count_limit = 20000
@@ -710,9 +771,11 @@ class DasieEnv(gym.Env):
         self.state_content["focal_plane_wavefronts"] = list()
         self.state_content["readout_images"] = list()
 
+        # Print the provided intervals
         print("Control interval: %s ms" % self.control_interval_ms)
         print("Frame interval: %s ms" % self.frame_interval_ms)
         print("Decision interval: %s ms" % self.decision_interval_ms)
+        print("AO interval: %s ms" % self.ao_interval_ms)
 
         # Compute the number of commands per decision and frame, rounding up.
         self.commands_per_decision = math.ceil(
@@ -734,6 +797,8 @@ class DasieEnv(gym.Env):
         self.episode_time_ms = 0.0
 
         # Build the command grid, which is one-to-one with the action space.
+        # TODO: In the active optics formulation, this needs to be ttp secondaries and tensioners.
+        # TODO: Retain the ability to control any subset fo actuators.
         self.actuator_command_grid = np.zeros(
             shape=(35, 35),
             dtype=np.int16
@@ -794,7 +859,7 @@ class DasieEnv(gym.Env):
         calibration_noise_counts = self.microns_opd_per_actuator_bit / \
             calibration_noise_microns
         
-        # Build a DB command that corresponds.
+        # Build a DM command that corresponds to the calibration noise.
         # TODO: refactor to remove sampling.
         ones_like_action = np.ones_like(self.action_space.sample())
         zeros_like_action = np.zeros_like(self.action_space.sample())
@@ -820,12 +885,12 @@ class DasieEnv(gym.Env):
     def step(self,
              action,
              noisy_command=True,):
-        
 
         if self.report_time:
             step_time = time.time()
 
         # Clear the custom state content for population.
+        # TODO: encapsulate this mess...
         self.state_content["dm_surfaces"] = list()
         self.state_content["atmos_layer_0_list"] = list()
         self.state_content["action_times"] = list()
@@ -895,6 +960,13 @@ class DasieEnv(gym.Env):
                     # Apply the command to the DM.
                     self.optical_system.command_dm(dm_command)
 
+                # TODO: Major Feature. Add corrections_per_command inner loop and apply SHWFS
+                #       AO system corrections for that number of iterations. This will require
+                #       moving the partial frame integration step, below, into that loop. To 
+                #       test this feature, the AO system should close without intervention when
+                #       the Fried parameter and induced aberation is sufficiently small, but fail
+                #       as it increases.
+
                 # Manually integrate the frame to model dynamic optics.
                 frame_interval_seconds = (self.frame_interval_ms / 1000.0)
                 integration_seconds = frame_interval_seconds / self.commands_per_frame
@@ -911,104 +983,94 @@ class DasieEnv(gym.Env):
                 
                 readout_raster = np.reshape(readout_vector, self.image_shape)
 
+                # Note: This step accumulates the partial readout rasters, in effect manually
+                #       integrating them outside fo HCIPy.
                 frame += readout_raster
                 
-                # We have now completed the substep; store the state variables.
-                deepcopy_start = time.time()
-                self.state_content["dm_surfaces"].append(
-                    copy.deepcopy(self.optical_system.dm.surface)
-                )
-                if len(self.optical_system.atmosphere_layers) > 0:
-                    self.state_content["atmos_layer_0_list"].append(
-                        copy.deepcopy(self.optical_system.atmosphere_layers[0])
+                if self.record_env_state_info:
+                    # TODO: Encapsulate this mess...
+                    # We have now completed the substep; store the state variables.
+                    deepcopy_start = time.time()
+                    self.state_content["dm_surfaces"].append(
+                        copy.deepcopy(self.optical_system.dm.surface)
                     )
-                else:
-                    self.state_content["atmos_layer_0_list"].append(None)
 
-                # self.state_content["object_fields"].append(
-                #     copy.deepcopy(self.optical_system.object_field)
-                # )
+                    # TODO: Add support for saving the rest of the atmosphere layers.
+                    if len(self.optical_system.atmosphere_layers) > 0:
+                        self.state_content["atmos_layer_0_list"].append(
+                            copy.deepcopy(self.optical_system.atmosphere_layers[0])
+                        )
+                    else:
+                        self.state_content["atmos_layer_0_list"].append(None)
 
-                self.state_content["object_fields"].append(
-                    copy.deepcopy(self.optical_system.object_plane)
-                )
+                    self.state_content["object_fields"].append(
+                        copy.deepcopy(self.optical_system.object_plane)
+                    )
 
-                self.state_content["pre_atmosphere_object_wavefronts"].append(
-                    copy.deepcopy(self.optical_system.pre_atmosphere_object_wavefront)
-                )
-                
-                self.state_content["post_atmosphere_wavefronts"].append(
-                    copy.deepcopy(self.optical_system.post_atmosphere_wavefront)
-                )
-                
-                self.state_content["segmented_mirror_surfaces"].append(
-                    copy.deepcopy(self.optical_system.segmented_mirror.surface)
-                )
-                
-                self.state_content["pupil_wavefronts"].append(
-                    copy.deepcopy(self.optical_system.pupil_wavefront)
-                )
-                
-                self.state_content["post_dm_wavefronts"].append(
-                    copy.deepcopy(self.optical_system.post_dm_wavefront)
-                )
-                
-                self.state_content["focal_plane_wavefronts"].append(
-                    copy.deepcopy(self.optical_system.focal_plane_wavefront)
-                )
-                
-                self.state_content["readout_images"].append(
-                    copy.deepcopy(readout_raster)
-                )
+                    self.state_content["pre_atmosphere_object_wavefronts"].append(
+                        copy.deepcopy(self.optical_system.pre_atmosphere_object_wavefront)
+                    )
+                    
+                    self.state_content["post_atmosphere_wavefronts"].append(
+                        copy.deepcopy(self.optical_system.post_atmosphere_wavefront)
+                    )
+                    
+                    self.state_content["segmented_mirror_surfaces"].append(
+                        copy.deepcopy(self.optical_system.segmented_mirror.surface)
+                    )
+                    
+                    self.state_content["pupil_wavefronts"].append(
+                        copy.deepcopy(self.optical_system.pupil_wavefront)
+                    )
+                    
+                    self.state_content["post_dm_wavefronts"].append(
+                        copy.deepcopy(self.optical_system.post_dm_wavefront)
+                    )
+                    
+                    self.state_content["focal_plane_wavefronts"].append(
+                        copy.deepcopy(self.optical_system.focal_plane_wavefront)
+                    )
+                    
+                    self.state_content["readout_images"].append(
+                        copy.deepcopy(readout_raster)
+                    )
 
-                if self.report_time:
-                    print("- Deepcopy time:   %.6f" %
-                            (time.time() - deepcopy_start))
-
+                    if self.report_time:
+                        print("- Deepcopy time:   %.6f" %
+                                (time.time() - deepcopy_start))
 
             # Finally, append this frame to the stack of focal plane images.
             self.focal_plane_images.append(frame)
 
-        # Set the state to focal plane image
+        # Set the state to focal plane image.
         self.state = self.focal_plane_images
 
         # TODO: compute_reward()
-        self.reward_function = "strehl"
-        self.reward_function = "truth_cosine_similarity"
+        # TODO: Major Feature. Add a closed-loop SHWFS AO system and use the fact of
+        #       its closure as the reward.
         self.reward_function = "unity"
-        
-        # Build reward input by popping the oldest frame, appending the newest.
-        # self.observation_stack.popleft()
-        # self.observation_stack.append(self.focal_plane_image)
 
         if self.reward_function == "strehl":
 
-            reward = self.strehl_scalar
-
-        elif self.reward_function == "truth_cosine_similarity":
-
-            truth_image = self.telescope_sim.get_extended_object_image()
-
-            if truth_image is None:
-
-                print("No extended_object_image_file was provided.")
-
-            recovered_image = np.mean(np.stack(self.observation_stack), axis=(0, -1))
-
-            reward = cosine_similarity(truth_image, recovered_image)
+            raise NotImplementedError("The Strehl reward isn't implemented.")
 
         elif self.reward_function == "unity":
 
             reward = 1.0
-
-        # Populate the information dictionary for this step.
-        info = dict()
 
         # TODO: compute_terminated()
         terminated = False
         
         # TODO: compute_truncated()
         truncated = False
+
+        # Populate the information dictionary for this step.
+        info = dict()
+        
+        if self.record_env_state_info:
+
+            info["state_content"] = self.state_content
+            info["state"] = np.array(self.state)
 
         if self.report_time:
             print("Step time: %.6f" % (time.time() - step_time))
@@ -1047,7 +1109,7 @@ class DasieEnv(gym.Env):
                         (0, 1),
                         colspan=1,
                         rowspan=1)
-            ax.set_title('Log Focal Plane Intensity [???]')
+            ax.set_title('Log Partial PSF')
             im = hcipy.imshow_field(
                 np.log((self.state_content["focal_plane_wavefronts"][0]).intensity),
                 # np.log(self.state_content["focal_plane_wavefronts"][action_index].electric_field),

@@ -1,6 +1,5 @@
 """
-This script simulates a Distributed Aperture System for Interferometric
-Exploitation (DASIE) using gymnasium.
+This script simulates an optomechanical system using gymnasium.
 
 Author: Justin Fletcher
 Date: 3 June 2023
@@ -13,10 +12,8 @@ import argparse
 import hcipy
 import numpy as np
 import gymnasium as gym
+
 from matplotlib import pyplot as plt
-
-
-
 
 def cli_main(flags):
 
@@ -31,6 +28,7 @@ def cli_main(flags):
         reward_threshold=flags.reward_threshold,
     )
 
+    # TODO: Externalize.
     render_mode='rgb_array'
     # Build a gym environment; pass the CLI flags to the constructor as kwargs.
     env = gym.make('DASIE-v1',
@@ -53,7 +51,11 @@ def cli_main(flags):
                 print("Running step %s." % str(t))
 
             # ...render the environment...
-            if not flags.no_render:
+            if flags.render:
+
+                if not flags.record_env_state_info:
+                    raise ValueError("You're trying to render, but haven't recorded the " +
+                                     "step state information. Add --record_env_state_info.")
 
                 print("Rendering step %s." % str(t))
 
@@ -84,11 +86,31 @@ def cli_main(flags):
             else: 
 
                 raise ValueError("Invalid action type: %s" % flags.action_type)
+            
+            # Your agent goes here:
+            # action = agent(observation)
 
             # ...take that action, and parse the state.
             observation, reward, terminated, truncated, info = env.step(action)
 
-            # Your agent goes here: action = agent(observation)
+
+            if flags.write_env_state_info:
+
+                if not flags.record_env_state_info:
+                    raise ValueError("You're trying to write, but haven't recorded, the " +
+                                     "step state information. Add --record_env_state_info.")
+                print(flags.state_info_save_dir)
+
+                info["reward"] = reward
+                info["terminated"] = terminated
+                info["truncated"] = truncated
+                info["action"] = action
+                info["observation"] = observation
+                print(info)
+                # TODO: If it doesn't exist, create the disk location.
+                # TODO: Create an episode dir in the chosen disk location.
+                # TODO: Save the info dict there along with the action.
+
 
             # If the environment says we're done, stop this episode.
             if terminated or truncated:
@@ -109,10 +131,10 @@ if __name__ == "__main__":
                         default="0",
                         help='GPUs to use with this model.')
     
-    parser.add_argument('--no_render',
+    parser.add_argument('--render',
                         action='store_true',
                         default=False,
-                        help='Disable environment render function')
+                        help='Render the environment.')
 
     parser.add_argument('--report_time',
                         action='store_true',
@@ -121,14 +143,14 @@ if __name__ == "__main__":
     
     parser.add_argument('--action_type',
                         type=str,
-                        default="random",
+                        default="none",
                         help='Type of action to take ("random" or "none")')
     
     ### Gym simulation setup ###
 
     parser.add_argument('--object_type',
                         type=str,
-                        default="extended_1951",
+                        default="binary",
                         help='Type of object to simulate.')
     
     parser.add_argument('--aperture_type',
@@ -148,9 +170,8 @@ if __name__ == "__main__":
     
     parser.add_argument('--num_atmosphere_layers',
                         type=int,
-                        default=2,
+                        default=0,
                         help='Number of atmosphere layers to simulate.')
-    
 
     parser.add_argument('--reward_threshold', 
                         type=float,
@@ -176,10 +197,15 @@ if __name__ == "__main__":
                         default=1,
                         help='Render gif this frequently, in steps.')
 
+    parser.add_argument('--ao_interval_ms',
+                        type=float,
+                        default=1.0,
+                        help='Reciprocal of AO frequency in milliseconds.')
+    
     parser.add_argument('--control_interval_ms',
                         type=float,
                         default=4.0,
-                        help='DM control interval in milliseconds.')
+                        help='Action control interval in milliseconds.')
     
     parser.add_argument('--frame_interval_ms',
                         type=float,
@@ -200,8 +226,20 @@ if __name__ == "__main__":
                         type=float,
                         default=500.0,
                         help='DPI of the rendered image.')
-    
 
+    parser.add_argument('--record_env_state_info', action='store_true',
+                        default=False,
+                        help='If provided, record the environment state info.')
+    
+    parser.add_argument('--write_env_state_info', action='store_true',
+                        default=False,
+                        help='If provided, write the env state info to disk.')
+    
+    parser.add_argument('--state_info_save_dir',
+                        type=str,
+                        default="./tmp/",
+                        help='The directory in which to write state data.')
+    
 
     ############################ DASIE FLAGS ##################################
     parser.add_argument('--extended_object_image_file', type=str,
