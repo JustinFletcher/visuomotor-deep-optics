@@ -936,6 +936,7 @@ class DasieEnv(gym.Env):
                     print("- Atmosphere time: %.6f" % (time.time() - atmospere_evolution_start))
 
                 # Get the commanded actuations.
+                # TODO: Extend action to be a tuple of p/t/t secondaries, optomech, and dm.
                 dm_command = action[command_num]
                 
                 # If this command is noisy. Otherwise, don't.
