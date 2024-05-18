@@ -781,15 +781,26 @@ class DasieEnv(gym.Env):
         self.commands_per_decision = math.ceil(
             self.decision_interval_ms / self.control_interval_ms
         )
+        self.metadata['commands_per_decision'] = self.commands_per_decision
         self.commands_per_frame = math.ceil(
             self.frame_interval_ms / self.control_interval_ms
         )
+        self.metadata['commands_per_frame'] = self.commands_per_frame
         self.frames_per_decision = math.ceil(
             self.decision_interval_ms / self.frame_interval_ms
         )
+        self.metadata['frames_per_decision'] = self.frames_per_decision
+        self.ao_steps_per_command = math.ceil(
+            self.control_interval_ms/ self.ao_interval_ms
+        )
+        self.metadata['ao_steps_per_command'] = self.ao_steps_per_command
+
+        self.ao_steps_per_frame = self.ao_steps_per_command * self.commands_per_frame 
+        self.metadata['ao_steps_per_frame'] = self.ao_steps_per_frame
 
         print("Commands per decision: %s" % self.commands_per_decision)
         print("Commands per frame: %s" % self.commands_per_frame)
+        print("AO steps per frame: %s" % self.ao_steps_per_frame)
         print("Frames per decision: %s" % self.frames_per_decision)
 
         # Create a dict to hold the some hidden state content.
@@ -966,27 +977,29 @@ class DasieEnv(gym.Env):
                 #       moving the partial frame integration step, below, into that loop. To 
                 #       test this feature, the AO system should close without intervention when
                 #       the Fried parameter and induced aberation is sufficiently small, but fail
-                #       as it increases.
+                #       as it increases. [in work now -jrf]
+                    
+                for ao_step_num in range(self.ao_steps_per_command):
 
-                # Manually integrate the frame to model dynamic optics.
-                frame_interval_seconds = (self.frame_interval_ms / 1000.0)
-                integration_seconds = frame_interval_seconds / self.commands_per_frame
-                
-                if self.report_time:
-                    simulation_time_start = time.time()
+                    # Manually integrate the frame to model dynamic optics.
+                    frame_interval_seconds = (self.frame_interval_ms / 1000.0)
+                    integration_seconds = frame_interval_seconds / (self.ao_steps_per_frame)
+                    
+                    if self.report_time:
+                        simulation_time_start = time.time()
 
-                readout_vector = self.optical_system.get_frame(
-                    integration_seconds=integration_seconds
-                )
+                    readout_vector = self.optical_system.get_frame(
+                        integration_seconds=integration_seconds
+                    )
 
+                    readout_raster = np.reshape(readout_vector, self.image_shape)
+
+                    # Note: This step accumulates the partial readout rasters, in effect manually
+                    #       integrating them outside of HCIPy.
+                    frame += readout_raster
+                    
                 if self.report_time:
                     print("- Simulation time: %.6f" % (time.time() - simulation_time_start))
-                
-                readout_raster = np.reshape(readout_vector, self.image_shape)
-
-                # Note: This step accumulates the partial readout rasters, in effect manually
-                #       integrating them outside fo HCIPy.
-                frame += readout_raster
                 
                 if self.record_env_state_info:
                     # TODO: Encapsulate this mess...
