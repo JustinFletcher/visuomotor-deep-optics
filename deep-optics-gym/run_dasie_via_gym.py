@@ -6,13 +6,17 @@ Date: 3 June 2023
 """
 
 import os
+import uuid
 import time
+import json
 import argparse
 
 import hcipy
+import pickle
 import numpy as np
 import gymnasium as gym
 
+from pathlib import Path
 from matplotlib import pyplot as plt
 
 def cli_main(flags):
@@ -30,15 +34,32 @@ def cli_main(flags):
 
     # TODO: Externalize.
     render_mode='rgb_array'
+
     # Build a gym environment; pass the CLI flags to the constructor as kwargs.
     env = gym.make('DASIE-v1',
                    **vars(flags),
                    render_mode=render_mode,)
     
     env.metadata['render_modes'] = ['human', 'rgb_array']
+    for flag, value in flags.__dict__.items():
+        env.metadata[flag] = value
 
     # Iterate over the number of desired episodes.
     for i_episode in range(flags.num_episodes):
+
+        # Create an episode UUID.
+        episode_uuid = uuid.uuid4()
+
+        if flags.record_env_state_info:
+            episode_save_path = os.path.join(flags.state_info_save_dir,
+                                             str(episode_uuid))
+            
+            # Create the save directory if it doesn't already exist.
+            Path(episode_save_path).mkdir(parents=True, exist_ok=True)
+
+            with open(os.path.join(episode_save_path, 'episode_metadata.json'), 'w') as f:
+                
+                json.dump(env.metadata, f)
 
         # Reset the environment...
         observation = env.reset()
@@ -99,18 +120,20 @@ def cli_main(flags):
                 if not flags.record_env_state_info:
                     raise ValueError("You're trying to write, but haven't recorded, the " +
                                      "step state information. Add --record_env_state_info.")
-                print(flags.state_info_save_dir)
 
+                info["step_index"] = t
                 info["reward"] = reward
                 info["terminated"] = terminated
                 info["truncated"] = truncated
                 info["action"] = action
                 info["observation"] = observation
-                print(info)
-                # TODO: If it doesn't exist, create the disk location.
-                # TODO: Create an episode dir in the chosen disk location.
-                # TODO: Save the info dict there along with the action.
 
+
+
+                # Save the info dictionary.
+                with open(os.path.join(episode_save_path,
+                                       'step_' + str(t) + '.pkl'), 'wb') as f:
+                    pickle.dump(info, f)
 
             # If the environment says we're done, stop this episode.
             if terminated or truncated:
@@ -147,7 +170,6 @@ if __name__ == "__main__":
                         help='Type of action to take ("random" or "none")')
     
     ### Gym simulation setup ###
-
     parser.add_argument('--object_type',
                         type=str,
                         default="binary",
