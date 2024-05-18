@@ -117,6 +117,45 @@ python deep-optics-gym/run_dasie_via_gym.py --report_time --num_atmosphere_layer
 
 There is an place for an agent in `run_dasie_via_gym.py`. Please don't directly add one to that script. Instead, copy the file and customize it to your needs. Remember to propogate any environment function signature changes back to the original `run_dasie_via_gym.py` before submitting a pull request. If you wanted to be a huge help, you could even write unit tests!
 
+## Rendering an episode.
+
+Rendering is deliberately decoupled from epsiode simulation. To render an environment, you must both record and write environment state information. These are flag-configurable variables so that users can optionally disable them to minimize step time during model training.
+
+'''
+python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --num_atmosphere_layers=2
+'''
+
+Once you have a saved episode, you can render it using the following command by substituting the directory of your choice for the UUID shown below. If mulitple episode save directories are present in the provided directory, the `render_history.py` will choose the most recently modified one by default, as a convenience to the developer. Note that this is a little buggy cross-OS, so YMMV.
+
+'''
+python deep-optics-gym/render_history.py --episode_info_dir=./tmp/a3161c4f-00ed-4fbe-841e-bc4f42c810f2 
+'''
+
+## Running an AO test.
+
+You can exercise the functionality of the AO-based reward function independently from an agent as a debugging step. For calm atmospheres, simple scenes, and negligable differential sub-aperture motion, the AO loop should close without agent commands. 
+
+The command below will initialize and run an episode in which a scene comprising a single non-resolved target is imaged without an atmosphere by a perfectly stable optomechanical system that is initialized with a small random deformation in a deformable mirror placed along the optical path.
+
+```
+```
+
+The following command will render the prior episode. The render should show a speckle pattern that gradually converges to a sharp PSF.
+
+```
+```
+
+Now that we know the AO is working, we can increase the scenario complexity until it fails, thereby establishing the task to be addressed by an autonomous agent. The following command will construct a scenario in which the differential motion of the sub-apertures is realistic, which prevents AO loop closure. Here, differential motion is a forward-controllable proxy for phase wrap - as differential motion increases, so does the maximium phase difference across a wavefront.
+
+```
+```
+
+By sweeping over the parameter that controls the distribution of sub-aperture differential motion, we can plot the falloff in attainable Strehl as a function of mean differntial motion. The command below will run a script that performs this experiment.
+
+```
+```
+
+By running this experiment, we see that AO correction begins to fail under conditions of relatively modest differential motion. Our task is to build an agent that expands range of correctable uncompensated differential motion. As baseline is increased, uncompensated differential motion will also increase. So, we can also formulate our task in terms of baseline: to successfully field a telescope of a desired baseline, we must first develop and agent that capable of correcting the uncompensated differential motion implied by that baseline. Baseline is, in turn, dictated by the target of observation. We can characterize targets in terms of the angular resolution and contrast needed to adequetly image the scene. In this work, we will focus only on angular resolution, as contrast requires simultaneous supression of the starlight. [Idea: we coulad actually use the max uncompenated differential motion as reward. It's readily availible in simulation, but could be characterized and then induced on a real system by introducing random commands during the training period for the embodied agent.]
 
 ## Major Features to be Added
 
@@ -124,7 +163,7 @@ Below is a list of the features that still need to be done. If you complete one 
 in the repo at which some of these features should be implemented with "Major Feature" in the relevant TODO.
 
 - [ ] Environment save functionality.
-- [ ] A decent environment rendering functionality.
+- [X] A decent environment rendering functionality.
 - [ ] Flag-selectable wavelengths to model chromaticity.
 - [ ] A SHWFS closed-loop AO model to populate the step reward.
 - [ ] Parallelization of each wavelenth and sub-step of the environment step.

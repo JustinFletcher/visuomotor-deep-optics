@@ -427,6 +427,22 @@ class OpticalSystem(object):
         #       need to become aperture-dependent. It may be best to refactor from 
         #       'aperture' to 'telescope' once these become coupled for clarity.
 
+        # TODO: Major upgrade: we must add a SHWFS here.
+        f_number = 50
+        num_lenslets = 40 # 40 lenslets along one diameter
+        sh_diameter = 5e-3 # m
+
+        magnification = sh_diameter / pupil_diameter
+        magnifier = hcipy.Magnifier(magnification)
+        shwfs = hcipy.SquareShackHartmannWavefrontSensorOptics(
+            self.pupil_grid.scaled(magnification),
+            f_number,
+            num_lenslets,
+            sh_diameter)
+        shwfse = hcipy.ShackHartmannWavefrontSensorEstimator(shwfs.mla_grid,
+                                                             shwfs.micro_lens_array.mla_index)
+        self.shwfs_camera = hcipy.NoiselessDetector(focal_grid)
+
         # Build a DM on the pupil grid.
         self.dm_influence_functions = hcipy.make_gaussian_influence_functions(
             self.pupil_grid,
@@ -1077,275 +1093,275 @@ class DasieEnv(gym.Env):
 
         return np.array(self.state), reward, terminated, truncated, info
 
-    def render(self):
+    # def render(self):
 
-        if self.render_mode == 'rgb_array':
+    #     if self.render_mode == 'rgb_array':
 
-            num_states = len(self.state)
+    #         num_states = len(self.state)
             
-            num_rows = 1
-            num_cols = 2
+    #         num_rows = 1
+    #         num_cols = 2
 
-            mag = 4
-            fig = plt.figure(figsize=(num_cols * mag, num_rows * mag))
+    #         mag = 4
+    #         fig = plt.figure(figsize=(num_cols * mag, num_rows * mag))
 
-            ax = plt.subplot2grid(
-                        (num_rows, num_cols),
-                        (0, 0),
-                        colspan=1,
-                        rowspan=1)
+    #         ax = plt.subplot2grid(
+    #                     (num_rows, num_cols),
+    #                     (0, 0),
+    #                     colspan=1,
+    #                     rowspan=1)
 
-            ax.set_title('Current State (Frame %s)' % 0)
-            # im = ax.imshow(np.log(self.state[0] + 1e-16),
-            #                 cmap='inferno',
-            #                 vmin=-22.0)
-            im = ax.imshow(self.state[0],
-                            cmap='inferno')
-            fig.colorbar(im, ax=ax)
+    #         ax.set_title('Current State (Frame %s)' % 0)
+    #         # im = ax.imshow(np.log(self.state[0] + 1e-16),
+    #         #                 cmap='inferno',
+    #         #                 vmin=-22.0)
+    #         im = ax.imshow(self.state[0],
+    #                         cmap='inferno')
+    #         fig.colorbar(im, ax=ax)
 
                 
-            ax = plt.subplot2grid(
-                        (num_rows, num_cols),
-                        (0, 1),
-                        colspan=1,
-                        rowspan=1)
-            ax.set_title('Log Partial PSF')
-            im = hcipy.imshow_field(
-                np.log((self.state_content["focal_plane_wavefronts"][0]).intensity),
-                # np.log(self.state_content["focal_plane_wavefronts"][action_index].electric_field),
-                cmap='gray',
-                ax=ax)
-            fig.colorbar(im, ax=ax)
+    #         ax = plt.subplot2grid(
+    #                     (num_rows, num_cols),
+    #                     (0, 1),
+    #                     colspan=1,
+    #                     rowspan=1)
+    #         ax.set_title('Log Partial PSF')
+    #         im = hcipy.imshow_field(
+    #             np.log((self.state_content["focal_plane_wavefronts"][0]).intensity),
+    #             # np.log(self.state_content["focal_plane_wavefronts"][action_index].electric_field),
+    #             cmap='gray',
+    #             ax=ax)
+    #         fig.colorbar(im, ax=ax)
 
-            plt.tight_layout()
-            fig.set_dpi(self.render_dpi)
-            fig.canvas.draw()
+    #         plt.tight_layout()
+    #         fig.set_dpi(self.render_dpi)
+    #         fig.canvas.draw()
 
-            rgb_image = np.array(fig.canvas.renderer.buffer_rgba())
-            plt.close()
-            return rgb_image
-
-
-        if self.render_mode == 'rgb_array_verbose':
-
-            num_rows = 14
-            num_cols = 6
-
-            mag = 4
-            fig = plt.figure(figsize=(num_cols * mag, num_rows * mag))
-
-            action_list = [np.array(a) for a in self.action]
-            num_actions = len(action_list)
-            num_states = len(self.state)
-            num_actions_per_state = num_actions // num_states
+    #         rgb_image = np.array(fig.canvas.renderer.buffer_rgba())
+    #         plt.close()
+    #         return rgb_image
 
 
-            # Build row zero, which is the state images.
-            for state_index, state in enumerate(self.state):
+    #     if self.render_mode == 'rgb_array_verbose':
 
-                col_num = (num_actions_per_state * state_index)
+    #         num_rows = 14
+    #         num_cols = 6
 
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (0, col_num),
-                                      colspan=num_actions_per_state,
-                                      rowspan=num_actions_per_state)
+    #         mag = 4
+    #         fig = plt.figure(figsize=(num_cols * mag, num_rows * mag))
 
-                ax.set_title('Log Current State (Frame %s)' % state_index)
-                im = ax.imshow((state + 1e-16),
-                               cmap='inferno',
-                               vmin=-6)
-                fig.colorbar(im, ax=ax)
+    #         action_list = [np.array(a) for a in self.action]
+    #         num_actions = len(action_list)
+    #         num_states = len(self.state)
+    #         num_actions_per_state = num_actions // num_states
 
-            for action_index, action in enumerate(action_list):
 
-                # Parse common annotations for this action.
-                action_time = self.state_content["action_times"][action_index]
+    #         # Build row zero, which is the state images.
+    #         for state_index, state in enumerate(self.state):
+
+    #             col_num = (num_actions_per_state * state_index)
+
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (0, col_num),
+    #                                   colspan=num_actions_per_state,
+    #                                   rowspan=num_actions_per_state)
+
+    #             ax.set_title('Log Current State (Frame %s)' % state_index)
+    #             im = ax.imshow((state + 1e-16),
+    #                            cmap='inferno',
+    #                            vmin=-6)
+    #             fig.colorbar(im, ax=ax)
+
+    #         for action_index, action in enumerate(action_list):
+
+    #             # Parse common annotations for this action.
+    #             action_time = self.state_content["action_times"][action_index]
                 
-                ###############################################################
-                # Plot a single frame read
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (3, action_index),
-                                      colspan=1,
-                                      rowspan=1)
-                ax.set_title('Log Partial Frame Read [counts] ($t$ = %.1f ms)' % action_time)
-                im = plt.imshow(
-                    np.log(self.state_content["readout_images"][action_index]),
-                    cmap='gray',
-                )
-                fig.colorbar(im, ax=ax)
-                ###############################################################
-                # Plot the at-focal-plane (post-propagation) illuminance.
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (4, action_index),
-                                      colspan=1,
-                                      rowspan=1)
-                magnifier = hcipy.Magnifier(100)
+    #             ###############################################################
+    #             # Plot a single frame read
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (3, action_index),
+    #                                   colspan=1,
+    #                                   rowspan=1)
+    #             ax.set_title('Log Partial Frame Read [counts] ($t$ = %.1f ms)' % action_time)
+    #             im = plt.imshow(
+    #                 np.log(self.state_content["readout_images"][action_index]),
+    #                 cmap='gray',
+    #             )
+    #             fig.colorbar(im, ax=ax)
+    #             ###############################################################
+    #             # Plot the at-focal-plane (post-propagation) illuminance.
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (4, action_index),
+    #                                   colspan=1,
+    #                                   rowspan=1)
+    #             magnifier = hcipy.Magnifier(100)
  
-                ax.set_title('Log Focal Plane Intensity [???] ($t$ = %.1f ms)' % action_time)
-                im = hcipy.imshow_field(
-                    np.log((self.state_content["focal_plane_wavefronts"][action_index]).intensity),
-                    # np.log(self.state_content["focal_plane_wavefronts"][action_index].electric_field),
-                    cmap='gray',
-                    ax=ax)
-                fig.colorbar(im, ax=ax)
-                ###############################################################
-                # Plot the (post-DM) wavefront.
-                ax = plt.subplot2grid((num_rows, num_cols),
-                        (5, action_index),
-                        colspan=1,
-                        rowspan=1)
+    #             ax.set_title('Log Focal Plane Intensity [???] ($t$ = %.1f ms)' % action_time)
+    #             im = hcipy.imshow_field(
+    #                 np.log((self.state_content["focal_plane_wavefronts"][action_index]).intensity),
+    #                 # np.log(self.state_content["focal_plane_wavefronts"][action_index].electric_field),
+    #                 cmap='gray',
+    #                 ax=ax)
+    #             fig.colorbar(im, ax=ax)
+    #             ###############################################################
+    #             # Plot the (post-DM) wavefront.
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                     (5, action_index),
+    #                     colspan=1,
+    #                     rowspan=1)
         
-                ax.set_title('Post-DM Field [???] ($t$ = %.1f ms)' % action_time)
-                im = hcipy.imshow_field(
-                    self.state_content["post_dm_wavefronts"][action_index].intensity,
-                    # self.state_content["post_dm_wavefronts"][action_index].electric_field,
-                    cmap='gray',
-                    ax=ax)
-                fig.colorbar(im, ax=ax)
+    #             ax.set_title('Post-DM Field [???] ($t$ = %.1f ms)' % action_time)
+    #             im = hcipy.imshow_field(
+    #                 self.state_content["post_dm_wavefronts"][action_index].intensity,
+    #                 # self.state_content["post_dm_wavefronts"][action_index].electric_field,
+    #                 cmap='gray',
+    #                 ax=ax)
+    #             fig.colorbar(im, ax=ax)
 
-                ###############################################################
-                # Plot DM surface OPD.
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (6, action_index),
-                                      colspan=1,
-                                      rowspan=1)
-                ax.set_title('DM Surface OPD [$\\mu$m] ($t$ = %.1f ms)' % action_time)
-                im = hcipy.imshow_field(
-                    self.state_content["dm_surfaces"][action_index] / 1e-6,
-                    mask=self.optical_system.aperture,
-                    cmap='RdBu_r',
-                    ax=ax)
-                fig.colorbar(im, ax=ax)
+    #             ###############################################################
+    #             # Plot DM surface OPD.
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (6, action_index),
+    #                                   colspan=1,
+    #                                   rowspan=1)
+    #             ax.set_title('DM Surface OPD [$\\mu$m] ($t$ = %.1f ms)' % action_time)
+    #             im = hcipy.imshow_field(
+    #                 self.state_content["dm_surfaces"][action_index] / 1e-6,
+    #                 mask=self.optical_system.aperture,
+    #                 cmap='RdBu_r',
+    #                 ax=ax)
+    #             fig.colorbar(im, ax=ax)
                 
-                ###############################################################  
-                # Plot the command grid.
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (7, action_index),
-                                      colspan=1,
-                                      rowspan=1)
+    #             ###############################################################  
+    #             # Plot the command grid.
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (7, action_index),
+    #                                   colspan=1,
+    #                                   rowspan=1)
                 
-                ax.set_title('Command Grid [counts] ($t$ = %.1f ms)' % action_time)
-                im = ax.imshow(action, cmap='inferno')
-                fig.colorbar(im, ax=ax)
+    #             ax.set_title('Command Grid [counts] ($t$ = %.1f ms)' % action_time)
+    #             im = ax.imshow(action, cmap='inferno')
+    #             fig.colorbar(im, ax=ax)
 
 
-                ###############################################################
-                # Plot m2 at-aperture illuminance.
+    #             ###############################################################
+    #             # Plot m2 at-aperture illuminance.
 
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (8, action_index),
-                                      colspan=1,
-                                      rowspan=1)
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (8, action_index),
+    #                                   colspan=1,
+    #                                   rowspan=1)
                 
-                ax.set_title('Post-Pupil Intensity [???] ($t$ = %.1f ms)' % action_time)
-                im = hcipy.imshow_field(
-                    self.state_content["pupil_wavefronts"][action_index].intensity,
-                    # self.state_content["pupil_wavefronts"][action_index].electric_field,
-                    cmap='gray',
-                    ax=ax)
-                fig.colorbar(im, ax=ax)
-                ###############################################################
-                # Plot the segmented mirror OPD.
+    #             ax.set_title('Post-Pupil Intensity [???] ($t$ = %.1f ms)' % action_time)
+    #             im = hcipy.imshow_field(
+    #                 self.state_content["pupil_wavefronts"][action_index].intensity,
+    #                 # self.state_content["pupil_wavefronts"][action_index].electric_field,
+    #                 cmap='gray',
+    #                 ax=ax)
+    #             fig.colorbar(im, ax=ax)
+    #             ###############################################################
+    #             # Plot the segmented mirror OPD.
 
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (9, action_index),
-                                      colspan=1,
-                                      rowspan=1)
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (9, action_index),
+    #                                   colspan=1,
+    #                                   rowspan=1)
                 
                 
-                ax.set_title('Pupil OPD [$\\mu$m] ($t$ = %.1f ms)' % action_time)
-                im = hcipy.imshow_field(
-                    self.state_content["segmented_mirror_surfaces"][action_index] / 1e-6,
-                    mask=self.optical_system.aperture,
-                    cmap='RdBu_r',
-                    ax=ax)
-                fig.colorbar(im, ax=ax)
+    #             ax.set_title('Pupil OPD [$\\mu$m] ($t$ = %.1f ms)' % action_time)
+    #             im = hcipy.imshow_field(
+    #                 self.state_content["segmented_mirror_surfaces"][action_index] / 1e-6,
+    #                 mask=self.optical_system.aperture,
+    #                 cmap='RdBu_r',
+    #                 ax=ax)
+    #             fig.colorbar(im, ax=ax)
 
-                ###############################################################
-                # Plot the M1 at-aperture illuminance (post-atmopshere).
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (10, action_index),
-                                      colspan=1,
-                                      rowspan=1)
+    #             ###############################################################
+    #             # Plot the M1 at-aperture illuminance (post-atmopshere).
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (10, action_index),
+    #                                   colspan=1,
+    #                                   rowspan=1)
                 
-                ax.set_title('Pre-Pupil Intensity [???] ($t$ = %.1f ms)' % action_time)
-                im = hcipy.imshow_field(
-                    self.state_content["post_atmosphere_wavefronts"][action_index].intensity,
-                    # self.state_content["post_atmosphere_wavefronts"][action_index].electric_field,
-                    cmap='gray',
-                    ax=ax)
-                fig.colorbar(im, ax=ax)
+    #             ax.set_title('Pre-Pupil Intensity [???] ($t$ = %.1f ms)' % action_time)
+    #             im = hcipy.imshow_field(
+    #                 self.state_content["post_atmosphere_wavefronts"][action_index].intensity,
+    #                 # self.state_content["post_atmosphere_wavefronts"][action_index].electric_field,
+    #                 cmap='gray',
+    #                 ax=ax)
+    #             fig.colorbar(im, ax=ax)
                 
 
-                ###############################################################
-                # Plot the atmopshere OPD, if an atmosphere is present.
+    #             ###############################################################
+    #             # Plot the atmopshere OPD, if an atmosphere is present.
 
-                if self.state_content["atmos_layer_0_list"][action_index] is not None:
-                    ax = plt.subplot2grid((num_rows, num_cols),
-                                        (11, action_index),
-                                        colspan=1,
-                                        rowspan=1)
+    #             if self.state_content["atmos_layer_0_list"][action_index] is not None:
+    #                 ax = plt.subplot2grid((num_rows, num_cols),
+    #                                     (11, action_index),
+    #                                     colspan=1,
+    #                                     rowspan=1)
                     
-                    ax.set_title('Atmosphere OPD [$\\mu$m] ($t$ = %.1f ms)' % action_time)
-                    # plt.title('Atmos [$\\mu$m] ($t$ = %.3f ms)' % action_time)
-                    layer = self.state_content["atmos_layer_0_list"][action_index]
-                    phase_screen_phase = layer.phase_for(self.optical_system.wavelength) # in radian
-                    phase_screen_opd = phase_screen_phase * (self.optical_system.wavelength / (2 * np.pi)) * 1e6 # in um
-                    im = hcipy.imshow_field(
-                        phase_screen_opd,
-                        cmap='RdBu_r',
-                        ax=ax)
-                    fig.colorbar(im, ax=ax)
-                ###############################################################
-                # Plot Object Field pre-atmosphere.
+    #                 ax.set_title('Atmosphere OPD [$\\mu$m] ($t$ = %.1f ms)' % action_time)
+    #                 # plt.title('Atmos [$\\mu$m] ($t$ = %.3f ms)' % action_time)
+    #                 layer = self.state_content["atmos_layer_0_list"][action_index]
+    #                 phase_screen_phase = layer.phase_for(self.optical_system.wavelength) # in radian
+    #                 phase_screen_opd = phase_screen_phase * (self.optical_system.wavelength / (2 * np.pi)) * 1e6 # in um
+    #                 im = hcipy.imshow_field(
+    #                     phase_screen_opd,
+    #                     cmap='RdBu_r',
+    #                     ax=ax)
+    #                 fig.colorbar(im, ax=ax)
+    #             ###############################################################
+    #             # Plot Object Field pre-atmosphere.
 
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (12, action_index),
-                                      colspan=1,
-                                      rowspan=1)
-                ax.set_title('Object Field (propogated) [???] ($t$ = %.1f ms)' % action_time)
-                # im = plt.imshow(
-                #     self.state_content["object_fields"][action_index],
-                #     # mask=self.optical_system.aperture,
-                #     cmap='gray',
-                #     # ax=ax
-                # )
-                im = hcipy.imshow_field(
-                    self.state_content["pre_atmosphere_object_wavefronts"][action_index].intensity,
-                    # self.state_content["pre_atmosphere_object_wavefronts"][action_index].electric_field,
-                    # mask=self.optical_system.aperture,
-                    cmap='gray',
-                    ax=ax)
-                fig.colorbar(im, ax=ax)
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (12, action_index),
+    #                                   colspan=1,
+    #                                   rowspan=1)
+    #             ax.set_title('Object Field (propogated) [???] ($t$ = %.1f ms)' % action_time)
+    #             # im = plt.imshow(
+    #             #     self.state_content["object_fields"][action_index],
+    #             #     # mask=self.optical_system.aperture,
+    #             #     cmap='gray',
+    #             #     # ax=ax
+    #             # )
+    #             im = hcipy.imshow_field(
+    #                 self.state_content["pre_atmosphere_object_wavefronts"][action_index].intensity,
+    #                 # self.state_content["pre_atmosphere_object_wavefronts"][action_index].electric_field,
+    #                 # mask=self.optical_system.aperture,
+    #                 cmap='gray',
+    #                 ax=ax)
+    #             fig.colorbar(im, ax=ax)
             
-                ###############################################################
-                # Plot Object Field illuminance (???).
-                ax = plt.subplot2grid((num_rows, num_cols),
-                                      (13, action_index),
-                                      colspan=1,
-                                      rowspan=1)
-                ax.set_title('Object Field [???] ($t$ = %.1f ms)' % action_time)
-                # im = plt.imshow(
-                #     self.state_content["object_fields"][action_index],
-                #     # mask=self.optical_system.aperture,
-                #     cmap='gray',
-                #     # ax=ax
-                # )
-                im = hcipy.imshow_field(
-                    self.state_content["object_fields"][action_index],
-                    # mask=self.optical_system.aperture,
-                    cmap='gray',
-                    ax=ax)
-                fig.colorbar(im, ax=ax)
-                ###############################################################
+    #             ###############################################################
+    #             # Plot Object Field illuminance (???).
+    #             ax = plt.subplot2grid((num_rows, num_cols),
+    #                                   (13, action_index),
+    #                                   colspan=1,
+    #                                   rowspan=1)
+    #             ax.set_title('Object Field [???] ($t$ = %.1f ms)' % action_time)
+    #             # im = plt.imshow(
+    #             #     self.state_content["object_fields"][action_index],
+    #             #     # mask=self.optical_system.aperture,
+    #             #     cmap='gray',
+    #             #     # ax=ax
+    #             # )
+    #             im = hcipy.imshow_field(
+    #                 self.state_content["object_fields"][action_index],
+    #                 # mask=self.optical_system.aperture,
+    #                 cmap='gray',
+    #                 ax=ax)
+    #             fig.colorbar(im, ax=ax)
+    #             ###############################################################
 
-            plt.tight_layout()
-            fig.set_dpi(self.render_dpi)
-            fig.canvas.draw()
+    #         plt.tight_layout()
+    #         fig.set_dpi(self.render_dpi)
+    #         fig.canvas.draw()
 
-            rgb_image = np.array(fig.canvas.renderer.buffer_rgba())
-            plt.close()
-            return rgb_image
+    #         rgb_image = np.array(fig.canvas.renderer.buffer_rgba())
+    #         plt.close()
+    #         return rgb_image
 
 
     def close(self):
