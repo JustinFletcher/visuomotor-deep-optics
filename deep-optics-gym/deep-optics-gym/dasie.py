@@ -1127,8 +1127,6 @@ class DasieEnv(gym.Env):
         self.state_content["readout_images"] = list()
         self.state_content["instantaneous_psf"] = list()
 
-
-
         # Update the current action to be the provided action.
         self.action = action 
         
