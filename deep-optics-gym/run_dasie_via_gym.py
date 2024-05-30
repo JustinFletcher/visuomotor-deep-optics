@@ -127,8 +127,8 @@ def cli_main(flags):
                 info["truncated"] = truncated
                 info["action"] = action
                 info["observation"] = observation
-
-
+                # TODO: Move this to env-level, not step level.
+                info["aperture"] = env.optical_system.aperture
 
                 # Save the info dictionary.
                 with open(os.path.join(episode_save_path,
@@ -261,6 +261,12 @@ if __name__ == "__main__":
                         type=str,
                         default="./tmp/",
                         help='The directory in which to write state data.')
+    
+    parser.add_argument('--randomize_dm', action='store_true',
+                        default=False,
+                        help='If True, randomize the DM on reset.')
+    
+    
     
 
     ############################ DASIE FLAGS ##################################

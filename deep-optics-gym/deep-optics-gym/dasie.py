@@ -1,5 +1,4 @@
 """
-
 Distributed Aperture System for Interferometric Exploitation control system
 simulation environment.
 
@@ -20,6 +19,9 @@ import numpy as np
 from collections import deque
 
 from scipy import signal
+
+
+import scipy.ndimage as ndimage
 
 from PIL import Image, ImageSequence
 
@@ -274,6 +276,8 @@ class OpticalSystem(object):
         focal_plane_pixel_extent_meters = focal_plane_extent_metres /  num_focal_grid_pixels
         self.ifov = 206265 / focal_length * focal_plane_pixel_extent_meters
 
+        # Initialize an empty DM interaction matrix; this will be populated during reset().
+        self.interaction_matrix = None
 
         # This combination sets the focal 
         # sampling: The number of pixels per resolution element (= lambda f / D).
@@ -427,29 +431,37 @@ class OpticalSystem(object):
         #       need to become aperture-dependent. It may be best to refactor from 
         #       'aperture' to 'telescope' once these become coupled for clarity.
 
-        # TODO: Major upgrade: we must add a SHWFS here.
         f_number = 50
         num_lenslets = 40 # 40 lenslets along one diameter
         sh_diameter = 5e-3 # m
 
         magnification = sh_diameter / pupil_diameter
-        magnifier = hcipy.Magnifier(magnification)
-        shwfs = hcipy.SquareShackHartmannWavefrontSensorOptics(
+        self.magnifier = hcipy.Magnifier(magnification)
+        self.shwfs = hcipy.SquareShackHartmannWavefrontSensorOptics(
             self.pupil_grid.scaled(magnification),
             f_number,
             num_lenslets,
             sh_diameter)
-        shwfse = hcipy.ShackHartmannWavefrontSensorEstimator(shwfs.mla_grid,
-                                                             shwfs.micro_lens_array.mla_index)
+        
+        
+        self.shwfse = hcipy.ShackHartmannWavefrontSensorEstimator(self.shwfs.mla_grid,
+                                                             self.shwfs.micro_lens_array.mla_index)
         self.shwfs_camera = hcipy.NoiselessDetector(focal_grid)
 
+
+        # TODO: Alterantive DM formulation. Keep or revert.
+        num_modes = 500
+        dm_modes = hcipy.make_disk_harmonic_basis(self.pupil_grid, num_modes, pupil_diameter, 'neumann')
+        dm_modes = hcipy.ModeBasis([mode / np.ptp(mode) for mode in dm_modes], self.pupil_grid)
+        self.dm = hcipy.DeformableMirror(dm_modes)
+
         # Build a DM on the pupil grid.
-        self.dm_influence_functions = hcipy.make_gaussian_influence_functions(
-            self.pupil_grid,
-            num_actuators_across_pupil=35,
-            actuator_spacing=pupil_diameter / 35
-        )
-        self.dm = hcipy.DeformableMirror(self.dm_influence_functions)
+        # self.dm_influence_functions = hcipy.make_gaussian_influence_functions(
+        #     self.pupil_grid,
+        #     num_actuators_across_pupil=35,
+        #     actuator_spacing=pupil_diameter / 35
+        # )
+        # self.dm = hcipy.DeformableMirror(self.dm_influence_functions)
         
         # Finally, make a camera.
         # Note: The camera is noiseless here because we can add noise in the Env step().
@@ -504,13 +516,12 @@ class OpticalSystem(object):
 
         meters_opd_per_actuator_bit = self.microns_opd_per_actuator_bit * 1e-6
         command_vector = command_grid.flatten().astype(np.float64)
-        self.dm.actuators = meters_opd_per_actuator_bit * command_vector
+        self.dm.actuators += meters_opd_per_actuator_bit * command_vector
 
         return
     
-    def get_frame(self, integration_seconds=1.0):
+    def simulate(self):
 
-        
 
         # Chain together the wavefronts using the optical elements to produce a frame.
 
@@ -534,7 +545,7 @@ class OpticalSystem(object):
 
         
         if self.report_time:
-            print("-- Object Wavefront time: %0.6f" % (time.time() - object_wavefront_start_time))
+            print("--- Object Wavefront time: %0.6f" % (time.time() - object_wavefront_start_time))
 
         atmosphere_forward_start_time = time.time()
         # Propagate the object plane wavefront through the atmosphere layers.
@@ -544,7 +555,7 @@ class OpticalSystem(object):
         self.post_atmosphere_wavefront = wf
 
         if self.report_time:
-            print("-- Atmosphere Forward time: %0.6f" % (time.time() - atmosphere_forward_start_time))
+            print("--- Atmosphere Forward time: %0.6f" % (time.time() - atmosphere_forward_start_time))
 
 
         segmented_mirror_forward_start_time = time.time()
@@ -554,7 +565,7 @@ class OpticalSystem(object):
         )
 
         if self.report_time:
-            print("-- Segments Forward time: %0.6f" % (time.time() - segmented_mirror_forward_start_time))
+            print("--- Segments Forward time: %0.6f" % (time.time() - segmented_mirror_forward_start_time))
 
 
 
@@ -564,7 +575,7 @@ class OpticalSystem(object):
         self.post_dm_wavefront = self.dm.forward(self.pupil_wavefront)
 
         if self.report_time:
-            print("-- DM Forward time: %0.6f" % (time.time() - dm_forawrd_start_time))
+            print("--- DM Forward time: %0.6f" % (time.time() - dm_forawrd_start_time))
         # self.post_dm_wavefront = self.dm(self.post_atmosphere_wavefront)
 
         # TODO: Add Fresnel prop m1 -> m2 (focal length: tbd)
@@ -580,7 +591,77 @@ class OpticalSystem(object):
 
         if self.report_time:
             print("-- Pupil-Focal Propagation time: %0.6f" % (time.time() - pupil_focal_prop_start_time))
+    
+    def get_shwfs_frame(self, integration_seconds=1.0):
 
+        self.shwfs_camera.integrate(self.shwfs(self.magnifier(self.post_dm_wavefront)), integration_seconds)
+        shwfs_readout_image = self.shwfs_camera.read_out()
+
+        return shwfs_readout_image
+    
+    def calibrate_dm_interaction_matrix(self):
+
+        probe_amp = 0.01 * self.wavelength
+        response_matrix = list()
+
+        print("Calibrating DM.")
+
+        # First, take a reference image, which is just the aperture.
+        wf = hcipy.Wavefront(self.aperture, self.wavelength)
+        wf.total_power = 1
+        self.shwfs_camera.integrate(self.shwfs(self.magnifier(wf)), 1)
+        reference_image = self.shwfs_camera.read_out()
+
+        # Adjust our SHWFS estimator to account for the reference image.
+        fluxes = ndimage.measurements.sum(reference_image,
+                                          self.shwfse.mla_index,
+                                          self.shwfse.estimation_subapertures)
+        flux_limit = fluxes.max() * 0.5
+        estimation_subapertures = self.shwfs.mla_grid.zeros(dtype='bool')
+        estimation_subapertures[self.shwfse.estimation_subapertures[fluxes > flux_limit]] = True
+        self.shwfse = hcipy.ShackHartmannWavefrontSensorEstimator(self.shwfs.mla_grid,
+                                                                  self.shwfs.micro_lens_array.mla_index,
+                                                                  estimation_subapertures)
+
+        # Compute reference image slopes.
+        self.reference_slopes = self.shwfse.estimate([reference_image])
+
+        for i in range(len(self.dm.actuators)):
+            
+            slope = 0
+
+            # Probe the phase response
+            amps = [-probe_amp, probe_amp]
+            for amp in amps:
+                self.dm.flatten()
+                self.dm.actuators[i] = amp
+
+                dm_wf = self.dm.forward(wf)
+                dm_wf.total_power = 1
+                wfs_wf = self.shwfs(self.magnifier(dm_wf))
+
+                self.shwfs_camera.integrate(wfs_wf, 1)
+                image = self.shwfs_camera.read_out()
+
+                slopes = self.shwfse.estimate([image])
+
+                slope += amp * slopes / np.var(amps)
+
+            response_matrix.append(slope.ravel())
+
+        self.interaction_matrix = hcipy.ModeBasis(response_matrix)
+
+
+
+
+    def randomize_dm(self):
+
+            self.dm.actuators = np.random.randn(len(self.dm.actuators)) / (np.arange(len(self.dm.actuators)) + 10)
+            self.dm.actuators *= 0.3 * self.wavelength / np.std(self.dm.surface)
+            # self.dm.flatten()
+            # self.dm.random(1e-6)
+    
+    def get_science_frame(self, integration_seconds=1.0):
 
         integration_start_time = time.time()
         # Integrate the wavefront, read out, and return. 
@@ -589,7 +670,7 @@ class OpticalSystem(object):
         if self.report_time:
             print("-- Camera Integration time: %0.6f" % (time.time() - integration_start_time))
 
-
+        use_geometric_optics = True
         if use_geometric_optics:
 
             
@@ -603,6 +684,12 @@ class OpticalSystem(object):
                     int(np.sqrt(effective_psf.size))
                 )
             )
+
+            self.instantaneous_psf = effective_psf
+
+            self.instantaneous_psf
+            print("self.instantaneous_psf %3.16f" % np.std(self.instantaneous_psf))
+
             if self.report_time:
                 print("-- Readout time: %0.6f" % (time.time() - read_out_start_time))
 
@@ -762,9 +849,12 @@ class DasieEnv(gym.Env):
         self.frame_interval_ms = kwargs['frame_interval_ms']
         self.decision_interval_ms = kwargs['decision_interval_ms']
         self.ao_interval_ms = kwargs['ao_interval_ms']
+        self.randomize_dm = kwargs['randomize_dm']
         # TODO: Externalize.
         self.microns_opd_per_actuator_bit = 0.00015
         self.stroke_count_limit = 20000
+        self.dm_gain = 0.6
+        self.dm_leakage = 0.01
 
         print("==== Start: Initializing Environment ====")
 
@@ -786,6 +876,7 @@ class DasieEnv(gym.Env):
         self.state_content["post_dm_wavefronts"] = list()
         self.state_content["focal_plane_wavefronts"] = list()
         self.state_content["readout_images"] = list()
+        self.state_content["instantaneous_psf"] = list()
 
         # Print the provided intervals
         print("Control interval: %s ms" % self.control_interval_ms)
@@ -821,24 +912,40 @@ class DasieEnv(gym.Env):
 
         # Create a dict to hold the some hidden state content.
         self.build_optical_system(**kwargs)
+
         self.episode_time_ms = 0.0
 
         # Build the command grid, which is one-to-one with the action space.
         # TODO: In the active optics formulation, this needs to be ttp secondaries and tensioners.
         # TODO: Retain the ability to control any subset fo actuators.
-        self.actuator_command_grid = np.zeros(
-            shape=(35, 35),
-            dtype=np.int16
-        )
-
+        # self.actuator_command_grid = np.zeros(
+        #     shape=(35, 35),
+        #     dtype=np.int16
+        # )
         # Define a symmetric action space.
+        # action_shape = (self.commands_per_decision,
+        #                 self.actuator_command_grid.shape[0],
+        #                 self.actuator_command_grid.shape[1],)
+        # self.action_space = spaces.Box(low=-self.stroke_count_limit,
+        #                                high=self.stroke_count_limit,
+        #                                shape=action_shape,
+        #                                dtype=np.int16)
+
+        # FEATURE: Redefining to allow for better DM calibration.
+        num_dm_modes = 500
+        self.actuator_command_grid = np.zeros(
+            shape=(num_dm_modes),
+            dtype=np.float32
+        )
+        # FEATURE: redefining action space to match mode-based DM.
         action_shape = (self.commands_per_decision,
-                        self.actuator_command_grid.shape[0],
-                        self.actuator_command_grid.shape[1],)
+                        num_dm_modes)
+        # FEATURE: redefining action space to match mode-based DM; replace stroke limits.
         self.action_space = spaces.Box(low=-self.stroke_count_limit,
                                        high=self.stroke_count_limit,
                                        shape=action_shape,
-                                       dtype=np.int16)
+                                       dtype=np.float32)
+
 
         # Compute the image shape.
         self.image_shape = (kwargs['focal_plane_image_size_pixels'],
@@ -855,6 +962,9 @@ class DasieEnv(gym.Env):
                                             high=1.0,
                                             shape=observation_shape,
                                             dtype=np.float64)
+        
+        # TODO: Replace with environment-level state storage.
+        self.state_content["wavelength"] = self.optical_system.wavelength
 
         print("==== End: Initializing Environment ====")
 
@@ -871,6 +981,11 @@ class DasieEnv(gym.Env):
         print("Instantiating a New Optical System")
 
         self.build_optical_system(**self.kwargs)
+
+        # Calibrate the DM interaction matrix.
+        self.optical_system.calibrate_dm_interaction_matrix()
+        rcond = 1e-3
+        self.reconstruction_matrix = hcipy.inverse_tikhonov(self.optical_system.interaction_matrix.transformation_matrix, rcond=rcond)
 
         self.episode_time_ms = 0.0
     
@@ -895,11 +1010,20 @@ class DasieEnv(gym.Env):
             scale=calibration_noise_counts * ones_like_action
         )
         dm_calibration_noise_counts = dm_calibration_noise.astype(np.int16)
+
+
+        if self.randomize_dm:
+            
+            print("Randomizing DM")
+            self.optical_system.randomize_dm()
+
         for _ in range(self.frames_per_decision):
 
             (initial_state, _, _, _, _) = self.step(
-                action=dm_calibration_noise_counts,
-                noisy_command=False
+                action=np.zeros_like(self.action_space.sample()),
+                noisy_command=False,
+                ao_loop_active=False,
+                reset=True
             )
 
         self.state = initial_state
@@ -907,11 +1031,83 @@ class DasieEnv(gym.Env):
 
         print("=== End: Reset Environment ===")
         return np.array(self.state)
+    
+    def save_state(self):
+
+        # We have now completed the substep; store the state variables.
+        if self.report_time:
+            deepcopy_start = time.time()
+
+        self.state_content["dm_surfaces"].append(
+            copy.deepcopy(self.optical_system.dm.surface)
+        )
+
+        # TODO: Add support for saving the rest of the atmosphere layers.
+        if len(self.optical_system.atmosphere_layers) > 0:
+
+            deepcopy_atmosphere_layers = copy.deepcopy(self.optical_system.atmosphere_layers[0])
+            self.state_content["atmos_layer_0_list"].append(
+                copy.deepcopy(deepcopy_atmosphere_layers)
+            )
+        else:
+            self.state_content["atmos_layer_0_list"].append(None)
+
+        deepcopy_object_plane = copy.deepcopy(self.optical_system.object_plane)
+        self.state_content["object_fields"].append(
+            deepcopy_object_plane
+        )
+
+        deepcopy_pre_atmosphere_object_wavefront = copy.deepcopy(self.optical_system.pre_atmosphere_object_wavefront)
+        self.state_content["pre_atmosphere_object_wavefronts"].append(
+            deepcopy_pre_atmosphere_object_wavefront
+        )
+        
+        deepcopy_post_atmosphere_wavefront = copy.deepcopy(self.optical_system.post_atmosphere_wavefront)
+        self.state_content["post_atmosphere_wavefronts"].append(
+            deepcopy_post_atmosphere_wavefront
+        )
+        
+        deepcopy_segmented_mirror_surface = copy.deepcopy(self.optical_system.segmented_mirror.surface)
+        self.state_content["segmented_mirror_surfaces"].append(
+            deepcopy_segmented_mirror_surface
+        )
+        
+        deepcopy_pupil_wavefront = copy.deepcopy(self.optical_system.pupil_wavefront)
+        self.state_content["pupil_wavefronts"].append(
+            deepcopy_pupil_wavefront
+        )
+
+        deepcopy_post_dm_wavefront = copy.deepcopy(self.optical_system.post_dm_wavefront)
+        self.state_content["post_dm_wavefronts"].append(
+            deepcopy_post_dm_wavefront
+        )
+        
+        deepcopy_focal_plane_wavefront = copy.deepcopy(self.optical_system.focal_plane_wavefront)
+        self.state_content["focal_plane_wavefronts"].append(
+            deepcopy_focal_plane_wavefront
+        )
+
+        deepcopy_instantaneous_psf = copy.deepcopy(self.optical_system.instantaneous_psf)
+        self.state_content["instantaneous_psf"].append(
+            deepcopy_instantaneous_psf
+        )
+        
+        deepcopy_science_readout_raster = copy.deepcopy(self.science_readout_raster)
+        self.state_content["readout_images"].append(
+            deepcopy_science_readout_raster
+        )
+
+        if self.report_time:
+            print("- Deepcopy time:   %.6f" %
+                    (time.time() - deepcopy_start))
+
 
 
     def step(self,
              action,
-             noisy_command=True,):
+             ao_loop_active=True,
+             noisy_command=False,
+             reset=False):
 
         if self.report_time:
             step_time = time.time()
@@ -929,6 +1125,8 @@ class DasieEnv(gym.Env):
         self.state_content["post_dm_wavefronts"] = list()
         self.state_content["focal_plane_wavefronts"] = list()
         self.state_content["readout_images"] = list()
+        self.state_content["instantaneous_psf"] = list()
+
 
 
         # Update the current action to be the provided action.
@@ -988,87 +1186,60 @@ class DasieEnv(gym.Env):
                     # Apply the command to the DM.
                     self.optical_system.command_dm(dm_command)
 
-                # TODO: Major Feature. Add corrections_per_command inner loop and apply SHWFS
-                #       AO system corrections for that number of iterations. This will require
-                #       moving the partial frame integration step, below, into that loop. To 
-                #       test this feature, the AO system should close without intervention when
-                #       the Fried parameter and induced aberation is sufficiently small, but fail
-                #       as it increases. [in work now -jrf]
-                    
+                # Compute the number of seconds of integration per AO loop step.
+                frame_interval_seconds = self.frame_interval_ms / 1000.0
+                integration_seconds = frame_interval_seconds / self.ao_steps_per_frame
+
+                # Iterate, simulating an AO loop.
                 for ao_step_num in range(self.ao_steps_per_command):
 
-                    # Manually integrate the frame to model dynamic optics.
-                    frame_interval_seconds = (self.frame_interval_ms / 1000.0)
-                    integration_seconds = frame_interval_seconds / (self.ao_steps_per_frame)
-                    
                     if self.report_time:
                         simulation_time_start = time.time()
+                
+                    # Simulate the entire optical system, updating its state.
+                    self.optical_system.simulate()
 
-                    readout_vector = self.optical_system.get_frame(
+                    if self.report_time:
+                        print("-- Simulation Step time: %.6f" % (time.time() - simulation_time_start))
+                
+                    if self.report_time:
+                        ao_step_time_start = time.time()
+
+                    # If the AO loop is active.
+                    if ao_loop_active:
+
+                        # Measure the wavefront using the SHWFS.
+                        shwfs_readout_vector = self.optical_system.get_shwfs_frame(
+                            integration_seconds=integration_seconds
+                        )
+                        
+                        # TODO: Record the slopes.
+                        # Compute the correction slopes for the DM.
+                        shwfs_slopes = self.optical_system.shwfse.estimate([shwfs_readout_vector + 1e-10])
+                        shwfs_slopes -= self.optical_system.reference_slopes
+                        self.shwfs_slopes = shwfs_slopes.ravel()
+
+                        # Perform wavefront compensation by setting the DM actuators.
+                        self.optical_system.dm.actuators = (1 - self.leakage) * self.optical_system.dm.actuators - self.gain * self.reconstruction_matrix.dot(self.shwfs_slopes)
+
+                    if self.report_time:
+                        print("-- AO Step time: %.6f" % (time.time() - ao_step_time_start))
+
+                    # Get a fractional science frame.
+                    science_readout_vector = self.optical_system.get_science_frame(
                         integration_seconds=integration_seconds
                     )
-
-                    readout_raster = np.reshape(readout_vector, self.image_shape)
+                    self.science_readout_raster = np.reshape(science_readout_vector,
+                                                             self.image_shape)
 
                     # Note: This step accumulates the partial readout rasters, in effect manually
                     #       integrating them outside of HCIPy.
-                    frame += readout_raster
-                    
-                if self.report_time:
-                    print("- Simulation time: %.6f" % (time.time() - simulation_time_start))
-                
-                if self.record_env_state_info:
-                    # TODO: Encapsulate this mess...
-                    # We have now completed the substep; store the state variables.
-                    deepcopy_start = time.time()
-                    self.state_content["dm_surfaces"].append(
-                        copy.deepcopy(self.optical_system.dm.surface)
-                    )
+                    frame += self.science_readout_raster
 
-                    # TODO: Add support for saving the rest of the atmosphere layers.
-                    if len(self.optical_system.atmosphere_layers) > 0:
-                        self.state_content["atmos_layer_0_list"].append(
-                            copy.deepcopy(self.optical_system.atmosphere_layers[0])
-                        )
-                    else:
-                        self.state_content["atmos_layer_0_list"].append(None)
-
-                    self.state_content["object_fields"].append(
-                        copy.deepcopy(self.optical_system.object_plane)
-                    )
-
-                    self.state_content["pre_atmosphere_object_wavefronts"].append(
-                        copy.deepcopy(self.optical_system.pre_atmosphere_object_wavefront)
-                    )
+                    # Deepcopy the environment state so that it can be stored later.
+                    if self.record_env_state_info and not reset:
+                        self.save_state()
                     
-                    self.state_content["post_atmosphere_wavefronts"].append(
-                        copy.deepcopy(self.optical_system.post_atmosphere_wavefront)
-                    )
-                    
-                    self.state_content["segmented_mirror_surfaces"].append(
-                        copy.deepcopy(self.optical_system.segmented_mirror.surface)
-                    )
-                    
-                    self.state_content["pupil_wavefronts"].append(
-                        copy.deepcopy(self.optical_system.pupil_wavefront)
-                    )
-                    
-                    self.state_content["post_dm_wavefronts"].append(
-                        copy.deepcopy(self.optical_system.post_dm_wavefront)
-                    )
-                    
-                    self.state_content["focal_plane_wavefronts"].append(
-                        copy.deepcopy(self.optical_system.focal_plane_wavefront)
-                    )
-                    
-                    self.state_content["readout_images"].append(
-                        copy.deepcopy(readout_raster)
-                    )
-
-                    if self.report_time:
-                        print("- Deepcopy time:   %.6f" %
-                                (time.time() - deepcopy_start))
-
             # Finally, append this frame to the stack of focal plane images.
             self.focal_plane_images.append(frame)
 
@@ -1083,6 +1254,7 @@ class DasieEnv(gym.Env):
         if self.reward_function == "strehl":
 
             raise NotImplementedError("The Strehl reward isn't implemented.")
+            # Marechal approximation.
 
         elif self.reward_function == "unity":
 
@@ -1106,277 +1278,6 @@ class DasieEnv(gym.Env):
             print("Step time: %.6f" % (time.time() - step_time))
 
         return np.array(self.state), reward, terminated, truncated, info
-
-    # def render(self):
-
-    #     if self.render_mode == 'rgb_array':
-
-    #         num_states = len(self.state)
-            
-    #         num_rows = 1
-    #         num_cols = 2
-
-    #         mag = 4
-    #         fig = plt.figure(figsize=(num_cols * mag, num_rows * mag))
-
-    #         ax = plt.subplot2grid(
-    #                     (num_rows, num_cols),
-    #                     (0, 0),
-    #                     colspan=1,
-    #                     rowspan=1)
-
-    #         ax.set_title('Current State (Frame %s)' % 0)
-    #         # im = ax.imshow(np.log(self.state[0] + 1e-16),
-    #         #                 cmap='inferno',
-    #         #                 vmin=-22.0)
-    #         im = ax.imshow(self.state[0],
-    #                         cmap='inferno')
-    #         fig.colorbar(im, ax=ax)
-
-                
-    #         ax = plt.subplot2grid(
-    #                     (num_rows, num_cols),
-    #                     (0, 1),
-    #                     colspan=1,
-    #                     rowspan=1)
-    #         ax.set_title('Log Partial PSF')
-    #         im = hcipy.imshow_field(
-    #             np.log((self.state_content["focal_plane_wavefronts"][0]).intensity),
-    #             # np.log(self.state_content["focal_plane_wavefronts"][action_index].electric_field),
-    #             cmap='gray',
-    #             ax=ax)
-    #         fig.colorbar(im, ax=ax)
-
-    #         plt.tight_layout()
-    #         fig.set_dpi(self.render_dpi)
-    #         fig.canvas.draw()
-
-    #         rgb_image = np.array(fig.canvas.renderer.buffer_rgba())
-    #         plt.close()
-    #         return rgb_image
-
-
-    #     if self.render_mode == 'rgb_array_verbose':
-
-    #         num_rows = 14
-    #         num_cols = 6
-
-    #         mag = 4
-    #         fig = plt.figure(figsize=(num_cols * mag, num_rows * mag))
-
-    #         action_list = [np.array(a) for a in self.action]
-    #         num_actions = len(action_list)
-    #         num_states = len(self.state)
-    #         num_actions_per_state = num_actions // num_states
-
-
-    #         # Build row zero, which is the state images.
-    #         for state_index, state in enumerate(self.state):
-
-    #             col_num = (num_actions_per_state * state_index)
-
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (0, col_num),
-    #                                   colspan=num_actions_per_state,
-    #                                   rowspan=num_actions_per_state)
-
-    #             ax.set_title('Log Current State (Frame %s)' % state_index)
-    #             im = ax.imshow((state + 1e-16),
-    #                            cmap='inferno',
-    #                            vmin=-6)
-    #             fig.colorbar(im, ax=ax)
-
-    #         for action_index, action in enumerate(action_list):
-
-    #             # Parse common annotations for this action.
-    #             action_time = self.state_content["action_times"][action_index]
-                
-    #             ###############################################################
-    #             # Plot a single frame read
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (3, action_index),
-    #                                   colspan=1,
-    #                                   rowspan=1)
-    #             ax.set_title('Log Partial Frame Read [counts] ($t$ = %.1f ms)' % action_time)
-    #             im = plt.imshow(
-    #                 np.log(self.state_content["readout_images"][action_index]),
-    #                 cmap='gray',
-    #             )
-    #             fig.colorbar(im, ax=ax)
-    #             ###############################################################
-    #             # Plot the at-focal-plane (post-propagation) illuminance.
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (4, action_index),
-    #                                   colspan=1,
-    #                                   rowspan=1)
-    #             magnifier = hcipy.Magnifier(100)
- 
-    #             ax.set_title('Log Focal Plane Intensity [???] ($t$ = %.1f ms)' % action_time)
-    #             im = hcipy.imshow_field(
-    #                 np.log((self.state_content["focal_plane_wavefronts"][action_index]).intensity),
-    #                 # np.log(self.state_content["focal_plane_wavefronts"][action_index].electric_field),
-    #                 cmap='gray',
-    #                 ax=ax)
-    #             fig.colorbar(im, ax=ax)
-    #             ###############################################################
-    #             # Plot the (post-DM) wavefront.
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                     (5, action_index),
-    #                     colspan=1,
-    #                     rowspan=1)
-        
-    #             ax.set_title('Post-DM Field [???] ($t$ = %.1f ms)' % action_time)
-    #             im = hcipy.imshow_field(
-    #                 self.state_content["post_dm_wavefronts"][action_index].intensity,
-    #                 # self.state_content["post_dm_wavefronts"][action_index].electric_field,
-    #                 cmap='gray',
-    #                 ax=ax)
-    #             fig.colorbar(im, ax=ax)
-
-    #             ###############################################################
-    #             # Plot DM surface OPD.
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (6, action_index),
-    #                                   colspan=1,
-    #                                   rowspan=1)
-    #             ax.set_title('DM Surface OPD [$\\mu$m] ($t$ = %.1f ms)' % action_time)
-    #             im = hcipy.imshow_field(
-    #                 self.state_content["dm_surfaces"][action_index] / 1e-6,
-    #                 mask=self.optical_system.aperture,
-    #                 cmap='RdBu_r',
-    #                 ax=ax)
-    #             fig.colorbar(im, ax=ax)
-                
-    #             ###############################################################  
-    #             # Plot the command grid.
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (7, action_index),
-    #                                   colspan=1,
-    #                                   rowspan=1)
-                
-    #             ax.set_title('Command Grid [counts] ($t$ = %.1f ms)' % action_time)
-    #             im = ax.imshow(action, cmap='inferno')
-    #             fig.colorbar(im, ax=ax)
-
-
-    #             ###############################################################
-    #             # Plot m2 at-aperture illuminance.
-
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (8, action_index),
-    #                                   colspan=1,
-    #                                   rowspan=1)
-                
-    #             ax.set_title('Post-Pupil Intensity [???] ($t$ = %.1f ms)' % action_time)
-    #             im = hcipy.imshow_field(
-    #                 self.state_content["pupil_wavefronts"][action_index].intensity,
-    #                 # self.state_content["pupil_wavefronts"][action_index].electric_field,
-    #                 cmap='gray',
-    #                 ax=ax)
-    #             fig.colorbar(im, ax=ax)
-    #             ###############################################################
-    #             # Plot the segmented mirror OPD.
-
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (9, action_index),
-    #                                   colspan=1,
-    #                                   rowspan=1)
-                
-                
-    #             ax.set_title('Pupil OPD [$\\mu$m] ($t$ = %.1f ms)' % action_time)
-    #             im = hcipy.imshow_field(
-    #                 self.state_content["segmented_mirror_surfaces"][action_index] / 1e-6,
-    #                 mask=self.optical_system.aperture,
-    #                 cmap='RdBu_r',
-    #                 ax=ax)
-    #             fig.colorbar(im, ax=ax)
-
-    #             ###############################################################
-    #             # Plot the M1 at-aperture illuminance (post-atmopshere).
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (10, action_index),
-    #                                   colspan=1,
-    #                                   rowspan=1)
-                
-    #             ax.set_title('Pre-Pupil Intensity [???] ($t$ = %.1f ms)' % action_time)
-    #             im = hcipy.imshow_field(
-    #                 self.state_content["post_atmosphere_wavefronts"][action_index].intensity,
-    #                 # self.state_content["post_atmosphere_wavefronts"][action_index].electric_field,
-    #                 cmap='gray',
-    #                 ax=ax)
-    #             fig.colorbar(im, ax=ax)
-                
-
-    #             ###############################################################
-    #             # Plot the atmopshere OPD, if an atmosphere is present.
-
-    #             if self.state_content["atmos_layer_0_list"][action_index] is not None:
-    #                 ax = plt.subplot2grid((num_rows, num_cols),
-    #                                     (11, action_index),
-    #                                     colspan=1,
-    #                                     rowspan=1)
-                    
-    #                 ax.set_title('Atmosphere OPD [$\\mu$m] ($t$ = %.1f ms)' % action_time)
-    #                 # plt.title('Atmos [$\\mu$m] ($t$ = %.3f ms)' % action_time)
-    #                 layer = self.state_content["atmos_layer_0_list"][action_index]
-    #                 phase_screen_phase = layer.phase_for(self.optical_system.wavelength) # in radian
-    #                 phase_screen_opd = phase_screen_phase * (self.optical_system.wavelength / (2 * np.pi)) * 1e6 # in um
-    #                 im = hcipy.imshow_field(
-    #                     phase_screen_opd,
-    #                     cmap='RdBu_r',
-    #                     ax=ax)
-    #                 fig.colorbar(im, ax=ax)
-    #             ###############################################################
-    #             # Plot Object Field pre-atmosphere.
-
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (12, action_index),
-    #                                   colspan=1,
-    #                                   rowspan=1)
-    #             ax.set_title('Object Field (propogated) [???] ($t$ = %.1f ms)' % action_time)
-    #             # im = plt.imshow(
-    #             #     self.state_content["object_fields"][action_index],
-    #             #     # mask=self.optical_system.aperture,
-    #             #     cmap='gray',
-    #             #     # ax=ax
-    #             # )
-    #             im = hcipy.imshow_field(
-    #                 self.state_content["pre_atmosphere_object_wavefronts"][action_index].intensity,
-    #                 # self.state_content["pre_atmosphere_object_wavefronts"][action_index].electric_field,
-    #                 # mask=self.optical_system.aperture,
-    #                 cmap='gray',
-    #                 ax=ax)
-    #             fig.colorbar(im, ax=ax)
-            
-    #             ###############################################################
-    #             # Plot Object Field illuminance (???).
-    #             ax = plt.subplot2grid((num_rows, num_cols),
-    #                                   (13, action_index),
-    #                                   colspan=1,
-    #                                   rowspan=1)
-    #             ax.set_title('Object Field [???] ($t$ = %.1f ms)' % action_time)
-    #             # im = plt.imshow(
-    #             #     self.state_content["object_fields"][action_index],
-    #             #     # mask=self.optical_system.aperture,
-    #             #     cmap='gray',
-    #             #     # ax=ax
-    #             # )
-    #             im = hcipy.imshow_field(
-    #                 self.state_content["object_fields"][action_index],
-    #                 # mask=self.optical_system.aperture,
-    #                 cmap='gray',
-    #                 ax=ax)
-    #             fig.colorbar(im, ax=ax)
-    #             ###############################################################
-
-    #         plt.tight_layout()
-    #         fig.set_dpi(self.render_dpi)
-    #         fig.canvas.draw()
-
-    #         rgb_image = np.array(fig.canvas.renderer.buffer_rgba())
-    #         plt.close()
-    #         return rgb_image
-
 
     def close(self):
         if self.viewer:

@@ -138,11 +138,13 @@ You can exercise the functionality of the AO-based reward function independently
 The command below will initialize and run an episode in which a scene comprising a single non-resolved target is imaged without an atmosphere by a perfectly stable optomechanical system that is initialized with a small random deformation in a deformable mirror placed along the optical path.
 
 ```
+python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf
 ```
 
-The following command will render the prior episode. The render should show a speckle pattern that gradually converges to a sharp PSF.
+The following command will render the prior episode. The render should show a speckle pattern that gradually converges to a sharp PSF, along with a view of the DM surface, which should flatten out.
 
 ```
+python deep-optics-gym/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=dm
 ```
 
 Now that we know the AO is working, we can increase the scenario complexity until it fails, thereby establishing the task to be addressed by an autonomous agent. The following command will construct a scenario in which the differential motion of the sub-apertures is realistic, which prevents AO loop closure. Here, differential motion is a forward-controllable proxy for phase wrap - as differential motion increases, so does the maximium phase difference across a wavefront.
@@ -162,15 +164,15 @@ By running this experiment, we see that AO correction begins to fail under condi
 Below is a list of the features that still need to be done. If you complete one of these, first, thank you! When complete, please add an invocation to the readme above demonstrating success, mark it complete below with your initials and date, and submit a pull request for your feature branch back to dev. I'll pull it to main once it's reconciled with other changes. I've tagged the locations
 in the repo at which some of these features should be implemented with "Major Feature" in the relevant TODO.
 
-- [ ] Environment save functionality.
+- [X] Environment save functionality.
 - [X] A decent environment rendering functionality.
 - [ ] Flag-selectable wavelengths to model chromaticity.
-- [ ] A SHWFS closed-loop AO model to populate the step reward.
+- [X] A SHWFS closed-loop AO model to populate the step reward.
 - [ ] Parallelization of each wavelenth and sub-step of the environment step.
 - [ ] Atmosphere phase screen caching to speed up the simulation step.
 - [ ] Piston/tip/tilt secondaries for the ELF system.
 - [ ] A tensegrity model to map control commands to low-order aberations; update action shape.
-- [ ] Add low-order aberations directly to the segments in the optical system model.
+- [ ] Add differential motion directly to the segments in the optical system model.
 
 ## Known Issues
 
