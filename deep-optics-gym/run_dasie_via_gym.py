@@ -102,7 +102,8 @@ def cli_main(flags):
 
             elif flags.action_type == "none":
                 
-                action = np.zeros_like(env.action_space.sample())
+                action = env.zero_action_space.sample()
+                # action = np.zeros_like(env.action_space.sample())
 
             else: 
 
@@ -229,6 +230,27 @@ if __name__ == "__main__":
                         default=4.0,
                         help='Action control interval in milliseconds.')
     
+    # Flags for natural differntial motion.
+
+    # Flag for natural_diff_motion_piston_std_microns
+    parser.add_argument('--natural_diff_motion_piston_std_microns',
+                        type=float,
+                        default=0.0,
+                        help='Standard deviation of natural piston differential motion in microns.')
+    
+    # Flag for natural_diff_motion_tip_std_microns
+    parser.add_argument('--natural_diff_motion_tip_std_microns',
+                        type=float,
+                        default=0.0,
+                        help='Standard deviation of natural tilt differential motion in microns.')
+    
+    # Flag for natural_diff_motion_tilt_std_microns
+    parser.add_argument('--natural_diff_motion_tilt_std_microns',
+                        type=float,
+                        default=0.0,
+                        help='Standard deviation of natural tilt differential motion in microns.')
+    
+
     parser.add_argument('--frame_interval_ms',
                         type=float,
                         default=12.0,
@@ -266,8 +288,9 @@ if __name__ == "__main__":
                         default=False,
                         help='If True, randomize the DM on reset.')
     
+
     
-    
+
 
     ############################ DASIE FLAGS ##################################
     parser.add_argument('--extended_object_image_file', type=str,
@@ -286,6 +309,13 @@ if __name__ == "__main__":
                         type=int,
                         default=2**1,
                         help='Number of frames input to the model.')
+    
+    parser.add_argument('--num_tensioners',
+                        type=int,
+                        default=16,
+                        help='Number of tensioners to model.')
+    
+    
 
     parsed_flags, _ = parser.parse_known_args()
 

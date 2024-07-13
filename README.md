@@ -150,6 +150,13 @@ python deep-optics-gym/render_history.py --episode_info_dir=/Users/fletcher/rese
 Now that we know the AO is working, we can increase the scenario complexity until it fails, thereby establishing the task to be addressed by an autonomous agent. The following command will construct a scenario in which the differential motion of the sub-apertures is realistic, which prevents AO loop closure. Here, differential motion is a forward-controllable proxy for phase wrap - as differential motion increases, so does the maximium phase difference across a wavefront.
 
 ```
+python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf --natural_diff_motion_piston_std_microns=10.0 --natural_diff_motion_tip_std_microns=1.0 --natural_diff_motion_tilt_std_microns=1.0
+```
+
+In the example below, the post-correction surface of the segments are shown. Due to the random walk of the natural differntial motion they vary across time and prevent AO loop closure.
+
+```
+python deep-optics-gym/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=diffmotion
 ```
 
 By sweeping over the parameter that controls the distribution of sub-aperture differential motion, we can plot the falloff in attainable Strehl as a function of mean differntial motion. The command below will run a script that performs this experiment.
@@ -170,9 +177,11 @@ in the repo at which some of these features should be implemented with "Major Fe
 - [X] A SHWFS closed-loop AO model to populate the step reward.
 - [ ] Parallelization of each wavelenth and sub-step of the environment step.
 - [ ] Atmosphere phase screen caching to speed up the simulation step.
-- [ ] Piston/tip/tilt secondaries for the ELF system.
-- [ ] A tensegrity model to map control commands to low-order aberations; update action shape.
-- [ ] Add differential motion directly to the segments in the optical system model.
+- [X] Piston/tip/tilt secondaries for the ELF system.
+- [X] A mock tensegrity model to map control commands to low-order aberations; update action shape.
+- [ ] A physically-informed tensegrity model to map control commands to low-order aberations.
+- [X] Add differential motion directly to the segments in the optical system model.
+- [ ] Add a direct exoplanet imaging scene model to the object plane generator.
 
 ## Known Issues
 

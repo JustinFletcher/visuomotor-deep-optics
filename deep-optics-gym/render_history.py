@@ -165,8 +165,6 @@ def cli_main(flags):
                     print(aperture_mask)
 
 
-
-
                     # ...and compute the episode time at which it was taken.
                     frame_time = step_start_time + (ao_step_index * ao_interval_ms)
 
@@ -193,7 +191,8 @@ def cli_main(flags):
 
                     plt.subplot(num_rows,num_cols,1)
                     plt.title('DM surface [$\\mu$m]')
-                    hcipy.imshow_field(dm_surface * 1e6, cmap='RdBu', vmin=-1, vmax=1, mask=aperture_mask)
+                    hcipy.imshow_field(dm_surface * 1e6, cmap='RdBu', vmin=-2, vmax=2, mask=aperture_mask)
+                    # hcipy.imshow_field(segmented_mirror_surface * 1e6, cmap='RdBu', vmin=-7, vmax=7, mask=aperture_mask)
                     # hcipy.imshow_field(dm_surface * 1e6, cmap='RdBu')
                     plt.colorbar()
 
@@ -228,6 +227,146 @@ def cli_main(flags):
                     plt.subplot(num_rows,num_cols,6)
                     plt.title('post_atmosphere_wavefront.phase')
                     hcipy.imshow_field(post_atmosphere_wavefront.phase, cmap='RdBu', mask=aperture_mask)
+                    # plt.imshow(obs_frame, cmap='inferno') #
+                    plt.colorbar()
+                    
+
+
+                    render_dpi = 400
+                    fig.set_dpi(render_dpi)
+                    fig.canvas.draw()
+                    plt.savefig(save_path,
+                                pad_inches=0.1,
+                                dpi=render_dpi)
+                    
+                    plt.close()
+
+        elif flags.render_mode == "diffmotion":
+
+            # Build a dir inside of the episode log dir for these renders.
+            observation_path = os.path.join(renders_path, "observations")
+            Path(observation_path).mkdir(parents=True, exist_ok=True)
+
+            # If a gif directory doesn't already exist, make one.
+            gif_path = os.path.join(observation_path, 'gif')
+            Path(gif_path).mkdir(parents=True, exist_ok=True)
+
+            # Parse the environment-level metadata we'll need for labeling.
+            frame_interval_ms = env_metadata_dict["frame_interval_ms"]
+            ao_interval_ms = env_metadata_dict["ao_interval_ms"]
+            frames_per_decision = env_metadata_dict["frames_per_decision"]
+            ao_steps_per_frame = env_metadata_dict["ao_steps_per_frame"]
+
+            # Compute the start time of the step we're about to render.
+            step_start_time = frame_interval_ms * frames_per_decision * step_index
+
+            # This loop runs once per step and there is one step per decision.
+            for frame_index in range(frames_per_decision):
+
+                # Parse a single frame from the observation...
+                obs_frame = step_info_dict["observation"][frame_index]
+
+                for ao_step_per_frame_index in range(ao_steps_per_frame):
+
+
+                    ao_step_index = (ao_steps_per_frame * frame_index) + ao_step_per_frame_index
+
+                    print(ao_step_index)
+                    # Parse a single frame from the observation...
+                    dm_surface = step_info_dict['state_content']['dm_surfaces'][ao_step_index]
+                    atmos_layer = step_info_dict['state_content']['atmos_layer_0_list'][ao_step_index]
+                    instantaneous_psf = step_info_dict['state_content']['instantaneous_psf'][ao_step_index]
+                    post_dm_wavefront = step_info_dict['state_content']['post_dm_wavefronts'][ao_step_index]
+                    segmented_mirror_surface = step_info_dict['state_content']['segmented_mirror_surfaces'][ao_step_index]
+                    pre_atmosphere_object_wavefront = step_info_dict['state_content']['pre_atmosphere_object_wavefronts'][ao_step_index]
+                    post_atmosphere_wavefront = step_info_dict['state_content']['post_atmosphere_wavefronts'][ao_step_index]
+                    
+                    wavelength = step_info_dict['state_content']['wavelength']
+
+                    print("len %d" % len(step_info_dict['state_content']['instantaneous_psf']))
+
+                    # TODO: Refactor both of these using an episode-level state storage option.
+                    aperture = step_info_dict["aperture"][frame_index]
+                    wavelength = step_info_dict['state_content']['wavelength']
+                    aperture_mask = post_dm_wavefront.intensity > 0.0
+
+                    print(aperture_mask)
+
+
+                    # ...and compute the episode time at which it was taken.
+                    frame_time = step_start_time + (ao_step_index * ao_interval_ms)
+
+                    # Build the filename and full save path of this render.
+                    render_filename = 'dm_step_' + str(step_index)
+                    render_filename = render_filename + '_ao_' + str(ao_step_index) + '.png'
+                    save_path = os.path.join(observation_path, render_filename)
+
+                    # Add this render's filename to the list of render filenames.
+                    render_filenames.append(save_path)
+
+                    # Build the render labels.
+                    title = 'DM ($t = %.3f ms, step %d$)' % (frame_time, step_index)
+
+                    plt.clf()
+                    
+                    num_rows = 2
+                    num_cols = 4
+
+                    mag = 4
+                    fig = plt.figure(figsize=(num_cols * mag, num_rows * mag))
+
+                    plt.suptitle(title)
+
+                    plt.subplot(num_rows,num_cols,1)
+                    plt.title('DM surface [$\\mu$m]')
+                    hcipy.imshow_field(dm_surface * 1e6, cmap='RdBu', vmin=-2, vmax=2, mask=aperture_mask)
+                    # hcipy.imshow_field(segmented_mirror_surface * 1e6, cmap='RdBu', vmin=-7, vmax=7, mask=aperture_mask)
+                    # hcipy.imshow_field(dm_surface * 1e6, cmap='RdBu')
+                    plt.colorbar()
+
+                    if atmos_layer:
+                        phase_screen_phase = atmos_layer.phase_for(wavelength) # in radians
+                        phase_screen_opd = phase_screen_phase * (wavelength / (2 * np.pi)) * 1e6
+
+                        plt.subplot(num_rows,num_cols,2)
+                        hcipy.imshow_field(phase_screen_opd, vmin=-6, vmax=6, cmap='RdBu')
+                        plt.title('Turbulent wavefront [$\\mu$m]')
+                        plt.colorbar()
+
+                    plt.subplot(num_rows,num_cols,3)
+                    plt.title('Instantaneous PSF at 2.2$\\mu$m [log]')
+
+                    print("self.instantaneous_psf %3.16f" % np.std(instantaneous_psf))
+                    plt.imshow(np.log10(instantaneous_psf/ instantaneous_psf.max()), vmin=-8, vmax=0, cmap='inferno') #
+                    plt.colorbar()
+
+                 
+                    plt.subplot(num_rows,num_cols,4)
+                    plt.title('Science Image ')
+                    plt.imshow(obs_frame, cmap='inferno') #
+                    plt.colorbar()
+                    
+                    plt.subplot(num_rows,num_cols,5)
+                    plt.title('post_dm_wavefront.phase [rad]')
+                    hcipy.imshow_field(post_dm_wavefront.phase, cmap='RdBu', mask=aperture_mask)
+                    plt.colorbar()
+                    
+                    
+                    plt.subplot(num_rows,num_cols,6)
+                    plt.title('post_atmosphere_wavefront.phase [rad]')
+                    hcipy.imshow_field(post_atmosphere_wavefront.phase, cmap='RdBu', mask=aperture_mask)
+                    # plt.imshow(obs_frame, cmap='inferno') #
+                    plt.colorbar()
+                    
+                    plt.subplot(num_rows,num_cols,7)
+                    plt.title('segmented_mirror_surface limited [$\\mu$m]')
+                    hcipy.imshow_field(segmented_mirror_surface * 1e6, cmap='RdBu', vmin=-7, vmax=7, mask=aperture_mask)
+                    # plt.imshow(obs_frame, cmap='inferno') #
+                    plt.colorbar()
+                    
+                    plt.subplot(num_rows,num_cols,8)
+                    plt.title('segmented_mirror_surface unlimited [$\\mu$m]')
+                    hcipy.imshow_field(segmented_mirror_surface * 1e6, cmap='RdBu', mask=aperture_mask)
                     # plt.imshow(obs_frame, cmap='inferno') #
                     plt.colorbar()
                     

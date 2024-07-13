@@ -234,6 +234,9 @@ class OpticalSystem(object):
 
         self.report_time = kwargs["report_time"]
         self.microns_opd_per_actuator_bit = 0.00015
+        self.num_apertures = 15
+
+        self.num_tensioners = kwargs["num_tensioners"]
 
         # Parameters for the pupil function
         focal_length = 200.0 # m
@@ -270,6 +273,11 @@ class OpticalSystem(object):
         # TODO: Externalize.
         kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
         focal_plane_extent_metres = kwargs['focal_plane_image_size_meters']
+
+        # Extract the natrual differential motion parameters.
+        self.natural_diff_motion_piston_std_microns = kwargs['natural_diff_motion_piston_std_microns']
+        self.natural_diff_motion_tip_std_microns = kwargs['natural_diff_motion_tip_std_microns']
+        self.natural_diff_motion_tilt_std_microns = kwargs['natural_diff_motion_tilt_std_microns']
         
         focal_plane_resolution_element = self.wavelength * focal_length / pupil_diameter
         focal_plane_pixels_per_meter = num_focal_grid_pixels / focal_plane_extent_metres
@@ -278,6 +286,12 @@ class OpticalSystem(object):
 
         # Initialize an empty DM interaction matrix; this will be populated during reset().
         self.interaction_matrix = None
+
+
+        interaction_size = 9
+        self._optomech_encoder = np.random.randn(self.num_tensioners, interaction_size)
+        self._optomech_decoder = np.random.randn(interaction_size, self.num_apertures * 3)
+
 
         # This combination sets the focal 
         # sampling: The number of pixels per resolution element (= lambda f / D).
@@ -375,7 +389,7 @@ class OpticalSystem(object):
             # Instantiate a segmented aperture.
             aperture, segments = self.make_elf_aperture(
                 pupil_diameter=elf_segment_centroid_diameter,
-                num_apertures=15,
+                num_apertures=self.num_apertures,
                 segment_diameter=0.5,
                 return_segments=True,
             )
@@ -467,6 +481,7 @@ class OpticalSystem(object):
         # Note: The camera is noiseless here because we can add noise in the Env step().
         self.camera = hcipy.NoiselessDetector(focal_grid)
     
+
     def make_object_field(self, array, center=None):
         '''Makes a Field generator for an object plane.
 
@@ -512,6 +527,7 @@ class OpticalSystem(object):
 
         return
 
+
     def command_dm(self, command_grid):
 
         meters_opd_per_actuator_bit = self.microns_opd_per_actuator_bit * 1e-6
@@ -520,6 +536,7 @@ class OpticalSystem(object):
 
         return
     
+
     def simulate(self):
 
 
@@ -530,6 +547,7 @@ class OpticalSystem(object):
         use_geometric_optics = True
 
         object_wavefront_start_time = time.time()
+
         # If I comment this, the focal plane images are garbage.
         if use_geometric_optics:
 
@@ -557,6 +575,17 @@ class OpticalSystem(object):
         if self.report_time:
             print("--- Atmosphere Forward time: %0.6f" % (time.time() - atmosphere_forward_start_time))
 
+        natural_diff_motion_start_time = time.time()
+        # Simulate natural differential motion of the segmented mirror.
+        self._simulate_natural_diff_motion(
+            natural_diff_motion_piston_std=self.natural_diff_motion_piston_std_microns,
+            natural_diff_motion_tip_std=self.natural_diff_motion_tip_std_microns,
+            natural_diff_motion_tilt_std=self.natural_diff_motion_tilt_std_microns
+        )
+
+        if self.report_time:
+            print("--- Natural Diff Motion time: %0.6f" % (time.time() - natural_diff_motion_start_time))
+
 
         segmented_mirror_forward_start_time = time.time()
         # Apply the segmented mirror pupil to the post-atmosphere wavefront.
@@ -566,8 +595,6 @@ class OpticalSystem(object):
 
         if self.report_time:
             print("--- Segments Forward time: %0.6f" % (time.time() - segmented_mirror_forward_start_time))
-
-
 
         dm_forawrd_start_time = time.time()
         # Propagate the wavefront from the segmented mirror through the DM.
@@ -590,8 +617,9 @@ class OpticalSystem(object):
         )
 
         if self.report_time:
-            print("-- Pupil-Focal Propagation time: %0.6f" % (time.time() - pupil_focal_prop_start_time))
+            print("--- Pupil-Focal Propagation time: %0.6f" % (time.time() - pupil_focal_prop_start_time))
     
+
     def get_shwfs_frame(self, integration_seconds=1.0):
 
         self.shwfs_camera.integrate(self.shwfs(self.magnifier(self.post_dm_wavefront)), integration_seconds)
@@ -599,6 +627,7 @@ class OpticalSystem(object):
 
         return shwfs_readout_image
     
+
     def calibrate_dm_interaction_matrix(self):
 
         probe_amp = 0.01 * self.wavelength
@@ -652,8 +681,6 @@ class OpticalSystem(object):
         self.interaction_matrix = hcipy.ModeBasis(response_matrix)
 
 
-
-
     def randomize_dm(self):
 
             self.dm.actuators = np.random.randn(len(self.dm.actuators)) / (np.arange(len(self.dm.actuators)) + 10)
@@ -661,6 +688,7 @@ class OpticalSystem(object):
             # self.dm.flatten()
             # self.dm.random(1e-6)
     
+
     def get_science_frame(self, integration_seconds=1.0):
 
         integration_start_time = time.time()
@@ -687,8 +715,8 @@ class OpticalSystem(object):
 
             self.instantaneous_psf = effective_psf
 
-            self.instantaneous_psf
-            print("self.instantaneous_psf %3.16f" % np.std(self.instantaneous_psf))
+            # self.instantaneous_psf
+            # print("self.instantaneous_psf %3.16f" % np.std(self.instantaneous_psf))
 
             if self.report_time:
                 print("-- Readout time: %0.6f" % (time.time() - read_out_start_time))
@@ -779,7 +807,210 @@ class OpticalSystem(object):
 
             return aperture
 
+    def command_tensioners(self, tensioner_commands):
 
+        direct_tension_command = True
+
+        if direct_tension_command:
+
+            tension_forces = tensioner_commands
+
+        else:
+            tension_forces += tensioner_commands
+
+        self._optomechanical_interaction(tension_forces)
+
+        return
+
+    def _optomechanical_interaction(self, tension_forces):
+
+        """
+        This function maps the current state of the tensioners to an a optical
+        figure modification expressed as a global offset.
+        """
+
+        # print(tensions)
+
+        optomech_embedding = np.tanh(tension_forces.dot(self._optomech_encoder))
+
+        optomech_ptt_displacements = np.tanh(optomech_embedding.dot(self._optomech_decoder))
+
+        # Three displacements per aperture.
+        optomech_ptt_displacements = optomech_ptt_displacements.reshape((self.num_apertures, 3))
+
+        self._apply_ptt_displacements(ptt_displacements=optomech_ptt_displacements)
+
+        # for segment_id in range(self.num_apertures):
+
+
+        #     (segment_piston,
+        #      segment_tip,
+        #      segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+        #     print("before")
+        #     print(optomech_ptt_displacements)
+        #     print(segment_piston)
+
+
+        #     # TODO: Enforce applied force limits.
+
+        #     segment_piston += optomech_ptt_displacements[segment_id, 0]
+        #     segment_tip += optomech_ptt_displacements[segment_id, 1]
+        #     segment_tilt += optomech_ptt_displacements[segment_id, 2]
+
+        #     # TODO: Remove after testing.
+        #     if segment_id == 7:
+        #         segment_piston += 1.0 * 1e-7
+        #     if segment_id == 8:
+        #         segment_tip += 3.0 * 1e-7
+        #     if segment_id == 13:
+        #         segment_tilt += 4.0 * 1e-7
+
+        #     print("after")
+        #     print(segment_piston)
+
+        #     self.segmented_mirror.set_segment_actuators(segment_id,
+        #                                                 segment_piston,
+        #                                                 segment_tip,
+        #                                                 segment_tilt) 
+
+        # print(optomech_coefs)
+
+        return
+    
+    def _simulate_natural_diff_motion(self,
+                                      natural_diff_motion_piston_std=0.0,
+                                      natural_diff_motion_tip_std=0.0,
+                                      natural_diff_motion_tilt_std=0.0):
+        
+        """
+        Simulate natural differential motion of the segmented mirror.
+        
+        
+        Parameters
+        ----------
+        natural_diff_motion_piston_std : float
+            The standard deviation of the piston displacements in microns.
+        natural_diff_motion_tip_std : float
+            The standard deviation of the tip displacements in microns.
+        natural_diff_motion_tilt_std : float
+            The standard deviation of the tilt displacements in microns.
+
+        
+        """
+
+        # Generate a sample of ptt displacements.
+        ptt_displacements = np.random.randn(self.num_apertures, 3)
+        # Microns to meters 1.0 -> 1e-6
+        ptt_displacements[:, 0] *= natural_diff_motion_piston_std * 1e-6
+        ptt_displacements[:, 1] *= natural_diff_motion_tip_std * 1e-6
+        ptt_displacements[:, 2] *= natural_diff_motion_tilt_std * 1e-6
+
+        # Apply the displacements.
+        self._apply_ptt_displacements(ptt_displacements)
+        
+
+        return
+    
+    
+    def _apply_ptt_displacements(self, ptt_displacements):
+        """
+        Apply the provided incremental PTT displacements to the segmented mirror.
+
+        Parameters
+        ----------
+        ptt_displacements : np.ndarray
+            An array of shape (num_apertures, 3) containing the incremental
+            PTT displacements to be applied to each segment
+
+
+        """
+        
+        
+        # Iterate over each segment, applying the provided displacements.
+        for segment_id in range(self.num_apertures):
+
+            # First, get the ptt displacements in meters of of this segement...
+            (segment_piston,
+             segment_tip,
+             segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+            # print("before")
+            # print(ptt_displacements)
+            # print(segment_piston)
+
+            # Then, add the commanded displacements, also in meters.
+            # TODO: Enforce applied force limits.
+            segment_piston += ptt_displacements[segment_id, 0]
+            segment_tip += ptt_displacements[segment_id, 1]
+            segment_tilt += ptt_displacements[segment_id, 2]
+
+            # # TODO: Remove after testing.
+            # if segment_id == 7:
+            #     segment_piston += 1.0 * 1e-6
+            # if segment_id == 8:
+            #     segment_tip += 3.0 * 1e-6
+            # if segment_id == 13:
+            #     segment_tilt += 4.0 * 1e-6
+
+            # print("after")
+            # print(segment_piston)
+
+            # And finally, set the segment deflections using the segments HCIPy "acutators."
+            self.segmented_mirror.set_segment_actuators(segment_id,
+                                                        segment_piston,
+                                                        segment_tip,
+                                                        segment_tilt) 
+
+        # print(optomech_coefs)
+    
+    def command_secondaries(self, secondaries_commands):
+
+        """
+        Command the segmented mirror to a new state using the provided commands.
+
+        Parameters
+        ----------
+
+        
+        """
+        
+        secondaries_ptt_displacements = secondaries_commands
+
+        # TODO: Refactor to extract tuples to np array and use _apply_ptt_displacements.
+        for segment_id in range(self.num_apertures):
+
+            
+            (segment_piston,
+             segment_tip,
+             segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+            # print("before")
+            # print(secondaries_ptt_displacements)
+            # print(segment_piston)
+
+            # TODO: Enforce correction limits.
+            segment_piston += secondaries_ptt_displacements[segment_id][0]
+            segment_tip += secondaries_ptt_displacements[segment_id][1]
+            segment_tilt += secondaries_ptt_displacements[segment_id][2]
+
+            # # TODO: Remove after testing.
+            # if segment_id == 5:
+            #     segment_piston += 1.0 * 1e-7
+            # if segment_id == 3:
+            #     segment_tip += -3.0 * 1e-7
+            # if segment_id == 11:
+            #     segment_tilt += -4.0 * 1e-7
+
+            # print("after")
+            # print(segment_piston)
+
+            self.segmented_mirror.set_segment_actuators(segment_id,
+                                                        segment_piston,
+                                                        segment_tip,
+                                                        segment_tilt) 
+
+
+        return
+
+    
 
 class DasieEnv(gym.Env):
     """
@@ -932,20 +1163,130 @@ class DasieEnv(gym.Env):
         #                                dtype=np.int16)
 
         # FEATURE: Redefining to allow for better DM calibration.
-        num_dm_modes = 500
-        self.actuator_command_grid = np.zeros(
-            shape=(num_dm_modes),
-            dtype=np.float32
-        )
-        # FEATURE: redefining action space to match mode-based DM.
-        action_shape = (self.commands_per_decision,
-                        num_dm_modes)
-        # FEATURE: redefining action space to match mode-based DM; replace stroke limits.
-        self.action_space = spaces.Box(low=-self.stroke_count_limit,
-                                       high=self.stroke_count_limit,
-                                       shape=action_shape,
-                                       dtype=np.float32)
+        # num_dm_modes = 500
+        # self.actuator_command_grid = np.zeros(
+        #     shape=(num_dm_modes),
+        #     dtype=np.float32
+        # )
+        # # FEATURE: redefining action space to match mode-based DM.
+        # action_shape = (self.commands_per_decision,
+        #                 num_dm_modes)
+        # # FEATURE: redefining action space to match mode-based DM; replace stroke limits.
+        # self.action_space = spaces.Box(low=-self.stroke_count_limit,
+        #                                high=self.stroke_count_limit,
+        #                                shape=action_shape,
+        #                                dtype=np.float32)
+        
+        # # FEATURE: reconfiguring action space to optomech
+        # num_tensioners = 16
+        # self.optical_system.num_apertures
 
+        # action_shape = (self.commands_per_decision,
+        #                 ((1, num_tensioners),
+        #                  (3, self.optical_system.num_apertures)
+        #                 ))
+        
+
+        # >>> from gymnasium.spaces import Tuple, Box, Discrete
+        # >>> observation_space = Tuple((Discrete(2), Box(-1, 1, shape=(2,))), seed=42)
+        # >>> observation_space.sample()
+        # (0, array([-0.3991573 ,  0.21649833], dtype=float32))
+
+        # spaces.Tuple((spaces.Discrete(2), spaces.Box(0.0, 1,0, shape=(2,))), seed=42)
+
+        ptt_space = spaces.Box(low=0.0,
+                               high=1.0,
+                               shape=(3,),
+                               dtype=np.float32)
+        
+        
+        # TODO: Later figure out how to do this properly. self.optical_system.num_apertures
+        secondaries_space = spaces.Tuple((
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ptt_space,
+            ))
+        
+        tensioners_space = spaces.Box(low=0.0,
+                                      high=1.0,
+                                      shape=(self.optical_system.num_tensioners,),
+                                      dtype=np.float32)
+        
+        single_command_space = spaces.Tuple((secondaries_space,
+                                             tensioners_space))
+        
+        # TODO: do this properly. self.commands_per_decision
+        self.action_space = spaces.Tuple((single_command_space,
+                                          single_command_space))
+
+        # TODO: There has got to be a better way to do this.
+        zero_ptt_space = spaces.Box(low=0.0,
+                               high=0.0,
+                               shape=(3,),
+                               dtype=np.float32)
+        
+        
+        # TODO: Later figure out how to do this properly. self.optical_system.num_apertures
+        zero_secondaries_space = spaces.Tuple((
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            zero_ptt_space,
+            ))
+        
+        zero_tensioners_space = spaces.Box(low=0.0,
+                                      high=0.0,
+                                      shape=(self.optical_system.num_tensioners,),
+                                      dtype=np.float32)
+        
+        zero_single_command_space = spaces.Tuple((zero_secondaries_space,
+                                                  zero_tensioners_space))
+        
+        # TODO: do this properly. self.commands_per_decision
+        self.zero_action_space = spaces.Tuple((zero_single_command_space,
+                                          zero_single_command_space))
+
+        # zeroed_commands = tuple(2)
+        # for command in action_sample:
+
+        #     secondaries_commands = command[0]
+        #     zeroed_secondaries_commands = tuple()
+        #     for secondaries_command in secondaries_commands:
+        #         zeroed_secondary = np.zeros_like(secondaries_command)
+        #         zeroed_secondaries_commands
+        #         zeroed_secondary
+        #     tensioners_commands = command[1]
+        #     zeroed_tensioner_command = np.zeroes_like(tensioners_commands)
+
+        #     zeroed_command = (zeroed_secondaries_commands, zeroed_tensioner_command)
+        #     zeroed_commands += zeroed_command
+
+        # print(zeroed_commands)
+
+        # die
 
         # Compute the image shape.
         self.image_shape = (kwargs['focal_plane_image_size_pixels'],
@@ -991,7 +1332,9 @@ class DasieEnv(gym.Env):
     
         print("Populating Initial Action")
 
-        self.action = np.zeros_like(self.action_space.sample())
+
+        # self.action = np.zeros_like(self.action_space.sample())
+        self.action = self.zero_action_space.sample()
 
         print("Populating Initial State")
 
@@ -1003,13 +1346,13 @@ class DasieEnv(gym.Env):
         
         # Build a DM command that corresponds to the calibration noise.
         # TODO: refactor to remove sampling.
-        ones_like_action = np.ones_like(self.action_space.sample())
-        zeros_like_action = np.zeros_like(self.action_space.sample())
-        dm_calibration_noise = np.random.normal(
-            loc=zeros_like_action,
-            scale=calibration_noise_counts * ones_like_action
-        )
-        dm_calibration_noise_counts = dm_calibration_noise.astype(np.int16)
+        # ones_like_action = np.ones_like(self.action_space.sample())
+        # zeros_like_action = np.zeros_like(self.action_space.sample())
+        # dm_calibration_noise = np.random.normal(
+        #     loc=zeros_like_action,
+        #     scale=calibration_noise_counts * ones_like_action
+        # )
+        # dm_calibration_noise_counts = dm_calibration_noise.astype(np.int16)
 
 
         if self.randomize_dm:
@@ -1020,7 +1363,7 @@ class DasieEnv(gym.Env):
         for _ in range(self.frames_per_decision):
 
             (initial_state, _, _, _, _) = self.step(
-                action=np.zeros_like(self.action_space.sample()),
+                action=self.zero_action_space.sample(),
                 noisy_command=False,
                 ao_loop_active=False,
                 reset=True
@@ -1160,9 +1503,11 @@ class DasieEnv(gym.Env):
 
                 # Get the commanded actuations.
                 # TODO: Extend action to be a tuple of p/t/t secondaries, optomech, and dm.
-                dm_command = action[command_num]
+                command = action[command_num]
                 
                 # If this command is noisy. Otherwise, don't.
+                # TODO: Depricate noise commands here, moving them into optical system.
+                noisy_command = False
                 if noisy_command:
 
                     # Add noise to the command.
@@ -1182,7 +1527,19 @@ class DasieEnv(gym.Env):
                 else:
                     
                     # Apply the command to the DM.
-                    self.optical_system.command_dm(dm_command)
+                    # self.optical_system.command_dm(dm_command)
+
+                    # print(command)
+
+                    # die
+
+                    # command = action[command_num]
+
+                    tensioner_commands = command[1]
+                    secondaries_commands = command[0]
+
+                    self.optical_system.command_tensioners(tensioner_commands)
+                    self.optical_system.command_secondaries(secondaries_commands)
 
                 # Compute the number of seconds of integration per AO loop step.
                 frame_interval_seconds = self.frame_interval_ms / 1000.0
@@ -1218,7 +1575,7 @@ class DasieEnv(gym.Env):
                         self.shwfs_slopes = shwfs_slopes.ravel()
 
                         # Perform wavefront compensation by setting the DM actuators.
-                        self.optical_system.dm.actuators = (1 - self.leakage) * self.optical_system.dm.actuators - self.gain * self.reconstruction_matrix.dot(self.shwfs_slopes)
+                        self.optical_system.dm.actuators = (1 - self.dm_leakage) * self.optical_system.dm.actuators - self.dm_gain * self.reconstruction_matrix.dot(self.shwfs_slopes)
 
                     if self.report_time:
                         print("-- AO Step time: %.6f" % (time.time() - ao_step_time_start))
