@@ -1,6 +1,9 @@
 # Visuomotor Deep Optics
 
-This repository implements an active deep optics approach, in which an agent model is trained to control an optomechanical system to mazimize episodic reward from an environment that, in turn, contains a task model. 
+This repository implements a model of a dynamic, partially controllable optomechanical system. 
+
+[//]: # (This repository implements an active deep optics approach, in which an agent model is trained to control an optomechanical system to mazimize episodic reward from an environment that, in turn, contains a task model. )
+
 
 ## Install
 
@@ -150,21 +153,30 @@ python deep-optics-gym/render_history.py --episode_info_dir=/Users/fletcher/rese
 Now that we know the AO is working, we can increase the scenario complexity until it fails, thereby establishing the task to be addressed by an autonomous agent. The following command will construct a scenario in which the differential motion of the sub-apertures is realistic, which prevents AO loop closure. Here, differential motion is a forward-controllable proxy for phase wrap - as differential motion increases, so does the maximium phase difference across a wavefront.
 
 ```
-python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf --natural_diff_motion_piston_std_microns=10.0 --natural_diff_motion_tip_std_microns=1.0 --natural_diff_motion_tilt_std_microns=1.0
+python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf --simulate_differential_motion
 ```
 
-In the example below, the post-correction surface of the segments are shown. Due to the random walk of the natural differntial motion they vary across time and prevent AO loop closure.
+In the example below, the post-correction surface of the segments are shown. Due to the random walk of the natural differential motion they vary across time and prevent AO loop closure.
 
 ```
 python deep-optics-gym/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=diffmotion
 ```
 
-By sweeping over the parameter that controls the distribution of sub-aperture differential motion, we can plot the falloff in attainable Strehl as a function of mean differntial motion. The command below will run a script that performs this experiment.
+By running this experiment, we see that AO correction begins to fail under conditions of relatively modest differential motion. This poses the problem to be solved: we must produce an agent that mitigates natural differential motion to improve wavefront stability and allow the AO loop to close. Since AO loop closure is our first objective, we introduce a reward function that is a proxy for that objective. The next command will run a few steps in an environment with this reward. Note that the agent here is a null agent, it takes no action.
 
 ```
+python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf --simulate_differential_motion --reward_function=ao_rms_slope
 ```
 
-By running this experiment, we see that AO correction begins to fail under conditions of relatively modest differential motion. Our task is to build an agent that expands range of correctable uncompensated differential motion. As baseline is increased, uncompensated differential motion will also increase. So, we can also formulate our task in terms of baseline: to successfully field a telescope of a desired baseline, we must first develop and agent that capable of correcting the uncompensated differential motion implied by that baseline. Baseline is, in turn, dictated by the target of observation. We can characterize targets in terms of the angular resolution and contrast needed to adequetly image the scene. In this work, we will focus only on angular resolution, as contrast requires simultaneous supression of the starlight. [Idea: we coulad actually use the max uncompenated differential motion as reward. It's readily availible in simulation, but could be characterized and then induced on a real system by introducing random commands during the training period for the embodied agent.]
+Now we have all we need to visualize the problem from our agent's point of view. The next command renders the environment as the agent would see it. Each step is rendered individually, beginning with the focal plane observations that inform the agent. The agents actions are shown as tensors encoding control surface commands, and several environment and performance values are plotted. 
+
+```
+python deep-optics-gym/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=agent_view
+```
+
+Note that the agent here is a null agent - it takes no action. To visualize a randomly acting agent, rerun the experiment and switch `action_type=none` to `action_type=random`. 
+
+Our task is to build an agent that expands range of correctable uncompensated differential motion. As baseline is increased, uncompensated differential motion will also increase. So, we can also formulate our task in terms of baseline: to successfully field a telescope of a desired baseline, we must first develop an agent that is capable of correcting the uncompensated differential motion implied by that baseline. Baseline is, in turn, dictated by the target of observation. We can characterize targets in terms of the angular resolution and contrast needed to adequetly image the scene. In this work, we will focus only on angular resolution, as contrast requires simultaneous supression of the starlight. [Idea: we could use the max uncompesated differential motion as reward. It's readily availible in simulation, but could be characterized and then induced on a real system by introducing random commands during the training period for the embodied agent.]
 
 ## Major Features to be Added
 
@@ -181,8 +193,8 @@ in the repo at which some of these features should be implemented with "Major Fe
 - [X] A mock tensegrity model to map control commands to low-order aberations; update action shape.
 - [ ] A physically-informed tensegrity model to map control commands to low-order aberations.
 - [X] Add differential motion directly to the segments in the optical system model.
-- [ ] Add a direct exoplanet imaging scene model to the object plane generator.
-
+- [ ] Add a direct exoplanet imaging astrophysical scene model to the object plane generator.
+- [ ] Add a reward and training render view.
 ## Known Issues
 
-- There is a very sus correlation between the pupil-focal propogation speed and the atmosphere propogation speed. To see this, run `python deep-optics-gym/run_dasie_via_gym.py --report_time --record_env_state_info --num_atmosphere_layers=2` and inspect the logs to see these two speeds. They vary together, but there's no reason I can find why they should. This suggests that something is being recomputed, which may yield unphysical behavour. The best debug step is to save and then render the atmosphere history of an episode and see if it's continuous.
+
