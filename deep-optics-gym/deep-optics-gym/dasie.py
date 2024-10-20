@@ -19,6 +19,7 @@ import numpy as np
 from collections import deque
 
 from scipy import signal
+from anytree import Node, RenderTree
 
 
 import scipy.ndimage as ndimage
@@ -53,7 +54,7 @@ def gaussian_kernel(n, std, normalised=False):
     Generates a n x n matrix with a centered gaussian 
     of standard deviation std centered on it. If normalised,
     its volume equals 1.'''
-    gaussian1D = signal.gaussian(n, std)
+    gaussian1D = signal.windows.gaussian(n, std)
     gaussian2D = np.outer(gaussian1D, gaussian1D)
     if normalised:
         gaussian2D /= (2*np.pi*(std**2))
@@ -79,6 +80,16 @@ def offset_gaussian(n,
     y_end = int(mu_y + kernel_extent // 2)
 
     scene_array[x_start:x_end, y_start:y_end] = source_array
+
+    return scene_array
+
+def one_hot_array(n,
+                  x,
+                  y,
+                  value=1.0):
+
+    scene_array = np.zeros((n, n))
+    scene_array[x, y] = value
 
     return scene_array
 
@@ -209,20 +220,18 @@ class ObjectPlane(object):
         # 0.02 arcsec fwhm
         # magnitude_response_function 16-bit value to: mag 9 star will give 5000 counts at 12 ms
         std = 1
-        kernel_extent = 8 * std
+        kernel_extent = 1
 
         # TODO: make mu_y and mu_x determined by source_position.
         # mu_x = self.extent_pixels // 4
         # mu_y = self.extent_pixels // 4
-        mu_x = self.extent_pixels // 2
-        mu_y = self.extent_pixels // 2
+        x = self.extent_pixels // 2
+        y = self.extent_pixels // 2
 
-        return offset_gaussian(self.extent_pixels,
-                               mu_x,
-                               mu_y,
-                               std,
-                               kernel_extent,
-                               normalised=True)
+        return one_hot_array(self.extent_pixels,
+                             x,
+                             y,
+                             value=1.0)
 
     def rgb2gray(self, rgb):
         return np.dot(rgb[...,:3], [0.2989, 0.5870, 0.1140])
@@ -239,13 +248,15 @@ class OpticalSystem(object):
         self.num_tensioners = kwargs["num_tensioners"]
 
         # Parameters for the pupil function
+        # focal_length = 200.0 # m
         focal_length = 200.0 # m
         pupil_diameter = 3.6 # m
         elf_segment_centroid_diameter = 2.5 # m
         
         # Parameters for the optical simulation.
         num_pupil_grid_simulation_pixels = kwargs['focal_plane_image_size_pixels']
-        self.wavelength = 763e-9
+        # self.wavelength = 763e-9
+        self.wavelength = 1000e-9
         aperture_type = kwargs['aperture_type']
         oversampling_factor = 8
 
@@ -261,6 +272,7 @@ class OpticalSystem(object):
         tau0 = 1.0 / 30.0 # seconds (30 hz)
 
         self.simulate_differential_motion = kwargs['simulate_differential_motion']
+        self.init_differential_motion = kwargs['init_differential_motion']
 
         # Parameters for the structual wind response model.
         # TODO: Externalize.
@@ -302,26 +314,38 @@ class OpticalSystem(object):
         velocity = 0.314 * fried_parameter / tau0
 
         # Extract the provided focal plane pararmeters.
+        # TODO: Refactor to add a separate focal grid for the SHWFS.
         num_focal_grid_pixels = kwargs['focal_plane_image_size_pixels']
         # TODO: Externalize.
         kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
         focal_plane_extent_metres = kwargs['focal_plane_image_size_meters']
+
+        airy_extent_radians = 1.22 * self.wavelength / pupil_diameter
+        airy_extent_meters = airy_extent_radians * focal_length
+        focal_plane_pixel_extent_meters = focal_plane_extent_metres / num_focal_grid_pixels
+        sampling = airy_extent_meters / focal_plane_pixel_extent_meters
+
+
 
         focal_plane_resolution_element = self.wavelength * focal_length / pupil_diameter
         focal_plane_pixels_per_meter = num_focal_grid_pixels / focal_plane_extent_metres
         focal_plane_pixel_extent_meters = focal_plane_extent_metres /  num_focal_grid_pixels
         self.ifov = 206265 / focal_length * focal_plane_pixel_extent_meters
 
-        # Initialize an empty structual interaction matrix.
-        self.interaction_matrix = None
-        interaction_size = 9
-        self._optomech_encoder = np.random.randn(self.num_tensioners, interaction_size)
-        self._optomech_decoder = np.random.randn(interaction_size, self.num_apertures * 3)
 
         # sampling: The number of pixels per resolution element (= lambda f / D).
-        sampling = focal_plane_resolution_element / focal_plane_pixel_extent_meters
+        # sampling = focal_plane_resolution_element / focal_plane_pixel_extent_meters
         # num_airy: The spatial extent of the grid in radius in resolution elements (= lambda f / D).
-        num_airy = num_focal_grid_pixels / (sampling * 2)
+        num_airy = num_focal_grid_pixels / (2 * sampling)
+
+
+
+        # Initialize an empty structual interaction matrix.
+        self.interaction_matrix = None
+        interaction_size = 1
+        self._optomech_encoder = np.random.rand(self.num_tensioners, interaction_size)
+        self._optomech_decoder = np.random.rand(interaction_size, self.num_apertures * 3)
+
 
         # Log computed values to aid in debugging.
         print("num_focal_grid_pixels: %s" % num_focal_grid_pixels)
@@ -402,6 +426,49 @@ class OpticalSystem(object):
             self.segmented_mirror = hcipy.SegmentedDeformableMirror(segments)
             self.aperture = aperture
 
+            wavefront = hcipy.Wavefront(self.aperture, self.wavelength)
+            perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
+
+            # pupil_grid = hcipy.make_pupil_grid(
+            #     256,
+            #     diameter=pupil_diameter
+            # )
+            # focal_grid = hcipy.make_focal_grid(
+            #     q=sampling,
+            #     num_airy=num_airy,
+            #     spatial_resolution=self.wavelength * focal_length / pupil_diameter,
+            # )
+            # prop = hcipy.FraunhoferPropagator(pupil_grid, focal_grid)
+
+            # pupil_grid = hcipy.make_pupil_grid(256)
+            # wavefront = hcipy.Wavefront(aperture)
+            # focal_grid = hcipy.make_focal_grid(q=8, num_airy=16)
+            # prop = hcipy.FraunhoferPropagator(pupil_grid, focal_grid)
+            # focal_image_thiers = prop.forward(wavefront)
+
+            # fig = plt.figure()
+            # plt.subplot(1, 2, 1)
+            # plt.title('focal_image_thiers')
+            # hcipy.imshow_field(np.log10(focal_image_thiers.intensity / focal_image_thiers.intensity.max()), vmin=-5)
+            # plt.xlabel('Focal plane distance [$\lambda/D$]')
+            # plt.ylabel('Focal plane distance [$\lambda/D$]')
+            # plt.colorbar()
+        
+            # plt.subplot(1, 2, 2)
+            # plt.title('focal_image_ours')
+            # hcipy.imshow_field(np.log10(focal_image_ours.intensity / focal_image_ours.intensity.max()), vmin=-5)
+            # plt.xlabel('Focal plane distance [$\lambda/D$]')
+            # plt.ylabel('Focal plane distance [$\lambda/D$]')
+            # plt.colorbar()
+            # plt.show()
+            # die
+
+            self.perfect_image = perfect_image.intensity
+    
+
+            # Store the baseline segment displacements.
+            self._store_baseline_segment_displacements()
+
         elif aperture_type == "circular":
 
             # Instantiate a circular aperture.
@@ -430,6 +497,9 @@ class OpticalSystem(object):
             self.segmented_mirror = hcipy.SegmentedDeformableMirror(segments)
             self.aperture = aperture
 
+            # Store the baseline segment displacements.
+            self._store_baseline_segment_displacements()
+
         else:
 
             # Note: if you add aperture types, update this exception.
@@ -454,12 +524,22 @@ class OpticalSystem(object):
             self.shwfs.mla_grid,
             self.shwfs.micro_lens_array.mla_index
         )
+
+        # TODO: Refactor to add a separate focal grid for the SHWFS.
         self.shwfs_camera = hcipy.NoiselessDetector(focal_grid)
 
         # Instantiate a deformable mirror.
         num_modes = 500
-        dm_modes = hcipy.make_disk_harmonic_basis(self.pupil_grid, num_modes, pupil_diameter, 'neumann')
-        dm_modes = hcipy.ModeBasis([mode / np.ptp(mode) for mode in dm_modes], self.pupil_grid)
+        dm_modes = hcipy.make_disk_harmonic_basis(
+            self.pupil_grid,
+            num_modes,
+            pupil_diameter,
+            'neumann'
+        )
+        dm_modes = hcipy.ModeBasis(
+            [mode / np.ptp(mode) for mode in dm_modes],
+            self.pupil_grid
+        )
         self.dm = hcipy.DeformableMirror(dm_modes)
 
         # TODO: Remove?
@@ -472,12 +552,14 @@ class OpticalSystem(object):
         # self.dm = hcipy.DeformableMirror(self.dm_influence_functions)
 
         # Initialize natural structural differential motion.
-        if self.simulate_differential_motion:
+        if self.init_differential_motion:
+            print("Initializing differential motion.")
             self._init_natural_diff_motion()
-        
+            
         # Finally, make a camera.
-        # Note: The camera is noiseless here because we can add noise in the Env step().
+        # Note: The camera is noiseless here; we add noise in the Env step().
         self.camera = hcipy.NoiselessDetector(focal_grid)
+
     
 
     def make_object_field(self, array, center=None):
@@ -542,7 +624,6 @@ class OpticalSystem(object):
 
         # Make a pupil plane wavefront from aperture
 
-
         object_wavefront_start_time = time.time()
 
 
@@ -555,6 +636,7 @@ class OpticalSystem(object):
             print("--- Object Wavefront time: %0.6f" % (time.time() - object_wavefront_start_time))
 
         atmosphere_forward_start_time = time.time()
+
         # Propagate the object plane wavefront through the atmosphere layers.
         wf = self.pre_atmosphere_object_wavefront
         for atmosphere_layer in self.atmosphere_layers:
@@ -564,9 +646,10 @@ class OpticalSystem(object):
         if self.report_time:
             print("--- Atmosphere Forward time: %0.6f" % (time.time() - atmosphere_forward_start_time))
 
-
         if self.simulate_differential_motion:
+
             natural_diff_motion_start_time = time.time()
+
             # Simulate natural differential motion of the segmented mirror.
             self._simulate_natural_diff_motion()
 
@@ -589,15 +672,12 @@ class OpticalSystem(object):
         self.post_dm_wavefront = self.dm.forward(self.pupil_wavefront)
 
         if self.report_time:
-            print("--- DM Forward time: %0.6f" % (time.time() - dm_forawrd_start_time))
-        # self.post_dm_wavefront = self.dm(self.post_atmosphere_wavefront)
 
-        # TODO: Add Fresnel prop m1 -> m2 (focal length: tbd)
-        # Propagate from the pupil (M1) to the DM (M2).
+            print("--- DM Forward time: %0.6f" % (time.time() - dm_forawrd_start_time))
       
         pupil_focal_prop_start_time = time.time()
+
         # Propagate from the DM (M2) to the focal (image) plane.
-        # Note: counter-intutively, the propagator must be re-applied as well.
         # TODO: rename pupil_to_focal_propagator to dm_to_focal_propagator
         # NOTE: This is the ahmdal op: the longest-running command.
         self.focal_plane_wavefront = self.pupil_to_focal_propagator(
@@ -803,51 +883,26 @@ class OpticalSystem(object):
         figure modification expressed as a global offset.
         """
 
-        # print(tensions)
+        # Convert the tuple of tension force arrays to a numpy array.
+        tension_forces = np.transpose(np.array(tension_forces))
 
-        optomech_embedding = np.tanh(tension_forces.dot(self._optomech_encoder))
+        # A simple, random MLP approximation of the optomechanical interaction.
+        # TODO: Add a weight import functionality in the constructor.
+        # TODO: Add a direct tensegrity simulator call here.
+        # optomech_embedding = np.tanh(tension_forces.dot(self._optomech_encoder))
+        # optomech_ptt_displacements = np.tanh(optomech_embedding.dot(self._optomech_decoder))
+        optomech_embedding = tension_forces.dot(self._optomech_encoder)
+        optomech_ptt_displacements = optomech_embedding.dot(self._optomech_decoder)
 
-        optomech_ptt_displacements = np.tanh(optomech_embedding.dot(self._optomech_decoder))
-
-        # Three displacements per aperture.
+        # Reshape the outputs to model three displacements per aperture.
         optomech_ptt_displacements = optomech_ptt_displacements.reshape((self.num_apertures, 3))
 
+        # Debug
+        optomech_ptt_displacements = np.zeros((self.num_apertures, 3))
+
+
+        # Apply the displacements.
         self._apply_ptt_displacements(ptt_displacements=optomech_ptt_displacements)
-
-        # for segment_id in range(self.num_apertures):
-
-
-        #     (segment_piston,
-        #      segment_tip,
-        #      segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
-        #     print("before")
-        #     print(optomech_ptt_displacements)
-        #     print(segment_piston)
-
-
-        #     # TODO: Enforce applied force limits.
-
-        #     segment_piston += optomech_ptt_displacements[segment_id, 0]
-        #     segment_tip += optomech_ptt_displacements[segment_id, 1]
-        #     segment_tilt += optomech_ptt_displacements[segment_id, 2]
-
-        #     # TODO: Remove after testing.
-        #     if segment_id == 7:
-        #         segment_piston += 1.0 * 1e-7
-        #     if segment_id == 8:
-        #         segment_tip += 3.0 * 1e-7
-        #     if segment_id == 13:
-        #         segment_tilt += 4.0 * 1e-7
-
-        #     print("after")
-        #     print(segment_piston)
-
-        #     self.segmented_mirror.set_segment_actuators(segment_id,
-        #                                                 segment_piston,
-        #                                                 segment_tip,
-        #                                                 segment_tilt) 
-
-        # print(optomech_coefs)
 
         return
     
@@ -904,10 +959,10 @@ class OpticalSystem(object):
         wind_diff_motion_tilt_arcsec_std = (self.ground_wind_speed_mps / 32) 
         wind_ptt_displacements = np.random.randn(self.num_apertures, 3)
         # Sample displacement in meters.
-        wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
-        # Sample displacement in radians.
-        wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
-        wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std * np.pi / (180 * 3600)
+        # wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
+        # # Sample displacement in radians.
+        # wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
+        # wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std * np.pi / (180 * 3600)
         self._apply_ptt_displacements(wind_ptt_displacements)
         
         # # Compute and apply the temperature displacments.
@@ -961,10 +1016,10 @@ class OpticalSystem(object):
         wind_diff_motion_tilt_arcsec_std = 0.25
         wind_ptt_displacements = np.random.randn(self.num_apertures, 3)
         # Sample displacement in meters.
-        wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
-        # Sample displacement in radians.
-        wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
-        wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
+        # wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
+        # # Sample displacement in radians.
+        # wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
+        # wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
         self._apply_ptt_displacements(wind_ptt_displacements)
         
         # Compute and apply the temperature displacments.
@@ -976,10 +1031,10 @@ class OpticalSystem(object):
         temp_diff_motion_tilt_arcsec_std = 0.0
         temp_ptt_displacements = np.random.randn(self.num_apertures, 3)
         # Sample displacement in meters.
-        temp_ptt_displacements[:, 0] *= temp_diff_motion_piston_micron_std * 1e-6
-        # Sample displacement in radians.
-        temp_ptt_displacements[:, 1] *= temp_diff_motion_tip_arcsec_std  * np.pi / (180 * 3600)
-        temp_ptt_displacements[:, 2] *= temp_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
+        # temp_ptt_displacements[:, 0] *= temp_diff_motion_piston_micron_std * 1e-6
+        # # Sample displacement in radians.
+        # temp_ptt_displacements[:, 1] *= temp_diff_motion_tip_arcsec_std  * np.pi / (180 * 3600)
+        # temp_ptt_displacements[:, 2] *= temp_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
         self._apply_ptt_displacements(temp_ptt_displacements)
 
         # Compute and apply the gravity displacments.
@@ -991,10 +1046,10 @@ class OpticalSystem(object):
         gravity_diff_motion_tilt_arcsec_std = 15.0
         gravity_ptt_displacements = np.random.randn(self.num_apertures, 3)
         # Sample displacement in meters.
-        gravity_ptt_displacements[:, 0] *= gravity_diff_motion_piston_micron_std * 1e-6
-        # Sample displacement in radians.
-        gravity_ptt_displacements[:, 1] *= gravity_diff_motion_tip_arcsec_std * np.pi / (180 * 3600) 
-        gravity_ptt_displacements[:, 2] *= gravity_diff_motion_tilt_arcsec_std * np.pi / (180 * 3600)
+        # gravity_ptt_displacements[:, 0] *= gravity_diff_motion_piston_micron_std * 1e-6
+        # # Sample displacement in radians.
+        # gravity_ptt_displacements[:, 1] *= gravity_diff_motion_tip_arcsec_std * np.pi / (180 * 3600) 
+        # gravity_ptt_displacements[:, 2] *= gravity_diff_motion_tilt_arcsec_std * np.pi / (180 * 3600)
         self._apply_ptt_displacements(gravity_ptt_displacements)
     
   
@@ -1006,35 +1061,86 @@ class OpticalSystem(object):
         Parameters
         ----------
         ptt_displacements : np.ndarray
-            An array of shape (num_apertures, 3) containing the incremental
-            PTT displacements to be applied to each segment
+            An array of shape (num_apertures, 3) containing the commanded
+            PTT displacements to be applied to each segment. These are scaled
+            from 0.0 to 1.0, and must be converted to physical units here.
 
 
         """
-        
-        
+
+        segments_ptt_commands = ptt_displacements
+
+        max_piston_correction_micron = 3000.0
+        max_tip_correction_as = 2000.0
+        max_tilt_correction_as = 2000.0
+
+        max_piston_correction_meters = max_piston_correction_micron * 1e-6
+        max_tip_correction_radians = max_tip_correction_as * np.pi / (180 * 3600)
+        max_tilt_correction_radians = max_tilt_correction_as * np.pi / (180 * 3600)
+
         # Iterate over each segment, applying the provided displacements.
         for segment_id in range(self.num_apertures):
 
-            # First, get the ptt displacements in meters of of this segement...
-            (segment_piston,
-             segment_tip,
-             segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+            # TODO: the following three lines need be generalized to nested lists.
+            segment_piston_command = segments_ptt_commands[segment_id, 0]
+            segment_tip_command = segments_ptt_commands[segment_id, 1]
+            segment_tilt_command = segments_ptt_commands[segment_id, 2]
+
+            # segment_piston_command = ((segment_piston_command - (0.5)) * 2)
+            # segment_tip_command = ((segment_tip_command - (0.5)) * 2)
+            # segment_tilt_command = ((segment_tilt_command - (0.5)) * 2)
 
 
-            # Then, add the commanded displacements, also in meters.
-            # TODO: Enforce applied force limits.
-            segment_piston += ptt_displacements[segment_id, 0]
-            segment_tip += ptt_displacements[segment_id, 1]
-            segment_tilt += ptt_displacements[segment_id, 2]
+            segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
+            segment_tip_command_radians = segment_tip_command * max_tip_correction_radians
+            segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
 
 
-            # Set the segment deflections using the segments HCIPy "acutators."
-            self.segmented_mirror.set_segment_actuators(segment_id,
-                                                        segment_piston,
-                                                        segment_tip,
-                                                        segment_tilt) 
+            # TODO: Externalize.
+            direct_command = True
 
+            if direct_command:
+
+                piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
+                tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
+                tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + segment_tilt_command_radians
+
+            else:
+
+
+                # First, get the ptt displacements in meters of of this segement...
+                (segment_piston,
+                 segment_tip,
+                 segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+
+                piston_state = segment_piston + segment_piston_command_meters
+                tip_state = segment_tip + segment_tip_command_radians
+                tilt_state = segment_tilt + segment_tilt_command_radians
+
+                # Enforce limits on incremental commmands.
+                if abs(piston_state) > abs(max_piston_correction_meters):
+                    
+                    # If a command would exceed limits, it is ignored entirely.
+                    piston_state = segment_piston
+                
+                if abs(tip_state) > abs(max_tip_correction_radians):
+
+                    # If a command would exceed limits, it is ignored entirely.
+                    tip_state = segment_tip
+
+                if abs(tilt_state) > abs(max_tilt_correction_radians):
+
+                    # If a command would exceed limits, it is ignored entirely.
+                    tilt_state = segment_tilt
+
+
+            # Set the actuators in meter and radians.
+            self.segmented_mirror.set_segment_actuators(
+                segment_id,
+                piston_state,
+                tip_state,
+                tilt_state
+            ) 
 
     def command_tensioners(self, tensioner_commands):
 
@@ -1052,40 +1158,116 @@ class OpticalSystem(object):
 
         return
 
+    def _store_baseline_segment_displacements(self):
 
-    def command_secondaries(self, secondaries_commands):
+        self.segment_baseline_dict = dict()
 
-        """
-        Command the segmented mirror to a new state using the provided commands.
-
-        Parameters
-        ----------
-
-        
-        """
-        
-        secondaries_ptt_displacements = secondaries_commands
-
-        # TODO: Refactor to extract tuples to np array and use _apply_ptt_displacements.
         for segment_id in range(self.num_apertures):
 
-            
             (segment_piston,
              segment_tip,
              segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
 
-            # TODO: Enforce correction limits.
-            segment_piston += secondaries_ptt_displacements[segment_id][0]
-            segment_tip += secondaries_ptt_displacements[segment_id][1]
-            segment_tilt += secondaries_ptt_displacements[segment_id][2]
-
-            self.segmented_mirror.set_segment_actuators(segment_id,
-                                                        segment_piston,
-                                                        segment_tip,
-                                                        segment_tilt) 
+            self.segment_baseline_dict[segment_id] = {
+                "piston": segment_piston,
+                "tip": segment_tip,
+                "tilt": segment_tilt
+            }
 
 
-        return
+
+    def command_secondaries(self, secondaries_commands):
+
+        """
+        Command the secondaries to a new state using the provided commands.
+
+        Parameters
+        ----------
+        ptt_displacements : np.ndarray
+            An array of shape (num_apertures, 3) containing the commanded
+            PTT displacements to be applied to each segment. These are scaled
+            from 0.0 to 1.0, and must be converted to physical units here.
+        
+        """
+        
+        # secondaries_ptt_displacements = secondaries_commands
+
+
+        segments_ptt_commands = secondaries_commands
+    
+        max_piston_correction_micron = 2.5
+        max_tip_correction_as = 20.0
+        max_tilt_correction_as = 20.0
+
+
+        max_piston_correction_meters = max_piston_correction_micron * 1e-6
+        max_tip_correction_radians = max_tip_correction_as * np.pi / (180 * 3600)
+        max_tilt_correction_radians = max_tilt_correction_as * np.pi / (180 * 3600)
+
+
+        # TODO: Refactor to extract tuples to np array and use _apply_ptt_displacements.
+        for segment_id in range(self.num_apertures):
+
+            # TODO: the following three lines need be generalized to nested lists.
+            segment_piston_command = segments_ptt_commands[segment_id][0]
+            segment_tip_command = segments_ptt_commands[segment_id][1]
+            segment_tilt_command = segments_ptt_commands[segment_id][2]
+
+            # segment_piston_command = ((segment_piston_command - (0.5)) * 2)
+            # segment_tip_command = ((segment_tip_command - (0.5)) * 2)
+            # segment_tilt_command = ((segment_tilt_command - (0.5)) * 2)
+
+            segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
+            segment_tip_command_radians = segment_tip_command * max_tip_correction_radians
+            segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
+
+
+            # TODO: Externalize.
+            direct_command = True
+
+            if direct_command:
+
+                piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
+                tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
+                tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + segment_tilt_command_radians
+
+            else:
+
+                # First, get the ptt displacements in meters of of this segement...
+                (segment_piston,
+                 segment_tip,
+                 segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+
+                piston_state = segment_piston + segment_piston_command_meters
+                tip_state = segment_tip + segment_tip_command_radians
+                tilt_state = segment_tilt + segment_tilt_command_radians
+
+                # Enforce limits on incremental commmands.
+                if abs(piston_state) > abs(max_piston_correction_meters):
+                    
+                    # If a command would exceed limits, it is ignored entirely.
+                    piston_state = segment_piston
+                
+                if abs(tip_state) > abs(max_tip_correction_radians):
+
+                    # If a command would exceed limits, it is ignored entirely.
+                    tip_state = segment_tip
+
+                if abs(tilt_state) > abs(max_tilt_correction_radians):
+
+                    # If a command would exceed limits, it is ignored entirely.
+                    tilt_state = segment_tilt
+
+
+            # Set the actuators in meter and radians.
+            self.segmented_mirror.set_segment_actuators(
+                segment_id,
+                piston_state,
+                tip_state,
+                tilt_state
+            ) 
+
+
 
     
 class DasieEnv(gym.Env):
@@ -1146,7 +1328,7 @@ class DasieEnv(gym.Env):
 
         # Parse run configuration.
         self.report_time = kwargs['report_time']
-        self.render_mode = kwargs['render_mode']
+        # self.render_mode = kwargs['render_mode']
         self.render_dpi = kwargs['render_dpi']
         self.record_env_state_info = kwargs['record_env_state_info']
 
@@ -1157,6 +1339,7 @@ class DasieEnv(gym.Env):
         self.decision_interval_ms = kwargs['decision_interval_ms']
         self.ao_interval_ms = kwargs['ao_interval_ms']
         self.randomize_dm = kwargs['randomize_dm']
+        self.reward_function = kwargs['reward_function']
         # TODO: Externalize.
         self.microns_opd_per_actuator_bit = 0.00015
         self.stroke_count_limit = 20000
@@ -1262,114 +1445,106 @@ class DasieEnv(gym.Env):
         #                  (3, self.optical_system.num_apertures)
         #                 ))
         
-
-        # >>> from gymnasium.spaces import Tuple, Box, Discrete
-        # >>> observation_space = Tuple((Discrete(2), Box(-1, 1, shape=(2,))), seed=42)
-        # >>> observation_space.sample()
-        # (0, array([-0.3991573 ,  0.21649833], dtype=float32))
-
-        # spaces.Tuple((spaces.Discrete(2), spaces.Box(0.0, 1,0, shape=(2,))), seed=42)
-
-        ptt_space = spaces.Box(low=0.0,
-                               high=1.0,
-                               shape=(3,),
-                               dtype=np.float32)
+        self.secondary_max_displacement_micron = 1.0
+        piston_space = spaces.Box(
+            low=-self.secondary_max_displacement_micron,
+            high=self.secondary_max_displacement_micron,
+            shape=(1,),
+            dtype=np.float32
+        )
         
-        
-        # TODO: Later figure out how to do this properly. self.optical_system.num_apertures
-        secondaries_space = spaces.Tuple((
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ptt_space,
-            ))
-        
-        tensioners_space = spaces.Box(low=0.0,
-                                      high=1.0,
-                                      shape=(self.optical_system.num_tensioners,),
-                                      dtype=np.float32)
+        self.secondary_max_deflection_arcsec = 1.0
+        tip_space = spaces.Box(
+            low=-self.secondary_max_deflection_arcsec,
+            high=self.secondary_max_deflection_arcsec,
+            shape=(1,),
+            dtype=np.float32
+        )
+        tilt_space = spaces.Box(
+            low=-self.secondary_max_deflection_arcsec,
+            high=self.secondary_max_deflection_arcsec,
+            shape=(1,),
+            dtype=np.float32
+        )
+
+        ptt_space = spaces.Tuple((piston_space, tip_space, tilt_space)) 
+
+        secondaries_tuple = tuple([ptt_space] * self.optical_system.num_apertures)
+
+        secondaries_space = spaces.Tuple(secondaries_tuple)
+
+        self.tensioner_max_force = 1.0
+
+        tensioner_space = spaces.Box(
+            low=-self.tensioner_max_force,
+            high=self.tensioner_max_force,
+            shape=(1,),
+            dtype=np.float32
+        )
+
+        tensioners_tuple = tuple([tensioner_space] * self.optical_system.num_tensioners)
+
+        tensioners_space = spaces.Tuple(tensioners_tuple)
         
         single_command_space = spaces.Tuple((secondaries_space,
                                              tensioners_space))
         
-        # TODO: do this properly. self.commands_per_decision
-        self.action_space = spaces.Tuple((single_command_space,
-                                          single_command_space,
-                                          single_command_space,
-                                          single_command_space))
+        self.dict_action_space = spaces.Tuple([single_command_space] * self.commands_per_decision)
 
-        # TODO: There has got to be a better way to do this.
-        zero_ptt_space = spaces.Box(low=0.0,
-                               high=0.0,
-                               shape=(3,),
-                               dtype=np.float32)
-        
-        
-        # TODO: Later figure out how to do this properly. self.optical_system.num_apertures
-        zero_secondaries_space = spaces.Tuple((
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            zero_ptt_space,
-            ))
-        
-        zero_tensioners_space = spaces.Box(
+        # Build a tree from the action space to enable translation.
+        self.action_tree = self.build_tree_from_action_space(self.dict_action_space)
+
+        self.action_space = self.flatten(self.dict_action_space,
+                                         flat_space_low=-1.0,
+                                         flat_space_high=1.0)
+
+        zero_piston_space = spaces.Box(
             low=0.0,
             high=0.0,
-            shape=(self.optical_system.num_tensioners,),
+            shape=(1,),
             dtype=np.float32
         )
         
-        zero_single_command_space = spaces.Tuple((zero_secondaries_space,
-                                                  zero_tensioners_space))
+        zero_tip_space = spaces.Box(
+            low=0.0,
+            high=0.0,
+            shape=(1,),
+            dtype=np.float32
+        )
+
+        zero_tilt_space = spaces.Box(
+            low=0.0,
+            high=0.0,
+            shape=(1,),
+            dtype=np.float32
+        )
+
+        zero_ptt_space = spaces.Tuple((zero_piston_space, zero_tip_space, zero_tilt_space)) 
+
+        zero_secondaries_tuple = tuple([zero_ptt_space] * self.optical_system.num_apertures)
+
+        zero_secondaries_space = spaces.Tuple(zero_secondaries_tuple)
+
+        zero_tensioner_space = spaces.Box(
+            low=0.0,
+            high=0.0,
+            shape=(1,),
+            dtype=np.float32
+        )
+
+        zero_tensioners_tuple = tuple([zero_tensioner_space] * self.optical_system.num_tensioners)
+
+        zero_tensioners_space = spaces.Tuple(zero_tensioners_tuple)
         
-        # TODO: do this properly. self.commands_per_decision
-        self.zero_action_space = spaces.Tuple((zero_single_command_space,
-                                               zero_single_command_space,
-                                               zero_single_command_space,
-                                               zero_single_command_space,
-                                               ))
+        zero_single_command_space = spaces.Tuple(
+            (zero_secondaries_space, zero_tensioners_space)
+        )
 
-        # zeroed_commands = tuple(2)
-        # for command in action_sample:
+        self.zero_dict_action_space = spaces.Tuple([zero_single_command_space] * self.commands_per_decision)
 
-        #     secondaries_commands = command[0]
-        #     zeroed_secondaries_commands = tuple()
-        #     for secondaries_command in secondaries_commands:
-        #         zeroed_secondary = np.zeros_like(secondaries_command)
-        #         zeroed_secondaries_commands
-        #         zeroed_secondary
-        #     tensioners_commands = command[1]
-        #     zeroed_tensioner_command = np.zeroes_like(tensioners_commands)
-
-        #     zeroed_command = (zeroed_secondaries_commands, zeroed_tensioner_command)
-        #     zeroed_commands += zeroed_command
-
-        # print(zeroed_commands)
-
-        # die
+        self.zero_action_space = self.flatten(self.zero_dict_action_space,
+                                              flat_space_low=0.0,
+                                              flat_space_high=0.0)
 
         # Compute the image shape.
         self.image_shape = (kwargs['focal_plane_image_size_pixels'],
@@ -1392,13 +1567,188 @@ class DasieEnv(gym.Env):
 
         print("==== End: Initializing Environment ====")
 
+
+    def flatten(self, dict_space, flat_space_high=1.0, flat_space_low=0.0):
+
+        flat_space = spaces.Box(
+            low=flat_space_low,
+            high=flat_space_high,
+            shape=(self.get_vector_action_size(dict_space),),
+            dtype=np.float32
+        )
+
+        return flat_space
+
+
+    def flat_to_dict(self, flat_action, dict_space):
+
+        dict_action = self.encode_action_space_from_vector(dict_space, flat_action)
+
+        return dict_action
+
+
+    def tuple_to_list(self, tup):
+        if isinstance(tup, tuple):
+            return [self.tuple_to_list(i) for i in tup]
+        else:
+            return tup
+
+
+    def list_to_tuple(self, lst):
+        if isinstance(lst, list):
+            return tuple(self.list_to_tuple(i) for i in lst)
+        else:
+            return lst
+
+
+    def assign_value_by_tree_address(self, action_space_list, value, tree_address):
+
+        # Define the string of indices
+        indices_str = "0_1_0_1"
+
+        # Convert the string to a list of integers
+        indices = list(map(int, tree_address.split('_')))
+
+        # Use the indices to assign a new value to the corresponding element in the nested list
+        sublist = action_space_list
+        for index in indices[:-1]:
+            sublist = sublist[index]
+        sublist[indices[-1]] = value
+
+
+        return action_space
+
+    def build_tree_from_action_space(self, action_space):
+
+        action_node = Node("action",
+                        content="")
+
+        linear_address = 0
+
+        linear_to_tree_dict = {}
+
+
+        # Iterate over each predictive command.
+        for step_num, step in enumerate(action_space):
+
+            step_node = Node(f"step_{step_num}",
+                            parent=action_node,
+                            content="")
+
+            # Iterate over stages (e.g., secondaries, primary, DM) in the step.
+            for stage_num, stage in enumerate(step):
+
+                stage_node = Node(f"stage_{stage_num}",
+                                parent=step_node,
+                                content="")
+
+                # Iterate over components (e.g., secondary, tensioner) in the stage.
+                for component_num, component in enumerate(stage):
+
+                    component_node = Node(f"component_{component_num}",
+                                        parent=stage_node,
+                                        content="")
+
+
+                    if hasattr(component, '__iter__'):
+
+                        # Iterate over commands (e.g., force, displacement) for the component.
+                        for command_num, command in enumerate(component):
+
+
+
+                            action_space_address= f"{step_num}_{stage_num}_{component_num}_{command_num}"
+                            
+
+                            command_node = Node(f"command_{command_num}",
+                                                parent=component_node,
+                                                content=command,
+                                                action_space_address=action_space_address,
+                                                linear_address=linear_address)
+
+                            linear_to_tree_dict[linear_address] = action_space_address
+
+                            linear_address += 1
+
+                    else:
+
+
+                        action_space_address= f"{step_num}_{stage_num}_{component_num}_{0}"
+
+                        command_node = Node(f"command_0",
+                                            parent=component_node,
+                                            content=component,
+                                            action_space_address=action_space_address,
+                                            linear_address=linear_address)
+
+                        linear_to_tree_dict[linear_address] = action_space_address
+
+                        linear_address += 1
+
+        action_node.num_leaf_nodes = linear_address
+        action_node.linear_to_tree_dict = linear_to_tree_dict
+        return action_node
+
+
+    def encode_action_space_from_vector(self, action_space, action_vector):
+
+        try:
+
+            action_tree = self.action_tree
+
+        except:
+
+            raise Warning("No action tree found. Building tree from action space.")
+
+            action_tree = self.build_tree_from_action_space(action_space)
+
+
+        action_space_list = self.tuple_to_list(action_space.sample())
+
+        for n, action_value in enumerate(action_vector):
+
+            tree_address = action_tree.linear_to_tree_dict[n]
+
+            # assign_value_by_tree_address(action_space_list, action_value, tree_address)
+
+            # Convert the string to a list of integers
+            indices = list(map(int, tree_address.split('_')))
+
+            # Use the indices to assign a new value to the corresponding element in the nested list
+            sublist = action_space_list
+            for index in indices[:-1]:
+                sublist = sublist[index]
+            sublist[indices[-1]] = action_value
+
+        action_space_tuple = self.list_to_tuple(action_space_list)
+
+        return action_space_tuple
+
+
+    def get_vector_action_size(self, hierarchical_action_space):
+
+        try:
+
+            action_space_tree = self.action_tree
+
+        except:
+
+            raise Warning("No action tree found. Building tree from action space.")
+
+            action_space_tree = self.build_tree_from_action_space(hierarchical_action_space)
+
+        vector_action_size = action_space_tree.num_leaf_nodes
+
+        return vector_action_size
+
+
     def seed(self, seed=None):
 
         self.np_random, seed = seeding.np_random(seed)
 
         return [seed]
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
 
         # Set the initial state. This is the first thing called in an episode.
         print("=== Start: Reset Environment ===")
@@ -1447,7 +1797,7 @@ class DasieEnv(gym.Env):
 
         for _ in range(self.frames_per_decision):
 
-            (initial_state, _, _, _, _) = self.step(
+            (initial_state, _, _, _, info) = self.step(
                 action=self.zero_action_space.sample(),
                 noisy_command=False,
                 ao_loop_active=False,
@@ -1458,7 +1808,7 @@ class DasieEnv(gym.Env):
         self.steps_beyond_done = None
 
         print("=== End: Reset Environment ===")
-        return np.array(self.state)
+        return (np.array(self.state), info)
     
     def save_state(self):
 
@@ -1542,8 +1892,14 @@ class DasieEnv(gym.Env):
              noisy_command=False,
              reset=False):
 
+
         if self.report_time:
             step_time = time.time()
+
+
+        # First, ensure the step action is valid.
+        assert self.action_space.contains(action), \
+               "%r (%s) invalid"%(action, type(action))
 
         # Clear the custom state content for population.
         # TODO: encapsulate this mess...
@@ -1562,12 +1918,11 @@ class DasieEnv(gym.Env):
         self.state_content["shwfs_slopes"] = list()
 
         # Update the current action to be the provided action.
-        self.action = action 
-        
-        # First, ensure the step action is valid.
-        assert self.action_space.contains(action), \
-               "%r (%s) invalid"%(action, type(action))
 
+        # TODO: Convert vector action to tree action here.
+        # structured_action = self.flat_to_dict(action, self.dict_action_space)
+        self.action = self.flat_to_dict(action, self.dict_action_space)
+        
         # TODO: Replace this with a static property.
         self.focal_plane_images = list()
         self.shwfs_slopes_list = list()
@@ -1595,7 +1950,7 @@ class DasieEnv(gym.Env):
 
                 # Get the commanded actuations.
                 # TODO: Add direct dm command support to enable focal plane ao.
-                command = action[command_num]
+                command = self.action[command_num]
                     
                 # TODO: externalize this.
                 command_tensioners = True
@@ -1680,20 +2035,43 @@ class DasieEnv(gym.Env):
         # Set the state to focal plane image.
         self.state = self.focal_plane_images
 
-        # TODO: compute_reward()
-        # TODO: Major Feature. Add a closed-loop SHWFS AO system and use the fact of
-        #       its closure as the reward.
-        self.reward_function = "ao_rms_slope"
+        # self.reward_function = "ao_rms_slope"
 
         if self.reward_function == "strehl":
 
-            raise NotImplementedError("The Strehl reward isn't implemented.")
+            # raise NotImplementedError("The Strehl reward isn't implemented.")
             # Marechal approximation.
+
+            strehls = list()
         
-            # for focal_plane_image in self.focal_plane_images:
+            for focal_plane_image in self.focal_plane_images:
+                # print("strehl")
+                # print(hcipy.metrics.get_strehl_from_focal(
+                #     focal_plane_image.flatten() / np.max(focal_plane_image),
+                #     self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
+                # ))
+
+                # self.optical_system.perfect_image
+                # # plt.ion()
+                # fig = plt.figure()
+                # plt.subplot(2, 1, 1)
+                # plt.title('focal_plane_image')
+                # plt.imshow(focal_plane_image, cmap='inferno') #
+                # plt.colorbar()
             
-            #     hcipy.metrics.get_strehl_from_focal(focal_plane_image,
-            #                                         self.perfect_image)
+                # plt.subplot(2, 1, 2)
+                # plt.title('perfect_image')
+                # plt.imshow(np.reshape(self.optical_system.perfect_image, self.image_shape), cmap='inferno')
+                # plt.colorbar()
+                # plt.show()
+                # die
+            
+                strehls.append(hcipy.metrics.get_strehl_from_focal(
+                    focal_plane_image.flatten() / np.max(focal_plane_image),
+                    self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
+                ))
+
+            reward = np.mean(strehls)
 
         elif self.reward_function == "ao_rms_slope":
 
@@ -1711,6 +2089,67 @@ class DasieEnv(gym.Env):
 
                 reward = 0.0
 
+        elif self.reward_function == "norm_ao_rms_slope":
+
+            reward = 0.0
+
+            if ao_loop_active:
+                
+                for shwfs_slopes in self.shwfs_slopes_list:
+
+                    # TODO: replace the numerator with the max inverse rms slope.
+
+                    reward += 1 / np.sqrt(np.mean(shwfs_slopes ** 2))
+
+                reward = reward / 1e7
+
+            else:
+
+                reward = 0.0
+
+        elif self.reward_function == "ao_closed":
+
+            inverse_slope_threshold = 2e6
+
+            invers_slope_rms = 0
+
+            reward = 0
+
+            if ao_loop_active:
+                
+                for shwfs_slopes in self.shwfs_slopes_list:
+
+                    # TODO: replace the numerator with the max inverse rms slope.
+                    invers_slope_rms += 1 / np.sqrt(np.mean(shwfs_slopes ** 2))
+
+                if invers_slope_rms >= inverse_slope_threshold: 
+
+                    reward = 1.0
+
+                else:
+
+                    reward = 0.0
+
+            else:
+
+                reward = 0.0
+
+        elif self.reward_function == "negative_intensity":
+
+            print(np.sum(self.state))
+
+            reward = -1* np.sum(self.state)
+
+        elif self.reward_function == "inverse_intensity":
+
+            print(np.sum(self.state))
+
+            reward = 1 / np.sum(self.state)
+
+        else:
+
+            raise ValueError("reward_function must be specified.")
+
         # TODO: compute_terminated()
         terminated = False
         
@@ -1727,6 +2166,20 @@ class DasieEnv(gym.Env):
 
         if self.report_time:
             print("Step time: %.6f" % (time.time() - step_time))
+
+        # TODO: Externalize
+        normalize_state = True
+
+        if normalize_state:
+
+            raw_state = self.state
+
+            raw_state_min = np.min(raw_state)
+            zero_min_state = raw_state - raw_state_min
+            zero_min_state_max = np.max(zero_min_state)
+            normalized_state = zero_min_state / zero_min_state_max
+
+            self.state = normalized_state
 
         return np.array(self.state), reward, terminated, truncated, info
 
