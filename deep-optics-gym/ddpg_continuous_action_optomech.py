@@ -8,8 +8,10 @@ import pickle
 import argparse
 from dataclasses import dataclass
 
+import math
 
 import gymnasium as gym
+from gymnasium.envs import box2d
 import numpy as np
 import torch
 import torch.nn as nn
@@ -22,11 +24,258 @@ from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 from anytree import Node, RenderTree
 
+import matplotlib.pyplot as plt
+def display_observation_action(observation, action, num_frames=4):
+    """
+    Displays the observation frames side by side and prints the action values.
+    
+    Parameters:
+        observation (np.array or torch.Tensor): The current observation, assumed to be shaped as (channels, height, width).
+        action (np.array or torch.Tensor): The action taken by the agent.
+        num_frames (int): The number of stacked frames in the observation.
+    """
+    # Move tensors to CPU if needed and convert to numpy
+    if isinstance(observation, torch.Tensor):
+        observation = observation.cpu().numpy()
+    if isinstance(action, torch.Tensor):
+        action = action.cpu().numpy()
+
+    # Ensure observation is in the correct format for visualization (channels-last)
+    # if observation.shape[0] == 3:  # Assuming (C, H, W) format
+    #     observation = observation.transpose(1, 2, 0)
+
+    # Set up the figure with subplots for each frame in the observation
+    fig, axes = plt.subplots(1, num_frames, figsize=(num_frames * 2, 2))
+    
+    # Ensure axes is always iterable, even if there's only one frame
+    if num_frames == 1:
+        axes = [axes]
+    
+    # Show each frame
+    for i, ax in enumerate(axes):
+        ax.imshow(observation[:, :, i], cmap='gray')
+        ax.axis("off")
+    
+    # Set a title with action values for the first frame
+    axes[0].set_title(f"Action: {action}")
+    plt.show()
+
+
+class BasicConv(nn.Module):
+    def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False):
+        super(BasicConv, self).__init__()
+        self.out_channels = out_planes
+        self.conv = nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
+        self.bn = nn.BatchNorm2d(out_planes,eps=1e-5, momentum=0.01, affine=True) if bn else None
+        self.relu = nn.ReLU() if relu else None
+
+    def forward(self, x):
+        x = self.conv(x)
+        if self.bn is not None:
+            x = self.bn(x)
+        if self.relu is not None:
+            x = self.relu(x)
+        return x
+
+class Flatten(nn.Module):
+    def forward(self, x):
+        return x.view(x.size(0), -1)
+
+class ChannelGate(nn.Module):
+    def __init__(self, gate_channels, reduction_ratio=16, pool_types=['avg', 'max']):
+        super(ChannelGate, self).__init__()
+        self.gate_channels = gate_channels
+        self.mlp = nn.Sequential(
+            Flatten(),
+            nn.Linear(gate_channels, gate_channels // reduction_ratio),
+            nn.ReLU(),
+            nn.Linear(gate_channels // reduction_ratio, gate_channels)
+            )
+        self.pool_types = pool_types
+    def forward(self, x):
+        channel_att_sum = None
+        for pool_type in self.pool_types:
+            if pool_type=='avg':
+                avg_pool = F.avg_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+                channel_att_raw = self.mlp( avg_pool )
+            elif pool_type=='max':
+                max_pool = F.max_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+                channel_att_raw = self.mlp( max_pool )
+            elif pool_type=='lp':
+                lp_pool = F.lp_pool2d( x, 2, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+                channel_att_raw = self.mlp( lp_pool )
+            elif pool_type=='lse':
+                # LSE pool only
+                lse_pool = logsumexp_2d(x)
+                channel_att_raw = self.mlp( lse_pool )
+
+            if channel_att_sum is None:
+                channel_att_sum = channel_att_raw
+            else:
+                channel_att_sum = channel_att_sum + channel_att_raw
+
+        scale = F.sigmoid( channel_att_sum ).unsqueeze(2).unsqueeze(3).expand_as(x)
+        return x * scale
+
+def logsumexp_2d(tensor):
+    tensor_flatten = tensor.view(tensor.size(0), tensor.size(1), -1)
+    s, _ = torch.max(tensor_flatten, dim=2, keepdim=True)
+    outputs = s + (tensor_flatten - s).exp().sum(dim=2, keepdim=True).log()
+    return outputs
+
+class ChannelPool(nn.Module):
+    def forward(self, x):
+        return torch.cat( (torch.max(x,1)[0].unsqueeze(1), torch.mean(x,1).unsqueeze(1)), dim=1 )
+
+class SpatialGate(nn.Module):
+    def __init__(self):
+        super(SpatialGate, self).__init__()
+        kernel_size = 7
+        self.compress = ChannelPool()
+        self.spatial = BasicConv(2, 1, kernel_size, stride=1, padding=(kernel_size-1) // 2, relu=False)
+    def forward(self, x):
+        x_compress = self.compress(x)
+        x_out = self.spatial(x_compress)
+        scale = F.sigmoid(x_out) # broadcasting
+        return x * scale
+
+class CBAM(nn.Module):
+    def __init__(self, gate_channels, reduction_ratio=16, pool_types=['avg', 'max'], no_spatial=False):
+        super(CBAM, self).__init__()
+        self.ChannelGate = ChannelGate(gate_channels, reduction_ratio, pool_types)
+        self.no_spatial=no_spatial
+        if not no_spatial:
+            self.SpatialGate = SpatialGate()
+    def forward(self, x):
+        x_out = self.ChannelGate(x)
+        if not self.no_spatial:
+            x_out = self.SpatialGate(x_out)
+        return x_out
+    
+
+
+class BasicBlock(nn.Module):
+    def __init__(self, in_planes, out_planes, dropRate=0.0):
+        super(BasicBlock, self).__init__()
+        self.bn1 = nn.BatchNorm2d(in_planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1,
+                               padding=1, bias=False)
+        self.droprate = dropRate
+    def forward(self, x):
+        out = self.conv1(self.relu(self.bn1(x)))
+        if self.droprate > 0:
+            out = F.dropout(out, p=self.droprate, training=self.training)
+        return torch.cat([x, out], 1)
+
+class BottleneckBlock(nn.Module):
+    def __init__(self, in_planes, out_planes, dropRate=0.0):
+        super(BottleneckBlock, self).__init__()
+        inter_planes = out_planes * 4
+        self.bn1 = nn.BatchNorm2d(in_planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv1 = nn.Conv2d(in_planes, inter_planes, kernel_size=1, stride=1,
+                               padding=0, bias=False)
+        self.bn2 = nn.BatchNorm2d(inter_planes)
+        self.conv2 = nn.Conv2d(inter_planes, out_planes, kernel_size=3, stride=1,
+                               padding=1, bias=False)
+        self.droprate = dropRate
+    def forward(self, x):
+        out = self.conv1(self.relu(self.bn1(x)))
+        if self.droprate > 0:
+            out = F.dropout(out, p=self.droprate, inplace=False, training=self.training)
+        out = self.conv2(self.relu(self.bn2(out)))
+        if self.droprate > 0:
+            out = F.dropout(out, p=self.droprate, inplace=False, training=self.training)
+        return torch.cat([x, out], 1)
+
+class TransitionBlock(nn.Module):
+    def __init__(self, in_planes, out_planes, dropRate=0.0):
+        super(TransitionBlock, self).__init__()
+        self.bn1 = nn.BatchNorm2d(in_planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=1,
+                               padding=0, bias=False)
+        self.droprate = dropRate
+    def forward(self, x):
+        out = self.conv1(self.relu(self.bn1(x)))
+        if self.droprate > 0:
+            out = F.dropout(out, p=self.droprate, inplace=False, training=self.training)
+        return F.avg_pool2d(out, 2)
+
+class DenseBlock(nn.Module):
+    def __init__(self, nb_layers, in_planes, growth_rate, block, dropRate=0.0):
+        super(DenseBlock, self).__init__()
+        self.layer = self._make_layer(block, in_planes, growth_rate, nb_layers, dropRate)
+    def _make_layer(self, block, in_planes, growth_rate, nb_layers, dropRate):
+        layers = []
+        for i in range(nb_layers):
+            layers.append(block(in_planes+i*growth_rate, growth_rate, dropRate))
+        return nn.Sequential(*layers)
+    def forward(self, x):
+        return self.layer(x)
+
+class DenseNet3(nn.Module):
+    def __init__(self, depth, num_classes, growth_rate=12,
+                 reduction=0.5, bottleneck=True, dropRate=0.0):
+        super(DenseNet3, self).__init__()
+        in_planes = 2 * growth_rate
+        n = (depth - 4) / 3
+        if bottleneck == True:
+            n = n/2
+            block = BottleneckBlock
+        else:
+            block = BasicBlock
+        n = int(n)
+        # 1st conv before any dense block
+        self.conv1 = nn.Conv2d(3, in_planes, kernel_size=3, stride=1,
+                               padding=1, bias=False)
+        # 1st block
+        self.block1 = DenseBlock(n, in_planes, growth_rate, block, dropRate)
+        in_planes = int(in_planes+n*growth_rate)
+        self.trans1 = TransitionBlock(in_planes, int(math.floor(in_planes*reduction)), dropRate=dropRate)
+        in_planes = int(math.floor(in_planes*reduction))
+        # 2nd block
+        self.block2 = DenseBlock(n, in_planes, growth_rate, block, dropRate)
+        in_planes = int(in_planes+n*growth_rate)
+        self.trans2 = TransitionBlock(in_planes, int(math.floor(in_planes*reduction)), dropRate=dropRate)
+        in_planes = int(math.floor(in_planes*reduction))
+        # 3rd block
+        self.block3 = DenseBlock(n, in_planes, growth_rate, block, dropRate)
+        in_planes = int(in_planes+n*growth_rate)
+        # global average pooling and classifier
+        self.bn1 = nn.BatchNorm2d(in_planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.fc = nn.Linear(in_planes, num_classes)
+        self.in_planes = in_planes
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                m.bias.data.zero_()
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.trans1(self.block1(out))
+        out = self.trans2(self.block2(out))
+        out = self.block3(out)
+        out = self.relu(self.bn1(out))
+        out = F.avg_pool2d(out, 8)
+        out = out.view(-1, self.in_planes)
+        return self.fc(out)
+
+
+
+
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 88
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
@@ -52,21 +301,22 @@ class Args:
     """the environment id of the Atari game"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
+    # learning_rate: float = 3e-4
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    tau: float = 0.005
+    tau: float = 0.004
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 256
+    batch_size: int = 128
     """the batch size of sample from the reply memory"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
-    learning_starts: int = 64
+    learning_starts: int = 25e3
     """timestep to start learning"""
-    policy_frequency: int = 2
+    policy_frequency: int = 4
     """the frequency of training policy (delayed)"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
@@ -85,7 +335,7 @@ class Args:
     """The type of object to use."""
     aperture_type: str = "elf"
     """The type of aperture to use."""
-    max_episode_steps: int = 10000
+    max_episode_steps: int = 200
     """The maximum number of steps per episode."""
     num_episodes: int = 1
     """The number of episodes to run."""
@@ -141,17 +391,33 @@ class Args:
 
 def make_env(env_id, seed, idx, capture_video, run_name, flags):
 
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array", **vars(flags))
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id, **vars(flags))
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.action_space.seed(seed)
-        return env
+    if env_id == "DASIE-v1":
 
-    return thunk
+        def thunk():
+            if capture_video and idx == 0:
+                env = gym.make(env_id, render_mode="rgb_array", **vars(flags))
+                env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+            else:
+                env = gym.make(env_id, **vars(flags))
+            env = gym.wrappers.RecordEpisodeStatistics(env)
+            env.action_space.seed(seed)
+            return env
+
+        return thunk
+
+    else:
+
+        def thunk():
+            if capture_video and idx == 0:
+                env = gym.make(env_id, render_mode="rgb_array")
+                env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+            else:
+                env = gym.make(env_id)
+            env = gym.wrappers.RecordEpisodeStatistics(env)
+            env.action_space.seed(seed)
+            return env
+
+        return thunk
 
 
 # Register our custom DASIE environment.
@@ -162,6 +428,16 @@ gym.envs.registration.register(
     # reward_threshold=flags.reward_threshold,
 )
 
+
+# Register our custom DASIE environment.
+gym.envs.registration.register(
+    id='VisualPendulum-v1',
+    entry_point='deep-optics-gym.visual_pendulum:VisualPendulumEnv',
+    max_episode_steps=200,
+)
+
+
+
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
     def __init__(self, env):
@@ -169,55 +445,88 @@ class QNetwork(nn.Module):
 
         # Get the observation space shape from the environment.
         obs_shape = envs.single_observation_space.shape
+     
         vector_action_size = envs.single_action_space.shape[0]
 
-        model_scale = 8
+        # Handle channels-last environments.
+        if obs_shape[-1] < obs_shape[0]:
+            self.channels_last = True
+            input_channels = envs.single_observation_space.shape[-1]
+        else:
+            self.channels_last = False
+            input_channels = envs.single_observation_space.shape[0]
+        # print(obs_shape)
+        # print(self.channels_last)
+        # print(input_channels)
+        # die
+        num_channels = 16
+
         self.o_conv = nn.Sequential(
-                    layer_init(nn.Conv2d(obs_shape[0], model_scale, kernel_size=4, stride=2)),
-                    nn.ReLU(),
-                    layer_init(nn.Conv2d(model_scale, model_scale * 2, kernel_size=4, stride=4)),
-                    nn.ReLU(),
-                    layer_init(nn.Conv2d(model_scale * 2, model_scale * 4, kernel_size=4, stride=4)),
-                    nn.ReLU(),
-                    layer_init(nn.Conv2d(model_scale * 4, model_scale * 8, kernel_size=4, stride=2)),
-                    nn.Flatten(),
-                )
+                nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(num_channels, num_channels, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1),
+                nn.Flatten(),
+            )
 
         with torch.inference_mode():
-            output_dim = self.o_conv(torch.zeros(1, *obs_shape)).shape[1]
 
-        self.o_fc1 = layer_init(nn.Linear(output_dim, model_scale * 32))
+            # Handle channels-last environments.
+            x = torch.zeros(1, *obs_shape)
+            if self.channels_last:
+                x = x.permute(0, 3, 1, 2)
+            output_dim = self.o_conv(x).shape[1]
 
-        self.a_fc1 = layer_init(nn.Linear(vector_action_size, model_scale * 32))
+        fc_scale = 128
+        # self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
+        #                               lower_bound=-1/np.sqrt(output_dim + vector_action_size),
+        #                                upper_bound=1/np.sqrt(output_dim))
+        # self.merge_fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
+        #                               lower_bound=-1/np.sqrt(fc_scale),
+        #                               upper_bound=1/np.sqrt(fc_scale))
+        self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
+                                      lower_bound=-1/np.sqrt(output_dim + vector_action_size),
+                                       upper_bound=1/np.sqrt(output_dim))
+        self.merge_fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
+                                      lower_bound=-1/np.sqrt(fc_scale),
+                                      upper_bound=1/np.sqrt(fc_scale))
 
-        self.merge_fc1 = layer_init(nn.Linear(model_scale * 64, model_scale * 32))
-
-        self.fc_q = layer_init(nn.Linear(model_scale * 32, 1))
+        self.fc_q = nn.Linear(fc_scale, 1)
 
     def forward(self, o, a):
 
-        # TODO: fix observation encoding to be int image.
+        # Handle channels-last environments.
+        if self.channels_last:
+            o = o.permute(0, 3, 1, 2)
 
-        # x_o = F.relu(self.o_conv(o / 255.0))
-        x_o = F.relu(self.o_conv(o))
-        x_o = F.relu(self.o_fc1(x_o))
-
-        
-        x_a = F.relu(self.a_fc1(a))
-
-        # Concatenate the two inputs.
-        x = torch.cat([x_o, x_a], 1)
-
+        x_o = F.relu(self.o_conv(o / 255.0))
+        x = torch.cat([x_o, a], 1)
         x = F.relu(self.merge_fc1(x))
-
+        x = F.relu(self.merge_fc2(x))
         q_vals = self.fc_q(x)
+
         return q_vals
 
+def uniform_init(layer, lower_bound=-1e-4, upper_bound=1e-4):
 
-def layer_init(layer, bias_const=0.0):
+    # init this layer to have weights and biases drawn uniformly from bounds.
+    nn.init.uniform_(layer.weight, a=lower_bound, b=upper_bound)
+    nn.init.uniform_(layer.bias, a=lower_bound, b=upper_bound)
+    return layer
+
+def conv_init(layer, bias_const=0.0):
     nn.init.kaiming_normal_(layer.weight)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
+
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
+
+# def layer_init(layer):
+#     return layer
 
 class Actor(nn.Module):
     def __init__(self, env):
@@ -225,60 +534,65 @@ class Actor(nn.Module):
         # Get the observation space shape from the environment.
         obs_shape = env.single_observation_space.shape
 
-        # Get the action space from the environment.
-        # action_space = env.single_action_space
-        # action_space_tree = build_tree_from_action_space(action_space)
-        # vector_action_size = action_space_tree.num_leaf_nodes
+        # Check if this is a channels-last environment
+        if obs_shape[-1] < obs_shape[0]:
+            self.channels_last = True
+            input_channels = envs.single_observation_space.shape[-1]
+        else:
+            self.channels_last = False
+            input_channels = envs.single_observation_space.shape[0]
 
-        # vector_action_size = get_vector_action_size(env.single_action_space)
-        vector_action_size = env.single_action_space.shape[0]
+        num_channels = 16
 
-
-        # self.conv = nn.Sequential(
-        #             layer_init(nn.Conv2d(obs_shape[0], 32, kernel_size=8, stride=4)),
-        #             nn.ReLU(),
-        #             layer_init(nn.Conv2d(32, 64, kernel_size=4, stride=2)),
-        #             nn.ReLU(),
-        #             layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1)),
-        #             nn.Flatten(),
-        #         )
-
-        # Idea - use fourier nn to extract spatial frequency features
-
-        model_scale = 8
         self.conv = nn.Sequential(
-                    layer_init(nn.Conv2d(obs_shape[0], model_scale, kernel_size=2, stride=2)),
-                    nn.ReLU(),
-                    layer_init(nn.Conv2d(model_scale, model_scale * 2, kernel_size=4, stride=4)),
-                    nn.ReLU(),
-                    layer_init(nn.Conv2d(model_scale * 2, model_scale * 4, kernel_size=4, stride=4)),
-                    nn.ReLU(),
-                    layer_init(nn.Conv2d(model_scale * 4, model_scale * 8, kernel_size=4, stride=2)),
-                    nn.Flatten(),
-                )
-
+                nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(num_channels, num_channels, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1),
+                nn.Flatten(),
+            )
         
         with torch.inference_mode():
-            output_dim = self.conv(torch.zeros(1, *obs_shape)).shape[1]
 
-        self.fc1 = layer_init(nn.Linear(output_dim, 256))
-        self.fc2 = nn.Linear(256, 256)
-        self.fc_mu = nn.Linear(256, np.prod(env.single_action_space.shape))
+            # Handle channels-last environments.
+            x = torch.zeros(1, *obs_shape)
+            if self.channels_last:
+                x = x.permute(0, 3, 1, 2)
+            output_dim = self.conv(x).shape[1]
+
+        fc_scale = 128
+        self.fc1 = uniform_init(nn.Linear(output_dim, fc_scale),
+                                lower_bound=-1/np.sqrt(output_dim),
+                                upper_bound=1/np.sqrt(output_dim))
+        self.fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
+                                lower_bound=-1/np.sqrt(fc_scale),
+                                upper_bound=1/np.sqrt(fc_scale))
+        self.fc3 = uniform_init(nn.Linear(fc_scale, np.prod(env.single_action_space.shape)),
+                                lower_bound=3e-4,
+                                upper_bound=3e-4)
+        # self.fc3 = nn.Linear(fc_scale, np.prod(env.single_action_space.shape))
+                                
         # action rescaling
         self.register_buffer(
-            # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_scale", torch.tensor(0.01, dtype=torch.float32)
+            "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
+            # "action_scale", torch.tensor(1.0, dtype=torch.float32)
         )
         self.register_buffer(
-            # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_bias", torch.tensor(0.0, dtype=torch.float32)
+            "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
+            # "action_bias", torch.tensor(0.0, dtype=torch.float32)
         )
 
     def forward(self, x):
-        x = F.relu(self.conv(x))
+
+        # Handle channels-last environments.
+        if self.channels_last:
+            x = x.permute(0, 3, 1, 2)
+
+        x = F.relu(self.conv(x / 255.0))
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = torch.tanh(self.fc_mu(x))
+        x = torch.tanh(self.fc3(x))
         return x * self.action_scale + self.action_bias
 
 
@@ -317,11 +631,19 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+
+    # Check if MPS is available
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env('DASIE-v1', args.seed, 0, args.capture_video, run_name, args)]
+        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)]
         )
     # envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
     # assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
@@ -344,38 +666,49 @@ if __name__ == "__main__":
         handle_timeout_termination=False,
     )
 
-    for flag, value in args.__dict__.items():
-        envs.metadata[flag] = value
+    if args.env_id == "DASIE-v1":
+        for flag, value in args.__dict__.items():
+            envs.metadata[flag] = value
 
-    # Create an episode UUID.
-    episode_uuid = uuid.uuid4()
+        # Create an episode UUID.
+        episode_uuid = uuid.uuid4()
 
-    if args.record_env_state_info:
+        if args.record_env_state_info:
 
-        episode_save_path = os.path.join(args.state_info_save_dir,
-                                            str(episode_uuid))
-        
-        # Create the save directory if it doesn't already exist.
-        Path(episode_save_path).mkdir(parents=True, exist_ok=True)
-
-        with open(os.path.join(episode_save_path, 'episode_metadata.json'), 'w') as f:
+            episode_save_path = os.path.join(args.state_info_save_dir,
+                                                str(episode_uuid))
             
-            json.dump(envs.metadata, f)
+            # Create the save directory if it doesn't already exist.
+            Path(episode_save_path).mkdir(parents=True, exist_ok=True)
+
+            with open(os.path.join(episode_save_path, 'episode_metadata.json'), 'w') as f:
+                
+                json.dump(envs.metadata, f)
 
 
     start_time = time.time()
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
     for global_step in range(args.total_timesteps):
+        
+
+        # Print the global step
+        print(global_step)
 
 
         step_time = time.time()
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
-            actions = np.array([(envs.single_action_space.sample() * 0.0) for _ in range(envs.num_envs)])
+            actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
         else:
             with torch.no_grad():
                 actions = actor(torch.Tensor(obs).to(device))
+                # we need action noise at multiple scales.
+                # periodic functions could help here - one for each scale.
+                # Scale that actions by a value that varies sinusoidally with global step
+                # sin_value = np.sin((global_step / 64.0)/ (2 * np.pi))
+                # print(sin_value)
+                # actions = actions * sin_value
                 actions += torch.normal(0, actor.action_scale * args.exploration_noise)
                 actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
 
@@ -385,6 +718,8 @@ if __name__ == "__main__":
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         if "final_info" in infos:
             for info in infos["final_info"]:
+
+                print(info)
                 print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                 writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                 writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
@@ -393,30 +728,30 @@ if __name__ == "__main__":
 
         # Added for optomech.
 
-        environment_save_interval = 16
+        if args.env_id == "DASIE-v0":
+            environment_save_interval = 16
+            if global_step % environment_save_interval == 0:
 
-        if global_step % environment_save_interval == 0:
+                if args.write_env_state_info:
 
-            if args.write_env_state_info:
+                    if not args.record_env_state_info:
+                        raise ValueError("You're trying to write, but haven't recorded, the " +
+                                        "step state information. Add --record_env_state_info.")
 
-                if not args.record_env_state_info:
-                    raise ValueError("You're trying to write, but haven't recorded, the " +
-                                    "step state information. Add --record_env_state_info.")
+        
+                    info = infos
 
-    
-                info = infos
+                    info["step_index"] = global_step
+                    info["reward"] = rewards[0]
+                    info["terminated"] = terminations[0]
+                    info["truncated"] = truncations[0]
+                    info["action"] = actions[0]
+                    info["observation"] = next_obs[0]
 
-                info["step_index"] = global_step
-                info["reward"] = rewards[0]
-                info["terminated"] = terminations[0]
-                info["truncated"] = truncations[0]
-                info["action"] = actions[0]
-                info["observation"] = next_obs[0]
-
-                # Save the info dictionary.
-                with open(os.path.join(episode_save_path,
-                                    'step_' + str(global_step) + '.pkl'), 'wb') as f:
-                    pickle.dump(info, f)
+                    # Save the info dictionary.
+                    with open(os.path.join(episode_save_path,
+                                        'step_' + str(global_step) + '.pkl'), 'wb') as f:
+                        pickle.dump(info, f)
 
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
@@ -440,12 +775,17 @@ if __name__ == "__main__":
             qf1_a_values = qf1(data.observations, data.actions).view(-1)
             qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
 
+
+            # if global_step % 1 == 0:
+            #     display_observation_action(data.observations[0], data.actions[0], num_frames=1)
+
             # optimize the model
             q_optimizer.zero_grad()
             qf1_loss.backward()
             q_optimizer.step()
 
             if global_step % args.policy_frequency == 0:
+                
                 actor_loss = -qf1(data.observations, actor(data.observations)).mean()
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -457,18 +797,19 @@ if __name__ == "__main__":
                 for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-            if global_step % 4 == 0:
+            if global_step % 100 == 0:
                 writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
+                # writer.add_scalar("custom/qf1_values_std", qf1_a_values.std().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                writer.add_scalar("losses/l2_action", np.mean((actions)**2), global_step)
-                writer.add_scalar("losses/mean_reward", np.mean(rewards), global_step)
-                writer.add_scalar("losses/std_action", np.std(actions), global_step)
+                # writer.add_scalar("custom/l2_action", np.mean((actions)**2), global_step)
+                # writer.add_scalar("custom/mean_reward", np.mean(rewards), global_step)
+                # writer.add_scalar("custom/std_action", np.std(actions), global_step)
+                # writer.add_scalar("custom/mean_action", np.mean(actions), global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 print("Step time:", time.time() - step_time)
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 writer.add_scalar("charts/SPS_float", (time.time() - step_time), global_step)
-                writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
