@@ -310,16 +310,41 @@ class Args:
     """the discount factor gamma"""
     tau: float = 0.004
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 128
+    batch_size: int = 16
     """the batch size of sample from the reply memory"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
-    learning_starts: int = 25e3
+    learning_starts: int = 256
     """timestep to start learning"""
     policy_frequency: int = 4
     """the frequency of training policy (delayed)"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
+
+    # Custom Algorthim Arguments
+    """Which prelearning sample strategy to use (e.g., 'scales', 'normal')"""
+    prelearning_sample: str = ""
+
+    # visual pendulum parameters
+    # learning_rate: float = 3e-4
+    # """the learning rate of the optimizer"""
+    # buffer_size: int = int(1e6)
+    # """the replay memory buffer size"""
+    # gamma: float = 0.99
+    # """the discount factor gamma"""
+    # tau: float = 0.004
+    # """target smoothing coefficient (default: 0.005)"""
+    # batch_size: int = 64
+    # """the batch size of sample from the reply memory"""
+    # exploration_noise: float = 0.1
+    # """the scale of exploration noise"""
+    # learning_starts: int = 256
+    # """timestep to start learning"""
+    # policy_frequency: int = 4
+    # """the frequency of training policy (delayed)"""
+    # noise_clip: float = 0.5
+    # """noise clip parameter of the Target Policy Smoothing Regularization"""
+
 
     # Environment specific arguments
     """Class for holding all arguments for the script."""
@@ -335,7 +360,9 @@ class Args:
     """The type of object to use."""
     aperture_type: str = "elf"
     """The type of aperture to use."""
-    max_episode_steps: int = 200
+    max_episode_steps: int = 1000
+    """The type of aperture to use."""
+    ao_loop_active: bool = False
     """The maximum number of steps per episode."""
     num_episodes: int = 1
     """The number of episodes to run."""
@@ -349,7 +376,7 @@ class Args:
     """Whether to silence the output."""
     dasie_version: str = "test"
     """The version of DASIE to use."""
-    reward_function: str = "ao_rms_slope"
+    reward_function: str = "strehl"
     """The reward function to use."""
     render_frequency: int = 1
     """The frequency of rendering."""
@@ -459,7 +486,7 @@ class QNetwork(nn.Module):
         # print(self.channels_last)
         # print(input_channels)
         # die
-        num_channels = 16
+        num_channels = 1
 
         self.o_conv = nn.Sequential(
                 nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2),
@@ -478,14 +505,12 @@ class QNetwork(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             output_dim = self.o_conv(x).shape[1]
 
-        fc_scale = 128
+        fc_scale = 256
+        
         # self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
         #                               lower_bound=-1/np.sqrt(output_dim + vector_action_size),
         #                                upper_bound=1/np.sqrt(output_dim))
-        # self.merge_fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
-        #                               lower_bound=-1/np.sqrt(fc_scale),
-        #                               upper_bound=1/np.sqrt(fc_scale))
-        self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
+        self.merge_fc1 = uniform_init(nn.Linear(vector_action_size, fc_scale),
                                       lower_bound=-1/np.sqrt(output_dim + vector_action_size),
                                        upper_bound=1/np.sqrt(output_dim))
         self.merge_fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
@@ -500,8 +525,9 @@ class QNetwork(nn.Module):
         if self.channels_last:
             o = o.permute(0, 3, 1, 2)
 
-        x_o = F.relu(self.o_conv(o / 255.0))
-        x = torch.cat([x_o, a], 1)
+        # x_o = F.relu(self.o_conv(o / 255.0) * 0.0)
+        # x = torch.cat([x_o, a], 1)
+        x = a
         x = F.relu(self.merge_fc1(x))
         x = F.relu(self.merge_fc2(x))
         q_vals = self.fc_q(x)
@@ -542,7 +568,7 @@ class Actor(nn.Module):
             self.channels_last = False
             input_channels = envs.single_observation_space.shape[0]
 
-        num_channels = 16
+        num_channels = 1
 
         self.conv = nn.Sequential(
                 nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2),
@@ -561,7 +587,7 @@ class Actor(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             output_dim = self.conv(x).shape[1]
 
-        fc_scale = 128
+        fc_scale = 256
         self.fc1 = uniform_init(nn.Linear(output_dim, fc_scale),
                                 lower_bound=-1/np.sqrt(output_dim),
                                 upper_bound=1/np.sqrt(output_dim))
@@ -569,14 +595,14 @@ class Actor(nn.Module):
                                 lower_bound=-1/np.sqrt(fc_scale),
                                 upper_bound=1/np.sqrt(fc_scale))
         self.fc3 = uniform_init(nn.Linear(fc_scale, np.prod(env.single_action_space.shape)),
-                                lower_bound=3e-4,
+                                lower_bound=-3e-4,
                                 upper_bound=3e-4)
         # self.fc3 = nn.Linear(fc_scale, np.prod(env.single_action_space.shape))
                                 
         # action rescaling
         self.register_buffer(
-            "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            # "action_scale", torch.tensor(1.0, dtype=torch.float32)
+            # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
+            "action_scale", torch.tensor(1.0, dtype=torch.float32)
         )
         self.register_buffer(
             "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
@@ -589,11 +615,52 @@ class Actor(nn.Module):
         if self.channels_last:
             x = x.permute(0, 3, 1, 2)
 
-        x = F.relu(self.conv(x / 255.0))
+        x = F.relu(self.conv(x / 255.0) * 0.0)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = torch.tanh(self.fc3(x))
-        return x * self.action_scale + self.action_bias
+        # print("=========x=========")
+        # print(x)
+        # print(self.action_scale)
+        # print(self.action_bias)
+
+        # print("==================")
+        a = (x * self.action_scale + self.action_bias)
+        # print("=========a=========")
+        # print(a)
+        # print("==================")
+        return a
+
+def log_gradients_in_model(model, logger, step):
+    for tag, value in model.named_parameters():
+        if value.grad is not None:
+            logger.add_histogram(tag + "/grad", value.grad.cpu(), step)
+
+def log_weights_in_model(model, logger, step):
+    for tag, value in model.named_parameters():
+            logger.add_histogram(tag + "/grad", value.cpu(), step)
+
+def sample_normal_action(action_space, std_dev=0.1):
+    """
+    Samples an action from a normal distribution, clipped to fit within the action space bounds.
+    
+    Parameters:
+        action_space (gymnasium.Space): The action space of the environment.
+
+    Returns:
+        np.ndarray: A sampled action within the bounds of the action space.
+    """
+    # Get action space bounds and shape
+    low, high = action_space.low, action_space.high
+    shape = action_space.shape
+
+    # Calculate mean and standard deviation for the normal distribution
+    mean = 0
+    # Sample actions and clip to action space bounds
+    epsilon = 1e-7
+    action = np.clip(np.random.normal(loc=mean, scale=std_dev, size=shape), action_space.low + epsilon, action_space.high - epsilon)
+    action = action.astype(action_space.dtype)
+    return action
 
 
 if __name__ == "__main__":
@@ -699,9 +766,27 @@ if __name__ == "__main__":
         step_time = time.time()
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
-            actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
+
+            if args.prelearning_sample == "scales":
+
+                if global_step % args.max_episode_steps == 0:
+
+                    scales = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]
+                    action_std = np.random.choice(scales)
+
+                actions = np.array([(sample_normal_action(envs.single_action_space, std_dev=action_std)) for _ in range(envs.num_envs)])
+            
+            elif args.prelearning_sample == "normal":
+                
+                actions = np.array([(sample_normal_action(envs.single_action_space)) for _ in range(envs.num_envs)])
+            
+            else:
+                
+                actions = np.array([(envs.single_action_space.sample() * actor.action_scale.item()) for _ in range(envs.num_envs)])
+
         else:
             with torch.no_grad():
+                # print("============Actor call 1============")
                 actions = actor(torch.Tensor(obs).to(device))
                 # we need action noise at multiple scales.
                 # periodic functions could help here - one for each scale.
@@ -709,7 +794,13 @@ if __name__ == "__main__":
                 # sin_value = np.sin((global_step / 64.0)/ (2 * np.pi))
                 # print(sin_value)
                 # actions = actions * sin_value
-                actions += torch.normal(0, actor.action_scale * args.exploration_noise)
+                # Idea: replace this with a (envs.single_action_space.sample() * actor.action_scale.item()
+                # actions += torch.normal(0, actor.action_scale * args.exploration_noise)
+                noise = torch.normal(0,
+                                    actor.action_scale.cpu() * args.exploration_noise,
+                                    actions.cpu().size()
+                                    ).to(device)
+                actions += noise
                 actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
 
         # TRY NOT TO MODIFY: execute the game and log data.
@@ -728,8 +819,8 @@ if __name__ == "__main__":
 
         # Added for optomech.
 
-        if args.env_id == "DASIE-v0":
-            environment_save_interval = 16
+        if args.env_id == "DASIE-v1":
+            environment_save_interval = 100
             if global_step % environment_save_interval == 0:
 
                 if args.write_env_state_info:
@@ -768,6 +859,7 @@ if __name__ == "__main__":
         if global_step > args.learning_starts:
             data = rb.sample(args.batch_size)
             with torch.no_grad():
+                # print("============Target actor call 1============")
                 next_state_actions = target_actor(data.next_observations)
                 qf1_next_target = qf1_target(data.next_observations, next_state_actions)
                 next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (qf1_next_target).view(-1)
@@ -786,6 +878,7 @@ if __name__ == "__main__":
 
             if global_step % args.policy_frequency == 0:
                 
+                # print("============Actor call 2============")
                 actor_loss = -qf1(data.observations, actor(data.observations)).mean()
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -797,19 +890,34 @@ if __name__ == "__main__":
                 for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-            if global_step % 100 == 0:
-                writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                # writer.add_scalar("custom/qf1_values_std", qf1_a_values.std().item(), global_step)
-                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                # writer.add_scalar("custom/l2_action", np.mean((actions)**2), global_step)
-                # writer.add_scalar("custom/mean_reward", np.mean(rewards), global_step)
-                # writer.add_scalar("custom/std_action", np.std(actions), global_step)
-                # writer.add_scalar("custom/mean_action", np.mean(actions), global_step)
-                print("SPS:", int(global_step / (time.time() - start_time)))
-                print("Step time:", time.time() - step_time)
-                writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-                writer.add_scalar("charts/SPS_float", (time.time() - step_time), global_step)
+                if global_step % 1 == 0:
+                    writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
+
+                    writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
+                    writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
+
+                    writer.add_scalar("reward/", rewards.mean().item(), global_step)
+
+                    # writer.add_scalar("custom/l2_action", np.mean((actions)**2), global_step)
+                    # writer.add_scalar("custom/mean_reward", np.mean(rewards), global_step)
+                    # writer.add_scalar("custom/std_action", np.std(actions), global_step)
+                    # writer.add_scalar("custom/mean_action", np.mean(actions), global_step)
+                    print("SPS:", int(global_step / (time.time() - start_time)))
+                    print("Step time:", time.time() - step_time)
+                    writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                    writer.add_scalar("charts/SPS_float", (time.time() - step_time), global_step)
+
+            if global_step % 256 == 0:
+
+                log_gradients_in_model(actor, writer, global_step)
+                log_gradients_in_model(qf1, writer, global_step)
+                log_weights_in_model(actor, writer, global_step)
+                log_weights_in_model(qf1, writer, global_step)
+
+            # if global_step % 512 == 0:
+
+            #     killyourself
+
 
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
