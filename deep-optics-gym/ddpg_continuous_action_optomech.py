@@ -854,7 +854,7 @@ if __name__ == "__main__":
             
             else:
                 
-                actions = np.array([(envs.single_action_space.sample() * actor.action_scale.item()) for _ in range(envs.num_envs)])
+                actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
 
         else:
             with torch.no_grad():
@@ -888,7 +888,7 @@ if __name__ == "__main__":
             for info in infos["final_info"]:
 
                 print(info)
-                print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
                 writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                 writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                 break
