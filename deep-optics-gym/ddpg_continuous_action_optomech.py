@@ -860,7 +860,7 @@ if __name__ == "__main__":
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-
+        print("mean rewards:", rewards.mean())
         # TODO: Strange behavior with the rewards.
         # This logic isn't exactly correct...
         # and sometimes some things get through even when they aren't recorded.
