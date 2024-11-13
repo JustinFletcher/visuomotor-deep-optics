@@ -749,12 +749,12 @@ class OpticalSystem(object):
         self.interaction_matrix = hcipy.ModeBasis(response_matrix)
 
 
-    def randomize_dm(self):
+    # def randomize_dm(self):
 
-            self.dm.actuators = np.random.randn(len(self.dm.actuators)) / (np.arange(len(self.dm.actuators)) + 10)
-            self.dm.actuators *= 0.3 * self.wavelength / np.std(self.dm.surface)
-            # self.dm.flatten()
-            # self.dm.random(1e-6)
+    #         self.dm.actuators = np.random.randn(len(self.dm.actuators)) / (np.arange(len(self.dm.actuators)) + 10)
+    #         self.dm.actuators *= 0.3 * self.wavelength / np.std(self.dm.surface)
+    #         # self.dm.flatten()
+    #         # self.dm.random(1e-6)
     
 
     def get_science_frame(self, integration_seconds=1.0):
@@ -1195,9 +1195,15 @@ class OpticalSystem(object):
 
         segments_ptt_commands = secondaries_commands
     
+        # Cannonical
         max_piston_correction_micron = 2.5
         max_tip_correction_as = 20.0
         max_tilt_correction_as = 20.0
+
+        # Modified
+        # max_piston_correction_micron = .25
+        # max_tip_correction_as = 2.0
+        # max_tilt_correction_as = 2.0
 
 
         max_piston_correction_meters = max_piston_correction_micron * 1e-6
@@ -1340,6 +1346,7 @@ class DasieEnv(gym.Env):
         self.ao_interval_ms = kwargs['ao_interval_ms']
         self.randomize_dm = kwargs['randomize_dm']
         self.reward_function = kwargs['reward_function']
+        self.ao_loop_active = kwargs['ao_loop_active']
         # TODO: Externalize.
         self.microns_opd_per_actuator_bit = 0.00015
         self.stroke_count_limit = 20000
@@ -1750,57 +1757,57 @@ class DasieEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
 
-        # Set the initial state. This is the first thing called in an episode.
-        print("=== Start: Reset Environment ===")
-        print("Instantiating a New Optical System")
+        full_reset = False
+        if full_reset: 
+            # Set the initial state. This is the first thing called in an episode.
+            print("=== Start: Reset Environment ===")
+            print("Instantiating a New Optical System")
 
-        self.build_optical_system(**self.kwargs)
+            self.build_optical_system(**self.kwargs)
 
-        # Calibrate the DM interaction matrix.
-        self.optical_system.calibrate_dm_interaction_matrix()
-        rcond = 1e-3
-        self.reconstruction_matrix = hcipy.inverse_tikhonov(
-            self.optical_system.interaction_matrix.transformation_matrix,
-            rcond=rcond)
+            # Calibrate the DM interaction matrix.
+            self.optical_system.calibrate_dm_interaction_matrix()
+            rcond = 1e-3
+            self.reconstruction_matrix = hcipy.inverse_tikhonov(
+                self.optical_system.interaction_matrix.transformation_matrix,
+                rcond=rcond)
 
-        self.episode_time_ms = 0.0
-    
-        print("Populating Initial Action")
-
-
-        # self.action = np.zeros_like(self.action_space.sample())
-        self.action = self.zero_action_space.sample()
-
-        print("Populating Initial State")
-
-        # TODO: Compute the calibration noise level to generate a sample.
-        calibration_noise_nm = 10.0
-        calibration_noise_microns = calibration_noise_nm / 1000
-        calibration_noise_counts = self.microns_opd_per_actuator_bit / \
-            calibration_noise_microns
+            self.episode_time_ms = 0.0
         
-        # Build a DM command that corresponds to the calibration noise.
-        # TODO: refactor to remove sampling.
-        # ones_like_action = np.ones_like(self.action_space.sample())
-        # zeros_like_action = np.zeros_like(self.action_space.sample())
-        # dm_calibration_noise = np.random.normal(
-        #     loc=zeros_like_action,
-        #     scale=calibration_noise_counts * ones_like_action
-        # )
-        # dm_calibration_noise_counts = dm_calibration_noise.astype(np.int16)
+            print("Populating Initial Action")
 
+            # self.action = np.zeros_like(self.action_space.sample())
+            self.action = self.zero_action_space.sample()
 
-        if self.randomize_dm:
+            print("Populating Initial State")
+
+            # TODO: Compute the calibration noise level to generate a sample.
+            calibration_noise_nm = 10.0
+            calibration_noise_microns = calibration_noise_nm / 1000
+            calibration_noise_counts = self.microns_opd_per_actuator_bit / \
+                calibration_noise_microns
             
-            print("Randomizing DM")
-            self.optical_system.randomize_dm()
+            # Build a DM command that corresponds to the calibration noise.
+            # TODO: refactor to remove sampling.
+            # ones_like_action = np.ones_like(self.action_space.sample())
+            # zeros_like_action = np.zeros_like(self.action_space.sample())
+            # dm_calibration_noise = np.random.normal(
+            #     loc=zeros_like_action,
+            #     scale=calibration_noise_counts * ones_like_action
+            # )
+            # dm_calibration_noise_counts = dm_calibration_noise.astype(np.int16)
+
+
+            # if self.randomize_dm:
+                
+            #     print("Randomizing DM")
+            #     self.optical_system.randomize_dm()
 
         for _ in range(self.frames_per_decision):
 
             (initial_state, _, _, _, info) = self.step(
                 action=self.zero_action_space.sample(),
                 noisy_command=False,
-                ao_loop_active=False,
                 reset=True
             )
 
@@ -1877,10 +1884,10 @@ class DasieEnv(gym.Env):
             deepcopy_science_readout_raster
         )
 
-        deepcopy_shwfs_slopes = copy.deepcopy(self.shwfs_slopes)
-        self.state_content["shwfs_slopes"].append(
-            deepcopy_shwfs_slopes
-        )
+        # deepcopy_shwfs_slopes = copy.deepcopy(self.shwfs_slopes)
+        # self.state_content["shwfs_slopes"].append(
+        #     deepcopy_shwfs_slopes
+        # )
 
         if self.report_time:
             print("- Deepcopy time:   %.6f" %
@@ -1888,9 +1895,10 @@ class DasieEnv(gym.Env):
 
     def step(self,
              action,
-             ao_loop_active=True,
              noisy_command=False,
              reset=False):
+        
+        
 
 
         if self.report_time:
@@ -1994,7 +2002,7 @@ class DasieEnv(gym.Env):
                         ao_step_time_start = time.time()
 
                     # If the AO loop is active.
-                    if ao_loop_active:
+                    if self.ao_loop_active and not reset:
 
                         # Measure the wavefront using the SHWFS.
                         shwfs_readout_vector = self.optical_system.get_shwfs_frame(
@@ -2032,52 +2040,61 @@ class DasieEnv(gym.Env):
             # Finally, append this frame to the stack of focal plane images.
             self.focal_plane_images.append(frame)
 
+        # Encode the frames as 256
+
         # Set the state to focal plane image.
         self.state = self.focal_plane_images
 
         # self.reward_function = "ao_rms_slope"
 
-        if self.reward_function == "strehl":
+        print(self.reward_function)
+        die
 
-            # raise NotImplementedError("The Strehl reward isn't implemented.")
-            # Marechal approximation.
+        if self.reward_function == "strehl":
 
             strehls = list()
         
             for focal_plane_image in self.focal_plane_images:
-                # print("strehl")
-                # print(hcipy.metrics.get_strehl_from_focal(
-                #     focal_plane_image.flatten() / np.max(focal_plane_image),
-                #     self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-                # ))
 
-                # self.optical_system.perfect_image
-                # # plt.ion()
-                # fig = plt.figure()
-                # plt.subplot(2, 1, 1)
-                # plt.title('focal_plane_image')
-                # plt.imshow(focal_plane_image, cmap='inferno') #
-                # plt.colorbar()
-            
-                # plt.subplot(2, 1, 2)
-                # plt.title('perfect_image')
-                # plt.imshow(np.reshape(self.optical_system.perfect_image, self.image_shape), cmap='inferno')
-                # plt.colorbar()
-                # plt.show()
-                # die
-            
                 strehls.append(hcipy.metrics.get_strehl_from_focal(
                     focal_plane_image.flatten() / np.max(focal_plane_image),
                     self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
                 ))
 
             reward = np.mean(strehls)
+            
+        elif self.reward_function == "negastrehl":
+
+            strehls = list()
+        
+            for focal_plane_image in self.focal_plane_images:
+
+                strehls.append(hcipy.metrics.get_strehl_from_focal(
+                    focal_plane_image.flatten() / np.max(focal_plane_image),
+                    self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
+                ))
+
+            reward = np.mean(strehls) - 1.0
+
+        elif self.reward_function == "strehl_closed":
+
+            strehls = list()
+        
+            for focal_plane_image in self.focal_plane_images:
+
+                strehls.append(hcipy.metrics.get_strehl_from_focal(
+                    focal_plane_image.flatten() / np.max(focal_plane_image),
+                    self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
+                ))
+
+            
+            reward = 1.0 if np.mean(strehls) >= 0.8 else 0.0
 
         elif self.reward_function == "ao_rms_slope":
 
             reward = 0.0
 
-            if ao_loop_active:
+            if self.ao_loop_active:
                 
                 for shwfs_slopes in self.shwfs_slopes_list:
 
@@ -2093,7 +2110,7 @@ class DasieEnv(gym.Env):
 
             reward = 0.0
 
-            if ao_loop_active:
+            if self.ao_loop_active:
                 
                 for shwfs_slopes in self.shwfs_slopes_list:
 
@@ -2115,7 +2132,7 @@ class DasieEnv(gym.Env):
 
             reward = 0
 
-            if ao_loop_active:
+            if self.ao_loop_active:
                 
                 for shwfs_slopes in self.shwfs_slopes_list:
 
