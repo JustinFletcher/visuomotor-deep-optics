@@ -731,12 +731,21 @@ if __name__ == "__main__":
         
     if args.async_env:
         envs = gym.vector.AsyncVectorEnv(
-            [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
-            )
+            [lambda: gym.make(args.env_id, **vars(args))] * args.num_envs
+        )
     else:
         envs = gym.vector.SyncVectorEnv(
-            [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
-            )
+            [lambda: gym.make(args.env_id, **vars(args))] * args.num_envs
+        )
+    
+    # if args.async_env:
+    #     envs = gym.vector.AsyncVectorEnv(
+    #         [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
+    #         )
+    # else:
+    #     envs = gym.vector.SyncVectorEnv(
+    #         [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
+    #         )
     # envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
     # assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
@@ -833,14 +842,15 @@ if __name__ == "__main__":
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
+        # if "final_info" in infos:
+        #     print(infos)
+        #     for info in infos["final_info"]:
 
-                print(info)
-                print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                break
+        #         print(info)
+        #         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+        #         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+        #         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+        #         break
 
 
         # Added for optomech.
