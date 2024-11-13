@@ -870,7 +870,7 @@ if __name__ == "__main__":
                 # actions += torch.normal(0, actor.action_scale * args.exploration_noise)
                 noise = torch.normal(0.0,
                                     actor.action_scale.cpu() * args.exploration_noise,
-                                    actions.cpu().size()
+                                    # actions.cpu().size()
                                     ).to(device)
                 actions += noise
                 actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
