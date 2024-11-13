@@ -719,7 +719,7 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         print("Running with CUDA")
         device = torch.device("cuda")
-    if torch.backends.mps.is_available():
+    elif torch.backends.mps.is_available():
         print("Running with MSP")
         device = torch.device("mps")
     else:
