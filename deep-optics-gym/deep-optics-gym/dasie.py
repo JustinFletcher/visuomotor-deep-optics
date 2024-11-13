@@ -2047,8 +2047,8 @@ class DasieEnv(gym.Env):
 
         # self.reward_function = "ao_rms_slope"
 
-        print(self.reward_function)
-        die
+        # print(self.reward_function)
+        # die
 
         if self.reward_function == "strehl":
 
