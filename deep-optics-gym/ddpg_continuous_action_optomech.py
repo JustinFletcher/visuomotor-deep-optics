@@ -420,7 +420,7 @@ class Args:
     """The number of tensioners."""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name, flags):
+def make_env(env_id, idx, capture_video, run_name, flags):
 
     if env_id == "DASIE-v1":
 
@@ -431,7 +431,7 @@ def make_env(env_id, seed, idx, capture_video, run_name, flags):
             else:
                 env = gym.make(env_id, **vars(flags))
             env = gym.wrappers.RecordEpisodeStatistics(env)
-            env.action_space.seed(seed)
+            # env.action_space.seed(seed)
             return env
 
         return thunk
@@ -445,7 +445,7 @@ def make_env(env_id, seed, idx, capture_video, run_name, flags):
             else:
                 env = gym.make(env_id)
             env = gym.wrappers.RecordEpisodeStatistics(env)
-            env.action_space.seed(seed)
+            # env.action_space.seed(seed)
             return env
 
         return thunk
@@ -729,14 +729,14 @@ if __name__ == "__main__":
 
     # env setup
         
-    if args.async_env:
-        envs = gym.vector.AsyncVectorEnv(
-            [lambda: gym.make(args.env_id, **vars(args))] * args.num_envs
-        )
-    else:
-        envs = gym.vector.SyncVectorEnv(
-            [lambda: gym.make(args.env_id, **vars(args))] * args.num_envs
-        )
+    # if args.async_env:
+    #     envs = gym.vector.AsyncVectorEnv(
+    #         [lambda: gym.make(args.env_id, **vars(args))] * args.num_envs
+    #     )
+    # else:
+    #     envs = gym.vector.SyncVectorEnv(
+    #         [lambda: gym.make(args.env_id, **vars(args))] * args.num_envs
+    #     )
     
     # if args.async_env:
     #     envs = gym.vector.AsyncVectorEnv(
@@ -748,6 +748,19 @@ if __name__ == "__main__":
     #         )
     # envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
     # assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+
+    if args.async_env:
+        print("Initializing AsyncVectorEnv")
+        envs = gym.vector.AsyncVectorEnv(
+            [make_env(args.env_id, i, args.capture_video, run_name, args) for i in range(args.num_envs)],
+        )
+    else:
+        print("Initializing SyncVectorEnv")
+        envs = gym.vector.SyncVectorEnv(
+            [make_env(args.env_id, i, args.capture_video, run_name, args) for i in range(args.num_envs)],
+        )
+    
+    
 
     actor = Actor(envs).to(device)
     qf1 = QNetwork(envs).to(device)
@@ -821,7 +834,7 @@ if __name__ == "__main__":
 
         else:
             with torch.no_grad():
-                # print("============Actor call 1============")
+                
                 actions = actor(torch.Tensor(obs).to(device))
                 # we need action noise at multiple scales.
                 # periodic functions could help here - one for each scale.
@@ -841,6 +854,10 @@ if __name__ == "__main__":
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
+        # TODO: Strange behavior with the rewards.
+        # This logic isn't exactly correct...
+        # and sometimes some things get through even when they aren't recorded.
+        # and why don't all environments run all the time?? Add uniwue env names in env constructotr
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         # if "final_info" in infos:
         #     print(infos)
@@ -852,6 +869,13 @@ if __name__ == "__main__":
         #         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
         #         break
 
+        # From ppo.
+        # if "final_info" in infos:
+        #     for info in infos["final_info"]:
+        #         if info and "episode" in info:
+        #             print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+        #             writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+        #             writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
         # Added for optomech.
 

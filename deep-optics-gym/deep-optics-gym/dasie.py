@@ -13,6 +13,7 @@ import glob
 import time
 import math
 import copy
+import uuid
 import datetime
 import numpy as np
 
@@ -1331,6 +1332,7 @@ class DasieEnv(gym.Env):
 
         # Store the keyword arguements.
         self.kwargs = kwargs
+        self.uuid = uuid.uuid4()
 
         # Parse run configuration.
         self.report_time = kwargs['report_time']
@@ -1898,7 +1900,9 @@ class DasieEnv(gym.Env):
              noisy_command=False,
              reset=False):
         
-        
+        self.report_name = True
+        if self.report_name:
+            print("Step from Environment %s" % self.uuid)
 
 
         if self.report_time:
