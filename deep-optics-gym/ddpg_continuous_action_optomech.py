@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import math
 
 import gymnasium as gym
-from gymnasium.envs import box2d
+# from gymnasium.envs import box2d
 import numpy as np
 import torch
 import torch.nn as nn
@@ -486,14 +486,15 @@ class QNetwork(nn.Module):
         # print(self.channels_last)
         # print(input_channels)
         # die
-        num_channels = 1
+        num_channels = 4
+        self.visual = True
 
         self.o_conv = nn.Sequential(
                 nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(num_channels, num_channels, kernel_size=4, stride=2),
+                nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1),
+                nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1),
                 nn.Flatten(),
             )
 
@@ -506,13 +507,15 @@ class QNetwork(nn.Module):
             output_dim = self.o_conv(x).shape[1]
 
         fc_scale = 256
+        if self.visual:
+            self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
+                                        lower_bound=-1/np.sqrt(output_dim + vector_action_size),
+                                        upper_bound=1/np.sqrt(output_dim))
         
-        # self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
-        #                               lower_bound=-1/np.sqrt(output_dim + vector_action_size),
-        #                                upper_bound=1/np.sqrt(output_dim))
-        self.merge_fc1 = uniform_init(nn.Linear(vector_action_size, fc_scale),
-                                      lower_bound=-1/np.sqrt(output_dim + vector_action_size),
-                                       upper_bound=1/np.sqrt(output_dim))
+        else:
+            self.merge_fc1 = uniform_init(nn.Linear(vector_action_size, fc_scale),
+                                        lower_bound=-1/np.sqrt(output_dim + vector_action_size),
+                                        upper_bound=1/np.sqrt(output_dim))
         self.merge_fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
                                       lower_bound=-1/np.sqrt(fc_scale),
                                       upper_bound=1/np.sqrt(fc_scale))
@@ -525,9 +528,12 @@ class QNetwork(nn.Module):
         if self.channels_last:
             o = o.permute(0, 3, 1, 2)
 
-        # x_o = F.relu(self.o_conv(o / 255.0) * 0.0)
-        # x = torch.cat([x_o, a], 1)
-        x = a
+        if self.visual:
+            x_o = F.relu(self.o_conv(o / 255.0))
+            x = torch.cat([x_o, a], 1)
+
+        else: 
+            x = a 
         x = F.relu(self.merge_fc1(x))
         x = F.relu(self.merge_fc2(x))
         q_vals = self.fc_q(x)
@@ -568,14 +574,16 @@ class Actor(nn.Module):
             self.channels_last = False
             input_channels = envs.single_observation_space.shape[0]
 
-        num_channels = 1
+        num_channels = 4
+
+        self.visual = True
 
         self.conv = nn.Sequential(
                 nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(num_channels, num_channels, kernel_size=4, stride=2),
+                nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1),
+                nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1),
                 nn.Flatten(),
             )
         
@@ -615,7 +623,10 @@ class Actor(nn.Module):
         if self.channels_last:
             x = x.permute(0, 3, 1, 2)
 
-        x = F.relu(self.conv(x / 255.0) * 0.0)
+        if self.visual:
+            x = F.relu(self.conv(x / 255.0))
+        else:
+            x = F.relu(self.conv(x / 255.0) * 0.0)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = torch.tanh(self.fc3(x))
@@ -820,15 +831,15 @@ if __name__ == "__main__":
         # Added for optomech.
 
         if args.env_id == "DASIE-v1":
-            environment_save_interval = 100
-            if global_step % environment_save_interval == 0:
+            env_save_interval = 100
+            if global_step % env_save_interval == 0:
 
                 if args.write_env_state_info:
 
                     if not args.record_env_state_info:
+
                         raise ValueError("You're trying to write, but haven't recorded, the " +
                                         "step state information. Add --record_env_state_info.")
-
         
                     info = infos
 
@@ -840,8 +851,7 @@ if __name__ == "__main__":
                     info["observation"] = next_obs[0]
 
                     # Save the info dictionary.
-                    with open(os.path.join(episode_save_path,
-                                        'step_' + str(global_step) + '.pkl'), 'wb') as f:
+                    with open(os.path.join(episode_save_path, 'step_' + str(global_step) + '.pkl'), 'wb') as f:
                         pickle.dump(info, f)
 
 
@@ -892,31 +902,26 @@ if __name__ == "__main__":
 
                 if global_step % 1 == 0:
                     writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-
                     writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                     writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
+                    writer.add_scalar("reward/reward", rewards.mean().item(), global_step)
 
-                    writer.add_scalar("reward/", rewards.mean().item(), global_step)
-
-                    # writer.add_scalar("custom/l2_action", np.mean((actions)**2), global_step)
-                    # writer.add_scalar("custom/mean_reward", np.mean(rewards), global_step)
-                    # writer.add_scalar("custom/std_action", np.std(actions), global_step)
-                    # writer.add_scalar("custom/mean_action", np.mean(actions), global_step)
                     print("SPS:", int(global_step / (time.time() - start_time)))
                     print("Step time:", time.time() - step_time)
                     writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-                    writer.add_scalar("charts/SPS_float", (time.time() - step_time), global_step)
 
-            if global_step % 256 == 0:
+            gradient_log_interval = 256
+            if global_step % gradient_log_interval == 0:
 
                 log_gradients_in_model(actor, writer, global_step)
                 log_gradients_in_model(qf1, writer, global_step)
                 log_weights_in_model(actor, writer, global_step)
                 log_weights_in_model(qf1, writer, global_step)
 
-            # if global_step % 512 == 0:
+        writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
+        # if global_step % 512 == 0:
 
-            #     killyourself
+        #     killyourself
 
 
     if args.save_model:
