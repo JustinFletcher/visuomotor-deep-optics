@@ -868,7 +868,7 @@ if __name__ == "__main__":
                 # actions = actions * sin_value
                 # Idea: replace this with a (envs.single_action_space.sample() * actor.action_scale.item()
                 # actions += torch.normal(0, actor.action_scale * args.exploration_noise)
-                noise = torch.normal(0,
+                noise = torch.normal(0.0,
                                     actor.action_scale.cpu() * args.exploration_noise,
                                     actions.cpu().size()
                                     ).to(device)
