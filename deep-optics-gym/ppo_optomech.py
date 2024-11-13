@@ -214,7 +214,25 @@ class Agent(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
 
 
+
 if __name__ == "__main__":
+
+    # Register our custom DASIE environment.
+    gym.envs.registration.register(
+        id='DASIE-v1',
+        entry_point='deep-optics-gym.dasie:DasieEnv',
+        # max_episode_steps=4,
+        # reward_threshold=flags.reward_threshold,
+    )
+
+
+    # Register our custom VisualPendulum environment.
+    gym.envs.registration.register(
+        id='VisualPendulum-v1',
+        entry_point='deep-optics-gym.visual_pendulum:VisualPendulumEnv',
+        max_episode_steps=200,
+    )
+
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
