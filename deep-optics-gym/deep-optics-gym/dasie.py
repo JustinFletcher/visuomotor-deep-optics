@@ -1915,19 +1915,20 @@ class DasieEnv(gym.Env):
 
         # Clear the custom state content for population.
         # TODO: encapsulate this mess...
-        self.state_content["dm_surfaces"] = list()
-        self.state_content["atmos_layer_0_list"] = list()
-        self.state_content["action_times"] = list()
-        self.state_content["object_fields"] = list()
-        self.state_content["pre_atmosphere_object_wavefronts"] = list()
-        self.state_content["post_atmosphere_wavefronts"] = list()
-        self.state_content["segmented_mirror_surfaces"] = list()
-        self.state_content["pupil_wavefronts"] = list()
-        self.state_content["post_dm_wavefronts"] = list()
-        self.state_content["focal_plane_wavefronts"] = list()
-        self.state_content["readout_images"] = list()
-        self.state_content["instantaneous_psf"] = list()
-        self.state_content["shwfs_slopes"] = list()
+        if self.record_env_state_info:
+            self.state_content["dm_surfaces"] = list()
+            self.state_content["atmos_layer_0_list"] = list()
+            self.state_content["action_times"] = list()
+            self.state_content["object_fields"] = list()
+            self.state_content["pre_atmosphere_object_wavefronts"] = list()
+            self.state_content["post_atmosphere_wavefronts"] = list()
+            self.state_content["segmented_mirror_surfaces"] = list()
+            self.state_content["pupil_wavefronts"] = list()
+            self.state_content["post_dm_wavefronts"] = list()
+            self.state_content["focal_plane_wavefronts"] = list()
+            self.state_content["readout_images"] = list()
+            self.state_content["instantaneous_psf"] = list()
+            self.state_content["shwfs_slopes"] = list()
 
         # Update the current action to be the provided action.
 
@@ -1952,7 +1953,7 @@ class DasieEnv(gym.Env):
             for command_num in range(self.commands_per_frame):
 
                 self.episode_time_ms += self.control_interval_ms
-                self.state_content["action_times"].append(self.episode_time_ms)
+                # self.state_content["action_times"].append(self.episode_time_ms)
 
                 # Evolve the atmosphere to the current time.
                 atmospere_evolution_start = time.time()
