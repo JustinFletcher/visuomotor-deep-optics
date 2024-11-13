@@ -921,8 +921,8 @@ if __name__ == "__main__":
                     writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                     writer.add_scalar("reward/reward", rewards.mean().item(), global_step)
 
-                    print("SPS:", int(global_step / (time.time() - start_time)))
-                    print("Step time:", time.time() - step_time)
+                    # print("SPS:", int(global_step / (time.time() - start_time)))
+                    # print("Step time:", time.time() - step_time)
                     writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
             gradient_log_interval = 256
@@ -933,6 +933,7 @@ if __name__ == "__main__":
                 log_weights_in_model(actor, writer, global_step)
                 log_weights_in_model(qf1, writer, global_step)
 
+        print("Step time:", time.time() - step_time)
         writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
         # if global_step % 512 == 0:
 
