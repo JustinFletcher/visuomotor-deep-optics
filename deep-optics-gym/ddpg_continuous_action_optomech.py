@@ -299,6 +299,8 @@ class Args:
     """The number of environments to create."""
     async_env: bool = False
     """Whether to use an AsynchronousVectorEnv"""
+    subproc_env: bool = False
+    """Whether to use a SubprocVectorEnv"""
 
     # Algorithm specific arguments
     env_id: str = "Hopper-v4"
@@ -749,6 +751,11 @@ if __name__ == "__main__":
     # envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
     # assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
+    if args.subproc_env:
+        print("Initializing SubprocVectorEnv")
+        envs = gym.vector.SubprocVectorEnv(
+            [make_env(args.env_id, i, args.capture_video, run_name, args) for i in range(args.num_envs)],
+        )
     if args.async_env:
         print("Initializing AsyncVectorEnv")
         envs = gym.vector.AsyncVectorEnv(
