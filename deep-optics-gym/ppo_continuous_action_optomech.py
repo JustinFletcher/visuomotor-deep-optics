@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import gymnasium as gym
 import numpy as np
 import torch
+import envpool
 import torch.nn as nn
 import torch.optim as optim
 import tyro
@@ -195,6 +196,38 @@ def make_env(env_id, idx, capture_video, run_name, gamma, flags):
 
         return thunk
 
+class RecordEpisodeStatistics(gym.Wrapper):
+    def __init__(self, env, deque_size=100):
+        super().__init__(env)
+        self.num_envs = getattr(env, "num_envs", 1)
+        self.episode_returns = None
+        self.episode_lengths = None
+
+    def reset(self, **kwargs):
+        observations = super().reset(**kwargs)
+        self.episode_returns = np.zeros(self.num_envs, dtype=np.float32)
+        self.episode_lengths = np.zeros(self.num_envs, dtype=np.int32)
+        self.lives = np.zeros(self.num_envs, dtype=np.int32)
+        self.returned_episode_returns = np.zeros(self.num_envs, dtype=np.float32)
+        self.returned_episode_lengths = np.zeros(self.num_envs, dtype=np.int32)
+        return observations
+
+    def step(self, action):
+        observations, rewards, dones, infos = super().step(action)
+        self.episode_returns += infos["reward"]
+        self.episode_lengths += 1
+        self.returned_episode_returns[:] = self.episode_returns
+        self.returned_episode_lengths[:] = self.episode_lengths
+        self.episode_returns *= 1 - infos["terminated"]
+        self.episode_lengths *= 1 - infos["terminated"]
+        infos["r"] = self.returned_episode_returns
+        infos["l"] = self.returned_episode_lengths
+        return (
+            observations,
+            rewards,
+            dones,
+            infos,
+        )
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -253,7 +286,7 @@ if __name__ == "__main__":
         entry_point='deep-optics-gym.visual_pendulum:VisualPendulumEnv',
         max_episode_steps=200,
     )
-    
+
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
@@ -286,10 +319,28 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name, args.gamma, args) for i in range(args.num_envs)]
-    )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+
+    # env setup
+    if args.envpool:
+        envs = envpool.make(
+            args.env_id,
+            env_type="gym",
+            num_envs=args.num_envs,
+            episodic_life=True,
+            reward_clip=True,
+            seed=args.seed,
+        )
+        envs.num_envs = args.num_envs
+        envs.single_action_space = envs.action_space
+        envs.single_observation_space = envs.observation_space
+        envs = RecordEpisodeStatistics(envs)
+        assert isinstance(envs.action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    else:
+        envs = gym.vector.SyncVectorEnv(
+            [make_env(args.env_id, i, args.capture_video, run_name, args.gamma, args) for i in range(args.num_envs)]
+        )
+        assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+
 
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
