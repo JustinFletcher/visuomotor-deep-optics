@@ -295,6 +295,8 @@ class Args:
     """whether to upload the saved model to huggingface"""
     hf_entity: str = ""
     """the user or org name of the model repository from the Hugging Face Hub"""
+    num_envs: int = 1
+    """The number of environments to create."""
 
     # Algorithm specific arguments
     env_id: str = "Hopper-v4"
@@ -713,15 +715,19 @@ if __name__ == "__main__":
 
     # Check if MPS is available
     if torch.cuda.is_available():
+        print("Running with CUDA")
         device = torch.device("cuda")
     if torch.backends.mps.is_available():
+        print("Running with MSP")
         device = torch.device("mps")
     else:
+        print("Running with CPU")
         device = torch.device("cpu")
+
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)]
+        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
         )
     # envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
     # assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
