@@ -75,6 +75,10 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
+    env_pool: bool = False
+    """Toggle to use env pool"""
+    visuomotor: bool = False
+    """Toggle to use visuomotor agent"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -267,6 +271,35 @@ class Agent(nn.Module):
             action = probs.sample()
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
 
+class VisuomotorAgent(nn.Module):
+    def __init__(self, envs):
+        super().__init__()
+        self.network = nn.Sequential(
+            layer_init(nn.Conv2d(4, 32, 8, stride=4)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, 4, stride=2)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+            nn.ReLU(),
+            nn.Flatten(),
+            layer_init(nn.Linear(64 * 7 * 7, 512)),
+            nn.ReLU(),
+        )
+        self.actor = layer_init(nn.Linear(512, envs.single_action_space.n), std=0.01)
+        self.critic = layer_init(nn.Linear(512, 1), std=1)
+
+    def get_value(self, x):
+        return self.critic(self.network(x / 255.0))
+
+    def get_action_and_value(self, x, action=None):
+        action_mean = self.actor_mean(x)
+        action_logstd = self.actor_logstd.expand_as(action_mean)
+        action_std = torch.exp(action_logstd)
+        probs = Normal(action_mean, action_std)
+        if action is None:
+            action = probs.sample()
+        return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
+
 
 if __name__ == "__main__":
 
@@ -342,7 +375,10 @@ if __name__ == "__main__":
         assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
 
-    agent = Agent(envs).to(device)
+    if args.visuomotor:
+        agent = VisuomotorAgent(envs).to(device)
+    else:
+        agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
