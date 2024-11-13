@@ -883,15 +883,15 @@ if __name__ == "__main__":
         # and sometimes some things get through even when they aren't recorded.
         # and why don't all environments run all the time?? Add uniwue env names in env constructotr
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        # if "final_info" in infos:
-        #     print(infos)
-        #     for info in infos["final_info"]:
+        if "final_info" in infos:
+            print(infos)
+            for info in infos["final_info"]:
 
-        #         print(info)
-        #         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-        #         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-        #         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-        #         break
+                print(info)
+                print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                break
 
         # From ppo.
         # if "final_info" in infos:
