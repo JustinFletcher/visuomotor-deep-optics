@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import gymnasium as gym
 import numpy as np
 import torch
-import envpool
+# import envpool
 import torch.nn as nn
 import torch.optim as optim
 import tyro
