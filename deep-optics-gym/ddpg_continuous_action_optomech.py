@@ -297,6 +297,8 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
     num_envs: int = 1
     """The number of environments to create."""
+    async_env: bool = False
+    """Whether to use an AsynchronousVectorEnv"""
 
     # Algorithm specific arguments
     env_id: str = "Hopper-v4"
@@ -458,7 +460,7 @@ gym.envs.registration.register(
 )
 
 
-# Register our custom DASIE environment.
+# Register our custom VisualPendulum environment.
 gym.envs.registration.register(
     id='VisualPendulum-v1',
     entry_point='deep-optics-gym.visual_pendulum:VisualPendulumEnv',
@@ -726,9 +728,15 @@ if __name__ == "__main__":
 
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
-        )
+        
+    if args.async_env:
+        envs = gym.vector.AsyncVectorEnv(
+            [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
+            )
+    else:
+        envs = gym.vector.SyncVectorEnv(
+            [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
+            )
     # envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
     # assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
