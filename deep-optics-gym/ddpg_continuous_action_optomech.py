@@ -681,6 +681,23 @@ def sample_normal_action(action_space, std_dev=0.1):
 
 
 if __name__ == "__main__":
+
+    # Register our custom DASIE environment.
+    gym.envs.registration.register(
+        id='DASIE-v1',
+        entry_point='deep-optics-gym.dasie:DasieEnv',
+        # max_episode_steps=4,
+        # reward_threshold=flags.reward_threshold,
+    )
+
+
+    # Register our custom VisualPendulum environment.
+    gym.envs.registration.register(
+        id='VisualPendulum-v1',
+        entry_point='visual_pendulum:VisualPendulumEnv',
+        max_episode_steps=200,
+    )
+
     import stable_baselines3 as sb3
 
     if sb3.__version__ < "2.0":
