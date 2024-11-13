@@ -75,8 +75,8 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
-    env_pool: bool = False
-    """Toggle to use env pool"""
+    envpool: bool = False
+    """Toggle to use envpool"""
     visuomotor: bool = False
     """Toggle to use visuomotor agent"""
 
