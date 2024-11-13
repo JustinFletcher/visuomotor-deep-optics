@@ -756,6 +756,7 @@ if __name__ == "__main__":
         envs.single_action_space,
         device,
         handle_timeout_termination=False,
+        n_envs=args.num_envs
     )
 
     if args.env_id == "DASIE-v1":
