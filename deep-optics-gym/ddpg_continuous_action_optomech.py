@@ -615,8 +615,8 @@ class Actor(nn.Module):
                                 
         # action rescaling
         self.register_buffer(
-            # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_scale", torch.tensor(1.0, dtype=torch.float32)
+            "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
+            # "action_scale", torch.tensor(1.0, dtype=torch.float32)
         )
         self.register_buffer(
             "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
