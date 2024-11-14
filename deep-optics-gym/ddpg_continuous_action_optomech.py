@@ -496,11 +496,11 @@ class QNetwork(nn.Module):
         self.visual = True
 
         self.o_conv = nn.Sequential(
-                nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2),
+                layer_init(nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2),
+                layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1),
+                layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
                 nn.Flatten(),
             )
 
@@ -585,11 +585,11 @@ class Actor(nn.Module):
         self.visual = True
 
         self.conv = nn.Sequential(
-                nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2),
+                layer_init(nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2),
+                layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1),
+                layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
                 nn.Flatten(),
             )
         
