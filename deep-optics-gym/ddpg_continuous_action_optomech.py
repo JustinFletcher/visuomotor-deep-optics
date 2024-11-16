@@ -498,9 +498,9 @@ class QNetwork(nn.Module):
         self.o_conv = nn.Sequential(
                 layer_init(nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
+                # layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
+                # nn.ReLU(),
+                # layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
                 nn.Flatten(),
             )
 
@@ -512,7 +512,7 @@ class QNetwork(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             output_dim = self.o_conv(x).shape[1]
 
-        fc_scale = 256
+        fc_scale = 32
         if self.visual:
             self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
                                         lower_bound=-1/np.sqrt(output_dim + vector_action_size),
@@ -587,9 +587,9 @@ class Actor(nn.Module):
         self.conv = nn.Sequential(
                 layer_init(nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
+                # layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
+                # nn.ReLU(),
+                # layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
                 nn.Flatten(),
             )
         
@@ -601,17 +601,20 @@ class Actor(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             output_dim = self.conv(x).shape[1]
 
-        fc_scale = 256
+        fc_scale = 32
         self.fc1 = uniform_init(nn.Linear(output_dim, fc_scale),
                                 lower_bound=-1/np.sqrt(output_dim),
                                 upper_bound=1/np.sqrt(output_dim))
         self.fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
                                 lower_bound=-1/np.sqrt(fc_scale),
                                 upper_bound=1/np.sqrt(fc_scale))
-        self.fc3 = uniform_init(nn.Linear(fc_scale, np.prod(env.single_action_space.shape)),
-                                lower_bound=-3e-4,
-                                upper_bound=3e-4)
+        # self.fc3 = uniform_init(nn.Linear(fc_scale, np.prod(env.single_action_space.shape)),
+        #                         lower_bound=-3e-4,
+        #                         upper_bound=3e-4)
         # self.fc3 = nn.Linear(fc_scale, np.prod(env.single_action_space.shape))
+        self.fc3 = uniform_init(nn.Linear(fc_scale, np.prod(env.single_action_space.shape)),
+                                lower_bound=-1/np.sqrt(fc_scale),
+                                upper_bound=1/np.sqrt(fc_scale))
                                 
         # action rescaling
         self.register_buffer(
@@ -830,10 +833,8 @@ if __name__ == "__main__":
     obs, _ = envs.reset(seed=args.seed)
     for global_step in range(args.total_timesteps):
         
-
         # Print the global step
         print(global_step)
-
 
         step_time = time.time()
         # ALGO LOGIC: put action logic here
@@ -904,7 +905,7 @@ if __name__ == "__main__":
         # Added for optomech.
 
         if args.env_id == "DASIE-v1":
-            env_save_interval = 100
+            env_save_interval = 1000
             if global_step % env_save_interval == 0:
 
                 if args.write_env_state_info:
