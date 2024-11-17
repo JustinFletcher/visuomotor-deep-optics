@@ -995,7 +995,7 @@ if __name__ == "__main__":
                 log_weights_in_model(actor, writer, global_step)
                 log_weights_in_model(qf1, writer, global_step)
 
-        print("Step time:", time.time() - step_time)
+        print("Step time:", (time.time() - step_time) / args.num_envs)
         writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
 
         global_step += args.num_envs
