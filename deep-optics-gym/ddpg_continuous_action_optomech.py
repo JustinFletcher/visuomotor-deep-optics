@@ -808,25 +808,26 @@ if __name__ == "__main__":
         n_envs=args.num_envs
     )
 
-    if args.env_id == "DASIE-v1":
-        for flag, value in args.__dict__.items():
-            envs.metadata[flag] = value
+    # if args.env_id == "DASIE-v1":
+    #     for flag, value in args.__dict__.items():
+    #         envs.metadata[flag] = value
 
-        # Create an episode UUID.
-        episode_uuid = uuid.uuid4()
+    #     # Create an episode UUID.
+    #     episode_uuid = uuid.uuid4()
 
-        if args.record_env_state_info:
+    #     if args.record_env_state_info:
 
-            episode_save_path = os.path.join(args.state_info_save_dir,
-                                                str(episode_uuid))
+    #         episode_save_path = os.path.join(args.state_info_save_dir,
+    #                                             str(episode_uuid))
             
-            # Create the save directory if it doesn't already exist.
-            Path(episode_save_path).mkdir(parents=True, exist_ok=True)
+    #         # Create the save directory if it doesn't already exist.
+    #         Path(episode_save_path).mkdir(parents=True, exist_ok=True)
 
-            with open(os.path.join(episode_save_path, 'episode_metadata.json'), 'w') as f:
+    #         with open(os.path.join(episode_save_path, 'episode_metadata.json'), 'w') as f:
                 
-                json.dump(envs.metadata, f)
+    #             json.dump(envs.metadata, f)
 
+    # TODO: Add a dud check here.
 
     start_time = time.time()
     # TRY NOT TO MODIFY: start the game
