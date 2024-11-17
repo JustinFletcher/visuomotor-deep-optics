@@ -327,6 +327,19 @@ class Args:
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
+    # Actor model parameters
+    actor_channel_scale: int = 32
+    """The scale of the actor model channels."""
+    actor_fc_scale: int = 128
+    """The scale of the actor model fully connected layers."""
+
+    # QNetwork model parameters
+    qnetwork_channel_scale: int = 32
+    """The scale of the QNetwork model channels."""
+    qnetwork_fc_scale: int = 128
+    """The scale of the QNetwork model fully connected layers."""
+
+
     # Custom Algorthim Arguments
     """Which prelearning sample strategy to use (e.g., 'scales', 'normal')"""
     prelearning_sample: str = ""
@@ -473,7 +486,7 @@ gym.envs.registration.register(
 
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env, channel_scale=32, fc_scale=128):
         super().__init__()
 
         # Get the observation space shape from the environment.
@@ -492,15 +505,14 @@ class QNetwork(nn.Module):
         # print(self.channels_last)
         # print(input_channels)
         # die
-        num_channels = 32
         self.visual = True
 
         self.o_conv = nn.Sequential(
-                layer_init(nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2)),
+                layer_init(nn.Conv2d(input_channels, channel_scale, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
+                layer_init(nn.Conv2d(channel_scale, channel_scale // 2, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
+                layer_init(nn.Conv2d(channel_scale // 2, channel_scale // 4, kernel_size=3, stride=1)),
                 nn.Flatten(),
             )
 
@@ -512,7 +524,6 @@ class QNetwork(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             output_dim = self.o_conv(x).shape[1]
 
-        fc_scale = 128
         if self.visual:
             self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
                                         lower_bound=-1/np.sqrt(output_dim + vector_action_size),
@@ -567,7 +578,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 #     return layer
 
 class Actor(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env, channel_scale=32, fc_scale=128):
         super().__init__()
         # Get the observation space shape from the environment.
         obs_shape = env.single_observation_space.shape
@@ -580,16 +591,15 @@ class Actor(nn.Module):
             self.channels_last = False
             input_channels = envs.single_observation_space.shape[0]
 
-        num_channels = 32
 
         self.visual = True
 
         self.conv = nn.Sequential(
-                layer_init(nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2)),
+                layer_init(nn.Conv2d(input_channels, channel_scale, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
+                layer_init(nn.Conv2d(channel_scale, channel_scale // 2, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
+                layer_init(nn.Conv2d(channel_scale // 2, channel_scale // 4, kernel_size=3, stride=1)),
                 nn.Flatten(),
             )
         
@@ -601,7 +611,6 @@ class Actor(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             output_dim = self.conv(x).shape[1]
 
-        fc_scale = 128
         self.fc1 = uniform_init(nn.Linear(output_dim, fc_scale),
                                 lower_bound=-1/np.sqrt(output_dim),
                                 upper_bound=1/np.sqrt(output_dim))
@@ -789,10 +798,27 @@ if __name__ == "__main__":
     
     
 
-    actor = Actor(envs).to(device)
-    qf1 = QNetwork(envs).to(device)
-    qf1_target = QNetwork(envs).to(device)
-    target_actor = Actor(envs).to(device)
+    # actor = Actor(envs).to(device)
+    actor = Actor(envs,
+                  channel_scale=args.actor_channel_scale,
+                  fc_scale=args.actor_fc_scale).to(device)
+    # qf1 = QNetwork(envs).to(device)
+    qf1 = QNetwork(envs,
+                   channel_scale=args.qnetwork_channel_scale,
+                   fc_scale=args.qnetwork_fc_scale).to(device)
+    
+    # qf1_target = QNetwork(envs).to(device)
+    qf1_target = QNetwork(envs,
+                          channel_scale=args.qnetwork_channel_scale,
+                          fc_scale=args.qnetwork_fc_scale).to(device)
+    
+    # target_actor = Actor(envs).to(device)
+    target_actor = Actor(envs,
+                         channel_scale=args.actor_channel_scale,
+                         fc_scale=args.actor_fc_scale).to(device)
+    
+
+
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
     q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.learning_rate)
@@ -965,7 +991,7 @@ if __name__ == "__main__":
             qf1_loss.backward()
             q_optimizer.step()
 
-            if global_step % args.policy_frequency == 0:
+            if iteration % args.policy_frequency == 0:
                 
                 # print("============Actor call 2============")
                 actor_loss = -qf1(data.observations, actor(data.observations)).mean()
@@ -979,7 +1005,7 @@ if __name__ == "__main__":
                 for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-                if global_step % 1 == 0:
+                if iteration % 1 == 0:
                     writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                     writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                     writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
@@ -989,7 +1015,7 @@ if __name__ == "__main__":
                     # print("Step time:", time.time() - step_time)
 
             gradient_log_interval = 256
-            if global_step % gradient_log_interval == 0:
+            if iteration % gradient_log_interval == 0:
 
                 log_gradients_in_model(actor, writer, global_step)
                 log_gradients_in_model(qf1, writer, global_step)
