@@ -849,7 +849,7 @@ if __name__ == "__main__":
                 num_scale_samples = pre_learn_iters // 20
                 scale_reset_interval =  int(pre_learn_iters / num_scale_samples)
                 # scale_reset_interval =  int(args.max_episode_steps / args.num_envs)
-                if (iteration % 20) == 0:
+                if (iteration % 2) == 0:
                 # if global_step % args.max_episode_steps == 0:
                     print("Resetting scales.")
 
@@ -907,29 +907,29 @@ if __name__ == "__main__":
 
 
         # Added for optomech.
-        if args.env_id == "DASIE-v1":
-            env_save_interval = 1000
-            if global_step % env_save_interval == 0:
+        # if args.env_id == "DASIE-v1":
+        #     env_save_interval = 1000
+        #     if global_step % env_save_interval == 0:
 
-                if args.write_env_state_info:
+        #         if args.write_env_state_info:
 
-                    if not args.record_env_state_info:
+        #             if not args.record_env_state_info:
 
-                        raise ValueError("You're trying to write, but haven't recorded, the " +
-                                        "step state information. Add --record_env_state_info.")
+        #                 raise ValueError("You're trying to write, but haven't recorded, the " +
+        #                                 "step state information. Add --record_env_state_info.")
         
-                    info = infos
+        #             info = infos
 
-                    info["step_index"] = global_step
-                    info["reward"] = rewards[0]
-                    info["terminated"] = terminations[0]
-                    info["truncated"] = truncations[0]
-                    info["action"] = actions[0]
-                    info["observation"] = next_obs[0]
+        #             info["step_index"] = global_step
+        #             info["reward"] = rewards[0]
+        #             info["terminated"] = terminations[0]
+        #             info["truncated"] = truncations[0]
+        #             info["action"] = actions[0]
+        #             info["observation"] = next_obs[0]
 
-                    # Save the info dictionary.
-                    with open(os.path.join(episode_save_path, 'step_' + str(global_step) + '.pkl'), 'wb') as f:
-                        pickle.dump(info, f)
+        #             # Save the info dictionary.
+        #             with open(os.path.join(episode_save_path, 'step_' + str(global_step) + '.pkl'), 'wb') as f:
+        #                 pickle.dump(info, f)
 
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
