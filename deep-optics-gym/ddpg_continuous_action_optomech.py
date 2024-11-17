@@ -492,7 +492,7 @@ gym.envs.registration.register(
 
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env, channel_scale=32, fc_scale=128, visual=True):
+    def __init__(self, env, channel_scale=32, fc_scale=128, low_dim=True):
         super().__init__()
 
         # Get the observation space shape from the environment.
@@ -508,7 +508,7 @@ class QNetwork(nn.Module):
             self.channels_last = False
             input_channels = envs.single_observation_space.shape[0]
         
-        self.visual = visual
+        self.visual = not(low_dim)
 
         self.o_conv = nn.Sequential(
                 layer_init(nn.Conv2d(input_channels, channel_scale, kernel_size=4, stride=2)),
@@ -581,7 +581,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 #     return layer
 
 class Actor(nn.Module):
-    def __init__(self, env, channel_scale=32, fc_scale=128, visual=True):
+    def __init__(self, env, channel_scale=32, fc_scale=128, low_dim=True):
         super().__init__()
         # Get the observation space shape from the environment.
         obs_shape = env.single_observation_space.shape
@@ -595,7 +595,7 @@ class Actor(nn.Module):
             input_channels = envs.single_observation_space.shape[0]
 
 
-        self.visual = visual
+        self.visual = not(low_dim)
 
         self.conv = nn.Sequential(
                 layer_init(nn.Conv2d(input_channels, channel_scale, kernel_size=4, stride=2)),
@@ -805,25 +805,25 @@ if __name__ == "__main__":
     actor = Actor(envs,
                   channel_scale=args.actor_channel_scale,
                   fc_scale=args.actor_fc_scale,
-                  visual=args.low_dim_actor).to(device)
+                  low_dim=args.low_dim_actor).to(device)
     
     # qf1 = QNetwork(envs).to(device)
     qf1 = QNetwork(envs,
                    channel_scale=args.qnetwork_channel_scale,
-                   fc_scale=args.qnetwork_fc_scale
-                   visual=args.low_dim_qnetwork).to(device)
+                   fc_scale=args.qnetwork_fc_scale,
+                   low_dim=args.low_dim_qnetwork).to(device)
     
     # qf1_target = QNetwork(envs).to(device)
     qf1_target = QNetwork(envs,
                           channel_scale=args.qnetwork_channel_scale,
                           fc_scale=args.qnetwork_fc_scale,
-                          visual=args.low_dim_qnetwork).to(device)   
+                          low_dim=args.low_dim_qnetwork).to(device)   
     
     # target_actor = Actor(envs).to(device)
     target_actor = Actor(envs,
                          channel_scale=args.actor_channel_scale,
                          fc_scale=args.actor_fc_scale,
-                         visual=args.low_dim_actor).to(device)
+                         low_dim=args.low_dim_actor).to(device)
     
 
     target_actor.load_state_dict(actor.state_dict())
