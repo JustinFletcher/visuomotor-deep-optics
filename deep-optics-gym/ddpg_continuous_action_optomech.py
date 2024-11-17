@@ -617,13 +617,13 @@ class Actor(nn.Module):
         self.fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
                                 lower_bound=-1/np.sqrt(fc_scale),
                                 upper_bound=1/np.sqrt(fc_scale))
-        # self.fc3 = uniform_init(nn.Linear(fc_scale, np.prod(env.single_action_space.shape)),
-        #                         lower_bound=-3e-4,
-        #                         upper_bound=3e-4)
-        # self.fc3 = nn.Linear(fc_scale, np.prod(env.single_action_space.shape))
         self.fc3 = uniform_init(nn.Linear(fc_scale, np.prod(env.single_action_space.shape)),
-                                lower_bound=-1/np.sqrt(fc_scale),
-                                upper_bound=1/np.sqrt(fc_scale))
+                                lower_bound=-3e-4,
+                                upper_bound=3e-4)
+        # self.fc3 = nn.Linear(fc_scale, np.prod(env.single_action_space.shape))
+        # self.fc3 = uniform_init(nn.Linear(fc_scale, np.prod(env.single_action_space.shape)),
+        #                         lower_bound=-1/np.sqrt(fc_scale),
+        #                         upper_bound=1/np.sqrt(fc_scale))
                                 
         # action rescaling
         self.register_buffer(
