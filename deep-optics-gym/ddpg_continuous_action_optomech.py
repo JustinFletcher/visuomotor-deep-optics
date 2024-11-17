@@ -843,8 +843,8 @@ if __name__ == "__main__":
         if global_step < args.learning_starts:
 
             if args.prelearning_sample == "scales":
-
-                if global_step % args.max_episode_steps == 0:
+                if (global_step % args.max_episode_steps) <= args.num_envs:
+                # if global_step % args.max_episode_steps == 0:
 
                     scales = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]
                     action_std = np.random.choice(scales)
