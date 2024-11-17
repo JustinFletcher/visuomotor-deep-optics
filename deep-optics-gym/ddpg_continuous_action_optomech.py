@@ -327,17 +327,23 @@ class Args:
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
+
+
     # Actor model parameters
     actor_channel_scale: int = 32
     """The scale of the actor model channels."""
     actor_fc_scale: int = 128
     """The scale of the actor model fully connected layers."""
+    low_dim_actor: bool = False
+    """Whether the actor model is visual."""
 
     # QNetwork model parameters
     qnetwork_channel_scale: int = 32
     """The scale of the QNetwork model channels."""
     qnetwork_fc_scale: int = 128
     """The scale of the QNetwork model fully connected layers."""
+    low_dim_qnetwork: bool = False
+    """Whether the qnetwork model is visual."""
 
 
     # Custom Algorthim Arguments
@@ -486,7 +492,7 @@ gym.envs.registration.register(
 
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env, channel_scale=32, fc_scale=128):
+    def __init__(self, env, channel_scale=32, fc_scale=128, visual=True):
         super().__init__()
 
         # Get the observation space shape from the environment.
@@ -501,11 +507,8 @@ class QNetwork(nn.Module):
         else:
             self.channels_last = False
             input_channels = envs.single_observation_space.shape[0]
-        # print(obs_shape)
-        # print(self.channels_last)
-        # print(input_channels)
-        # die
-        self.visual = True
+        
+        self.visual = visual
 
         self.o_conv = nn.Sequential(
                 layer_init(nn.Conv2d(input_channels, channel_scale, kernel_size=4, stride=2)),
@@ -578,7 +581,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 #     return layer
 
 class Actor(nn.Module):
-    def __init__(self, env, channel_scale=32, fc_scale=128):
+    def __init__(self, env, channel_scale=32, fc_scale=128, visual=True):
         super().__init__()
         # Get the observation space shape from the environment.
         obs_shape = env.single_observation_space.shape
@@ -592,7 +595,7 @@ class Actor(nn.Module):
             input_channels = envs.single_observation_space.shape[0]
 
 
-        self.visual = True
+        self.visual = visual
 
         self.conv = nn.Sequential(
                 layer_init(nn.Conv2d(input_channels, channel_scale, kernel_size=4, stride=2)),
@@ -801,23 +804,27 @@ if __name__ == "__main__":
     # actor = Actor(envs).to(device)
     actor = Actor(envs,
                   channel_scale=args.actor_channel_scale,
-                  fc_scale=args.actor_fc_scale).to(device)
+                  fc_scale=args.actor_fc_scale,
+                  visual=args.low_dim_actor).to(device)
+    
     # qf1 = QNetwork(envs).to(device)
     qf1 = QNetwork(envs,
                    channel_scale=args.qnetwork_channel_scale,
-                   fc_scale=args.qnetwork_fc_scale).to(device)
+                   fc_scale=args.qnetwork_fc_scale
+                   visual=args.low_dim_qnetwork).to(device)
     
     # qf1_target = QNetwork(envs).to(device)
     qf1_target = QNetwork(envs,
                           channel_scale=args.qnetwork_channel_scale,
-                          fc_scale=args.qnetwork_fc_scale).to(device)
+                          fc_scale=args.qnetwork_fc_scale,
+                          visual=args.low_dim_qnetwork).to(device)   
     
     # target_actor = Actor(envs).to(device)
     target_actor = Actor(envs,
                          channel_scale=args.actor_channel_scale,
-                         fc_scale=args.actor_fc_scale).to(device)
+                         fc_scale=args.actor_fc_scale,
+                         visual=args.low_dim_actor).to(device)
     
-
 
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
