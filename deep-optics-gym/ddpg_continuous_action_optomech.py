@@ -843,8 +843,11 @@ if __name__ == "__main__":
         if global_step < args.learning_starts:
 
             if args.prelearning_sample == "scales":
-                if (global_step % args.max_episode_steps) <= args.num_envs:
+
+                scale_reset_interval =  int(args.max_episode_steps / args.num_envs)
+                if (iteration % scale_reset_interval) == 0:
                 # if global_step % args.max_episode_steps == 0:
+                    print("Resetting scales.")
 
                     scales = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]
                     action_std = np.random.choice(scales)
@@ -878,6 +881,11 @@ if __name__ == "__main__":
                                     ).to(device)
                 actions += noise
                 actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
+
+                # actions = actor(torch.Tensor(obs).to(device))
+                # actions += torch.normal(0, actor.action_scale * args.exploration_noise)
+                # actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
+
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
