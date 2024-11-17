@@ -871,6 +871,7 @@ if __name__ == "__main__":
                 # actions = actions * sin_value
                 # Idea: replace this with a (envs.single_action_space.sample() * actor.action_scale.item()
                 # actions += torch.normal(0, actor.action_scale * args.exploration_noise)
+                # TODO: Review this to make sure it's not slowing us down...
                 noise = torch.normal(0.0,
                                     actor.action_scale.cpu() * args.exploration_noise,
                                     # actions.cpu().size()
@@ -880,12 +881,8 @@ if __name__ == "__main__":
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-        # print("mean rewards:", rewards.mean())
-        # TODO: Strange behavior with the rewards.
-        # This logic isn't exactly correct...
-        # and sometimes some things get through even when they aren't recorded.
-        # and why don't all environments run all the time?? Add uniwue env names in env constructotr
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
+        
+         # TRY NOT TO MODIFY: record rewards for plotting purposes
         if "final_info" in infos:
             print(infos)
             for info in infos["final_info"]:
@@ -896,16 +893,8 @@ if __name__ == "__main__":
                 writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                 break
 
-        # From ppo.
-        # if "final_info" in infos:
-        #     for info in infos["final_info"]:
-        #         if info and "episode" in info:
-        #             print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-        #             writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-        #             writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
         # Added for optomech.
-
         if args.env_id == "DASIE-v1":
             env_save_interval = 1000
             if global_step % env_save_interval == 0:
@@ -984,8 +973,6 @@ if __name__ == "__main__":
                     # print("reward:", rewards.mean().item())
                     # print("SPS:", int(global_step / (time.time() - start_time)))
                     # print("Step time:", time.time() - step_time)
-                    writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-                    writer.add_scalar("charts/step_SPS", (args.num_envs / (time.time() - step_time)), global_step)
 
             gradient_log_interval = 256
             if global_step % gradient_log_interval == 0:
@@ -997,6 +984,8 @@ if __name__ == "__main__":
 
         print("Step time:", (time.time() - step_time) / args.num_envs)
         writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
+        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("charts/step_SPS", (args.num_envs / (time.time() - step_time)), global_step)
 
         global_step += args.num_envs
         # if global_step % 512 == 0:
