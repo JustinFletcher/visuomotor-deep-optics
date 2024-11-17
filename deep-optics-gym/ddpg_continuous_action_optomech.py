@@ -492,15 +492,15 @@ class QNetwork(nn.Module):
         # print(self.channels_last)
         # print(input_channels)
         # die
-        num_channels = 4
+        num_channels = 32
         self.visual = True
 
         self.o_conv = nn.Sequential(
                 layer_init(nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                # layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
-                # nn.ReLU(),
-                # layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
+                layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
                 nn.Flatten(),
             )
 
@@ -512,7 +512,7 @@ class QNetwork(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             output_dim = self.o_conv(x).shape[1]
 
-        fc_scale = 32
+        fc_scale = 128
         if self.visual:
             self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
                                         lower_bound=-1/np.sqrt(output_dim + vector_action_size),
@@ -580,16 +580,16 @@ class Actor(nn.Module):
             self.channels_last = False
             input_channels = envs.single_observation_space.shape[0]
 
-        num_channels = 4
+        num_channels = 32
 
         self.visual = True
 
         self.conv = nn.Sequential(
                 layer_init(nn.Conv2d(input_channels, num_channels, kernel_size=4, stride=2)),
                 nn.ReLU(),
-                # layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
-                # nn.ReLU(),
-                # layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
+                layer_init(nn.Conv2d(num_channels, num_channels // 2, kernel_size=4, stride=2)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(num_channels // 2, num_channels // 4, kernel_size=3, stride=1)),
                 nn.Flatten(),
             )
         
@@ -601,7 +601,7 @@ class Actor(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             output_dim = self.conv(x).shape[1]
 
-        fc_scale = 32
+        fc_scale = 128
         self.fc1 = uniform_init(nn.Linear(output_dim, fc_scale),
                                 lower_bound=-1/np.sqrt(output_dim),
                                 upper_bound=1/np.sqrt(output_dim))
