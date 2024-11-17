@@ -845,8 +845,11 @@ if __name__ == "__main__":
 
             if args.prelearning_sample == "scales":
 
-                scale_reset_interval =  int(args.max_episode_steps / args.num_envs)
-                if (iteration % scale_reset_interval) == 0:
+                pre_learn_iters = int(args.learning_starts / args.num_envs)
+                num_scale_samples = pre_learn_iters // 20
+                scale_reset_interval =  int(pre_learn_iters / num_scale_samples)
+                # scale_reset_interval =  int(args.max_episode_steps / args.num_envs)
+                if (iteration % 20) == 0:
                 # if global_step % args.max_episode_steps == 0:
                     print("Resetting scales.")
 
