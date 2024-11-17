@@ -834,7 +834,6 @@ if __name__ == "__main__":
     global_step = 0
     for iteration in range(args.total_timesteps):
 
-        global_step += args.num_envs
         
         # Print the global step
         print(global_step)
@@ -998,6 +997,8 @@ if __name__ == "__main__":
 
         print("Step time:", time.time() - step_time)
         writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
+
+        global_step += args.num_envs
         # if global_step % 512 == 0:
 
         #     killyourself
