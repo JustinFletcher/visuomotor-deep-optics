@@ -1624,7 +1624,6 @@ class DasieEnv(gym.Env):
             sublist = sublist[index]
         sublist[indices[-1]] = value
 
-
         return action_space
 
     def build_tree_from_action_space(self, action_space):
@@ -1900,7 +1899,7 @@ class DasieEnv(gym.Env):
              noisy_command=False,
              reset=False):
         
-        self.report_name = True
+        self.report_name = False
         if self.report_name:
             print("Step from Environment %s" % self.uuid)
 
