@@ -831,7 +831,10 @@ if __name__ == "__main__":
     start_time = time.time()
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
+    global_step = 0
+    for iteration in range(args.total_timesteps):
+
+        global_step += args.num_envs
         
         # Print the global step
         print(global_step)
@@ -983,6 +986,7 @@ if __name__ == "__main__":
                     # print("SPS:", int(global_step / (time.time() - start_time)))
                     # print("Step time:", time.time() - step_time)
                     writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                    writer.add_scalar("charts/step_SPS", (args.num_envs / (time.time() - step_time)), global_step)
 
             gradient_log_interval = 256
             if global_step % gradient_log_interval == 0:
