@@ -835,6 +835,8 @@ if __name__ == "__main__":
     global_step = 0
     for iteration in range(args.total_timesteps):
 
+        print("Iteration: ", iteration)
+
         
         # Print the global step
         print(global_step)
@@ -849,7 +851,7 @@ if __name__ == "__main__":
                 num_scale_samples = pre_learn_iters // 20
                 scale_reset_interval =  int(pre_learn_iters / num_scale_samples)
                 # scale_reset_interval =  int(args.max_episode_steps / args.num_envs)
-                if (iteration % 2) == 0:
+                if (iteration % 125) == 0:
                 # if global_step % args.max_episode_steps == 0:
                     print("Resetting scales.")
 
