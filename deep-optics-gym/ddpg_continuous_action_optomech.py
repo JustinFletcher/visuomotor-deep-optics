@@ -301,6 +301,8 @@ class Args:
     """Whether to use an AsynchronousVectorEnv"""
     subproc_env: bool = False
     """Whether to use a SubprocVectorEnv"""
+    model_save_interval: int = 100
+    """The interval between saving model weights"""
 
     # Algorithm specific arguments
     env_id: str = "Hopper-v4"
@@ -614,6 +616,8 @@ class Actor(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             output_dim = self.conv(x).shape[1]
 
+        self.ones_output = torch.ones(1, output_dim)
+
         self.fc1 = uniform_init(nn.Linear(output_dim, fc_scale),
                                 lower_bound=-1/np.sqrt(output_dim),
                                 upper_bound=1/np.sqrt(output_dim))
@@ -647,7 +651,7 @@ class Actor(nn.Module):
         if self.visual:
             x = F.relu(self.conv(x / 255.0))
         else:
-            x = F.relu(self.conv(x / 255.0) * 0.0)
+            x = self.ones_output
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = torch.tanh(self.fc3(x))
@@ -1016,7 +1020,7 @@ if __name__ == "__main__":
                     writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                     writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                     writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                    writer.add_scalar("reward/reward", rewards.mean().item(), global_step)
+                    writer.add_scalar("reward/", rewards.mean().item(), global_step)
                     # print("reward:", rewards.mean().item())
                     # print("SPS:", int(global_step / (time.time() - start_time)))
                     # print("Step time:", time.time() - step_time)
@@ -1029,42 +1033,41 @@ if __name__ == "__main__":
                 log_weights_in_model(actor, writer, global_step)
                 log_weights_in_model(qf1, writer, global_step)
 
+        if args.save_model:
+
+            if iteration % args.model_save_interval == 0:
+
+                model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
+                torch.save((actor.state_dict(), qf1.state_dict()), model_path)
+                print(f"model saved to {model_path}")
+                from cleanrl_utils.evals.ddpg_eval import evaluate
+
+                episodic_returns = evaluate(
+                    model_path,
+                    make_env,
+                    args.env_id,
+                    eval_episodes=10,
+                    run_name=f"{run_name}-eval",
+                    Model=(Actor, QNetwork),
+                    device=device,
+                    exploration_noise=args.exploration_noise,
+                )
+                for idx, episodic_return in enumerate(episodic_returns):
+                    writer.add_scalar("eval/episodic_return", episodic_return, idx)
+
+                if args.upload_model:
+                    from cleanrl_utils.huggingface import push_to_hub
+
+                    repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
+                    repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
+                    push_to_hub(args, episodic_returns, repo_id, "DDPG", f"runs/{run_name}", f"videos/{run_name}-eval")
+        
         print("Step time:", (time.time() - step_time) / args.num_envs)
         writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
         writer.add_scalar("charts/step_SPS", (args.num_envs / (time.time() - step_time)), global_step)
 
         global_step += args.num_envs
-        # if global_step % 512 == 0:
-
-        #     killyourself
-
-
-    if args.save_model:
-        model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
-        torch.save((actor.state_dict(), qf1.state_dict()), model_path)
-        print(f"model saved to {model_path}")
-        from cleanrl_utils.evals.ddpg_eval import evaluate
-
-        episodic_returns = evaluate(
-            model_path,
-            make_env,
-            args.env_id,
-            eval_episodes=10,
-            run_name=f"{run_name}-eval",
-            Model=(Actor, QNetwork),
-            device=device,
-            exploration_noise=args.exploration_noise,
-        )
-        for idx, episodic_return in enumerate(episodic_returns):
-            writer.add_scalar("eval/episodic_return", episodic_return, idx)
-
-        if args.upload_model:
-            from cleanrl_utils.huggingface import push_to_hub
-
-            repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
-            repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-            push_to_hub(args, episodic_returns, repo_id, "DDPG", f"runs/{run_name}", f"videos/{run_name}-eval")
 
     envs.close()
     writer.close()
