@@ -473,25 +473,6 @@ def make_env(env_id, idx, capture_video, run_name, flags):
 
         return thunk
 
-
-# Register our custom DASIE environment.
-gym.envs.registration.register(
-    id='DASIE-v1',
-    entry_point='deep-optics-gym.dasie:DasieEnv',
-    # max_episode_steps=4,
-    # reward_threshold=flags.reward_threshold,
-)
-
-
-# Register our custom VisualPendulum environment.
-gym.envs.registration.register(
-    id='VisualPendulum-v1',
-    entry_point='deep-optics-gym.visual_pendulum:VisualPendulumEnv',
-    max_episode_steps=200,
-)
-
-
-
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
     def __init__(self, env, channel_scale=32, fc_scale=128, low_dim=True):
@@ -655,16 +636,8 @@ class Actor(nn.Module):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = torch.tanh(self.fc3(x))
-        # print("=========x=========")
-        # print(x)
-        # print(self.action_scale)
-        # print(self.action_bias)
 
-        # print("==================")
         a = (x * self.action_scale + self.action_bias)
-        # print("=========a=========")
-        # print(a)
-        # print("==================")
         return a
 
 def log_gradients_in_model(model, logger, step):
@@ -709,7 +682,6 @@ if __name__ == "__main__":
         # reward_threshold=flags.reward_threshold,
     )
 
-
     # Register our custom VisualPendulum environment.
     gym.envs.registration.register(
         id='VisualPendulum-v1',
@@ -751,8 +723,6 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    # device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-
     # Check if MPS is available
     if torch.cuda.is_available():
         print("Running with CUDA")
@@ -764,29 +734,7 @@ if __name__ == "__main__":
         print("Running with CPU")
         device = torch.device("cpu")
 
-
     # env setup
-        
-    # if args.async_env:
-    #     envs = gym.vector.AsyncVectorEnv(
-    #         [lambda: gym.make(args.env_id, **vars(args))] * args.num_envs
-    #     )
-    # else:
-    #     envs = gym.vector.SyncVectorEnv(
-    #         [lambda: gym.make(args.env_id, **vars(args))] * args.num_envs
-    #     )
-    
-    # if args.async_env:
-    #     envs = gym.vector.AsyncVectorEnv(
-    #         [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
-    #         )
-    # else:
-    #     envs = gym.vector.SyncVectorEnv(
-    #         [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, args)] * args.num_envs
-    #         )
-    # envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
-    # assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
-
     if args.subproc_env:
         print("Initializing SubprocVectorEnv")
         envs = gym.vector.SubprocVectorEnv(
@@ -803,8 +751,6 @@ if __name__ == "__main__":
             [make_env(args.env_id, i, args.capture_video, run_name, args) for i in range(args.num_envs)],
         )
     
-    
-
     # actor = Actor(envs).to(device)
     actor = Actor(envs,
                   channel_scale=args.actor_channel_scale,
@@ -985,7 +931,6 @@ if __name__ == "__main__":
         if global_step > args.learning_starts:
             data = rb.sample(args.batch_size)
             with torch.no_grad():
-                # print("============Target actor call 1============")
                 next_state_actions = target_actor(data.next_observations)
                 qf1_next_target = qf1_target(data.next_observations, next_state_actions)
                 next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (qf1_next_target).view(-1)
@@ -1004,7 +949,6 @@ if __name__ == "__main__":
 
             if iteration % args.policy_frequency == 0:
                 
-                # print("============Actor call 2============")
                 actor_loss = -qf1(data.observations, actor(data.observations)).mean()
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -1021,9 +965,6 @@ if __name__ == "__main__":
                     writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                     writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                     writer.add_scalar("reward/", rewards.mean().item(), global_step)
-                    # print("reward:", rewards.mean().item())
-                    # print("SPS:", int(global_step / (time.time() - start_time)))
-                    # print("Step time:", time.time() - step_time)
 
             gradient_log_interval = 256
             if iteration % gradient_log_interval == 0:
@@ -1037,7 +978,7 @@ if __name__ == "__main__":
 
             if iteration % args.model_save_interval == 0:
 
-                model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
+                model_path = f"runs/{run_name}/{args.exp_name}_{str(iteration)}.cleanrl_model"
                 torch.save((actor.state_dict(), qf1.state_dict()), model_path)
                 print(f"model saved to {model_path}")
                 from cleanrl_utils.evals.ddpg_eval import evaluate
@@ -1055,12 +996,12 @@ if __name__ == "__main__":
                 for idx, episodic_return in enumerate(episodic_returns):
                     writer.add_scalar("eval/episodic_return", episodic_return, idx)
 
-                if args.upload_model:
-                    from cleanrl_utils.huggingface import push_to_hub
+                # if args.upload_model:
+                #     from cleanrl_utils.huggingface import push_to_hub
 
-                    repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
-                    repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-                    push_to_hub(args, episodic_returns, repo_id, "DDPG", f"runs/{run_name}", f"videos/{run_name}-eval")
+                #     repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
+                #     repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
+                #     push_to_hub(args, episodic_returns, repo_id, "DDPG", f"runs/{run_name}", f"videos/{run_name}-eval")
         
         print("Step time:", (time.time() - step_time) / args.num_envs)
         writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
