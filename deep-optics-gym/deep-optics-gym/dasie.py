@@ -242,6 +242,11 @@ class OpticalSystem(object):
 
     def __init__(self, **kwargs):
 
+        self.model_wind_diff_motion = kwargs["model_wind_diff_motion"]
+        self.model_gravity_diff_motion = kwargs["model_gravity_diff_motion"]
+        self.model_temp_diff_motion = kwargs["model_temp_diff_motion"]
+
+
         self.report_time = kwargs["report_time"]
         self.microns_opd_per_actuator_bit = 0.00015
         self.num_apertures = 15
@@ -256,8 +261,8 @@ class OpticalSystem(object):
         
         # Parameters for the optical simulation.
         num_pupil_grid_simulation_pixels = kwargs['focal_plane_image_size_pixels']
-        # self.wavelength = 763e-9
-        self.wavelength = 1000e-9
+        self.wavelength = 763e-9
+        # self.wavelength = 1000e-9
         aperture_type = kwargs['aperture_type']
         oversampling_factor = 8
 
@@ -268,7 +273,8 @@ class OpticalSystem(object):
 
         # Parameters for the atmosphere. Caution: better seeing = longer runs.
         # TODO: Externalize.
-        seeing = 0.6 # arcsec @ 500nm (convention)
+        # seeing = 0.6 # arcsec @ 500nm (convention)
+        seeing = 0.1 # arcsec @ 500nm (convention)
         outer_scale = 40 # meter
         tau0 = 1.0 / 30.0 # seconds (30 hz)
 
@@ -277,7 +283,8 @@ class OpticalSystem(object):
 
         # Parameters for the structual wind response model.
         # TODO: Externalize.
-        initial_ground_wind_speed_mps = 16.7
+        initial_ground_wind_speed_mps = 3.0
+        # initial_ground_wind_speed_mps = 16.7
         # The std of ground wind speed in m/s over one ms, joffre1988standard.
         self.ground_wind_speed_ms_sampled_std_mps = 0.08 * initial_ground_wind_speed_mps
         self.ground_wind_speed_mps = initial_ground_wind_speed_mps
@@ -317,8 +324,9 @@ class OpticalSystem(object):
         # Extract the provided focal plane pararmeters.
         # TODO: Refactor to add a separate focal grid for the SHWFS.
         num_focal_grid_pixels = kwargs['focal_plane_image_size_pixels']
-        # TODO: Externalize.
+        # # TODO: Externalize.
         kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
+        # kwargs['focal_plane_image_size_meters'] = 0.
         focal_plane_extent_metres = kwargs['focal_plane_image_size_meters']
 
         airy_extent_radians = 1.22 * self.wavelength / pupil_diameter
@@ -429,44 +437,8 @@ class OpticalSystem(object):
 
             wavefront = hcipy.Wavefront(self.aperture, self.wavelength)
             perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
-
-            # pupil_grid = hcipy.make_pupil_grid(
-            #     256,
-            #     diameter=pupil_diameter
-            # )
-            # focal_grid = hcipy.make_focal_grid(
-            #     q=sampling,
-            #     num_airy=num_airy,
-            #     spatial_resolution=self.wavelength * focal_length / pupil_diameter,
-            # )
-            # prop = hcipy.FraunhoferPropagator(pupil_grid, focal_grid)
-
-            # pupil_grid = hcipy.make_pupil_grid(256)
-            # wavefront = hcipy.Wavefront(aperture)
-            # focal_grid = hcipy.make_focal_grid(q=8, num_airy=16)
-            # prop = hcipy.FraunhoferPropagator(pupil_grid, focal_grid)
-            # focal_image_thiers = prop.forward(wavefront)
-
-            # fig = plt.figure()
-            # plt.subplot(1, 2, 1)
-            # plt.title('focal_image_thiers')
-            # hcipy.imshow_field(np.log10(focal_image_thiers.intensity / focal_image_thiers.intensity.max()), vmin=-5)
-            # plt.xlabel('Focal plane distance [$\lambda/D$]')
-            # plt.ylabel('Focal plane distance [$\lambda/D$]')
-            # plt.colorbar()
-        
-            # plt.subplot(1, 2, 2)
-            # plt.title('focal_image_ours')
-            # hcipy.imshow_field(np.log10(focal_image_ours.intensity / focal_image_ours.intensity.max()), vmin=-5)
-            # plt.xlabel('Focal plane distance [$\lambda/D$]')
-            # plt.ylabel('Focal plane distance [$\lambda/D$]')
-            # plt.colorbar()
-            # plt.show()
-            # die
-
             self.perfect_image = perfect_image.intensity
     
-
             # Store the baseline segment displacements.
             self._store_baseline_segment_displacements()
 
@@ -497,6 +469,10 @@ class OpticalSystem(object):
             # Unite the segments into a single mirror for low order modeling.
             self.segmented_mirror = hcipy.SegmentedDeformableMirror(segments)
             self.aperture = aperture
+
+            wavefront = hcipy.Wavefront(self.aperture, self.wavelength)
+            perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
+            self.perfect_image = perfect_image.intensity
 
             # Store the baseline segment displacements.
             self._store_baseline_segment_displacements()
@@ -543,7 +519,7 @@ class OpticalSystem(object):
         )
         self.dm = hcipy.DeformableMirror(dm_modes)
 
-        # TODO: Remove?
+        # TODO: Remove? This is an alternative way to build a DM.
         # Build a DM on the pupil grid.
         # self.dm_influence_functions = hcipy.make_gaussian_influence_functions(
         #     self.pupil_grid,
@@ -556,7 +532,7 @@ class OpticalSystem(object):
         if self.init_differential_motion:
             print("Initializing differential motion.")
             self._init_natural_diff_motion()
-            
+
         # Finally, make a camera.
         # Note: The camera is noiseless here; we add noise in the Env step().
         self.camera = hcipy.NoiselessDetector(focal_grid)
@@ -620,11 +596,18 @@ class OpticalSystem(object):
 
     def simulate(self):
 
+        """
+        
+        Simulate the optical system.
 
-        # Chain together the wavefronts using the optical elements to produce a frame.
+        This function simulates the optical system by propagating a wavefront
+        through the system, including the atmosphere, segmented mirror, DM, and
+        focal plane. The function also simulates natural differential motion
+        of the segmented mirror, if enabled.
+
+        """
 
         # Make a pupil plane wavefront from aperture
-
         object_wavefront_start_time = time.time()
 
 
@@ -750,14 +733,6 @@ class OpticalSystem(object):
         self.interaction_matrix = hcipy.ModeBasis(response_matrix)
 
 
-    # def randomize_dm(self):
-
-    #         self.dm.actuators = np.random.randn(len(self.dm.actuators)) / (np.arange(len(self.dm.actuators)) + 10)
-    #         self.dm.actuators *= 0.3 * self.wavelength / np.std(self.dm.surface)
-    #         # self.dm.flatten()
-    #         # self.dm.random(1e-6)
-    
-
     def get_science_frame(self, integration_seconds=1.0):
 
         integration_start_time = time.time()
@@ -783,9 +758,6 @@ class OpticalSystem(object):
             )
 
             self.instantaneous_psf = effective_psf
-
-            # self.instantaneous_psf
-            # print("self.instantaneous_psf %3.16f" % np.std(self.instantaneous_psf))
 
             if self.report_time:
                 print("-- Readout time: %0.6f" % (time.time() - read_out_start_time))
@@ -902,6 +874,15 @@ class OpticalSystem(object):
         optomech_ptt_displacements = np.zeros((self.num_apertures, 3))
 
 
+        # Convert the displacements to physical units
+        optomech_ptt_displacements[:, 0] *= 1e-6
+        optomech_ptt_displacements[:, 1] *= np.pi / (180 * 3600)
+        optomech_ptt_displacements[:, 2] *= np.pi / (180 * 3600)
+
+        # Limit the displacements to the phsyical range of the optomechanical system.
+        optomech_ptt_displacements[:, 0] 
+
+
         # Apply the displacements.
         self._apply_ptt_displacements(ptt_displacements=optomech_ptt_displacements)
 
@@ -942,56 +923,65 @@ class OpticalSystem(object):
         # ptt_displacements = np.random.randn(self.num_apertures, 3)
         # Microns to meters 1.0 -> 1e-6
 
-        # TODO: Modularize as a TelescopeEnvironment class.
-        # Update the windspeed.
-        # TODO: Add a time-scale to the wind speed evolution.
-        self.ground_wind_speed_mps += np.random.randn() * self.ground_wind_speed_ms_sampled_std_mps
-        # Apply some limits to wind speed.
-        if self.ground_wind_speed_mps < 0.0:
-            self.ground_wind_speed_mps = 0.0
-        if self.ground_wind_speed_mps > 20.0:
-            self.ground_wind_speed_mps = 20.0
+        if self.model_wind_diff_motion:
+            # TODO: Modularize as a TelescopeEnvironment class.
+            # Update the windspeed.
+            # TODO: Add a time-scale to the wind speed evolution.
+            self.ground_wind_speed_mps += np.random.randn() * self.ground_wind_speed_ms_sampled_std_mps
+            # Apply some limits to wind speed.
+            if self.ground_wind_speed_mps < 0.0:
+                self.ground_wind_speed_mps = 0.0
+            if self.ground_wind_speed_mps > 20.0:
+                self.ground_wind_speed_mps = 20.0
 
-        # Compute and apply the wind displacments.
-        # TODO: Compute these values. Need help from Tim and Ye.
-        # TODO: this is completely made up. Replace with real estimator.
-        wind_diff_motion_piston_micron_std = (self.ground_wind_speed_mps / 8) 
-        wind_diff_motion_tip_arcsec_std = (self.ground_wind_speed_mps / 32) 
-        wind_diff_motion_tilt_arcsec_std = (self.ground_wind_speed_mps / 32) 
-        wind_ptt_displacements = np.random.randn(self.num_apertures, 3)
-        # Sample displacement in meters.
-        # wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
-        # # Sample displacement in radians.
-        # wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
-        # wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std * np.pi / (180 * 3600)
-        self._apply_ptt_displacements(wind_ptt_displacements)
+            # Compute and apply the wind displacments.
+            # TODO: Compute these values. Need help from Tim and Ye.
+            # TODO: this is completely made up. Replace with real estimator.
+            wind_diff_motion_piston_micron_std = (self.ground_wind_speed_mps / 8) 
+            wind_diff_motion_tip_arcsec_std = (self.ground_wind_speed_mps / 32) 
+            wind_diff_motion_tilt_arcsec_std = (self.ground_wind_speed_mps / 32) 
+            wind_ptt_displacements = np.random.randn(self.num_apertures, 3)
+            # Sample displacement in meters.
+            wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
+            # # Sample displacement in radians.
+            wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
+            wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std * np.pi / (180 * 3600)
+            wind_incremental_factor = 0.01
+            self._apply_ptt_displacements(wind_ptt_displacements,
+                                          incremental=True,
+                                          incremental_factor=wind_incremental_factor)
         
-        # # Compute and apply the temperature displacments.
-        # self.ground_temp_ms_sampled_std_mps
-        # self.ground_temp_degcel
-        # # TODO: Compute these values. Need help from Tim and Ye.
-        # temp_ptt_displacements = np.random.randn(self.num_apertures, 3)
-        # # Sample displacement in meters.
-        # # TODO: This will always be 0.0 for now.
-        # temp_ptt_displacements[:, 0] *= self.ground_temp_ms_sampled_std_mps * 1e-6
-        # # Sample displacement in radians.
-        # temp_ptt_displacements[:, 1] *= self.ground_temp_ms_sampled_std_mps * np.pi / (180 * 3600)
-        # temp_ptt_displacements[:, 2] *= self.ground_temp_ms_sampled_std_mps * np.pi / (180 * 3600)
-        # self._apply_ptt_displacements(temp_ptt_displacements)
 
-        # # Compute and apply the gravity displacments.
-        # self.gravity_normal_ms_sampled_std_mps
-        # self.gravity_normal_deg
-        # # TODO: Compute these values. Need help from Tim and Ye.
-        # gravity_ptt_displacements = np.random.randn(self.num_apertures, 3)
-        # # TODO: This will always be 0.0 for now.
-        # # Sample displacement in meters.
-        # gravity_ptt_displacements[:, 0] *= self.gravity_normal_ms_sampled_std_mps * 1e-6
-        # # Sample displacement in radians.
-        # gravity_ptt_displacements[:, 1] *= self.gravity_normal_ms_sampled_std_mps * np.pi / (180 * 3600)
-        # gravity_ptt_displacements[:, 2] *= self.gravity_normal_ms_sampled_std_mps * np.pi / (180 * 3600)
-        # self._apply_ptt_displacements(gravity_ptt_displacements)
-    
+        if self.model_temp_diff_motion:
+
+            # # Compute and apply the temperature displacments.
+            # self.ground_temp_ms_sampled_std_mps
+            # self.ground_temp_degcel
+            # # TODO: Compute these values. Need help from Tim and Ye.
+            temp_ptt_displacements = np.random.randn(self.num_apertures, 3)
+            # # Sample displacement in meters.
+            # # TODO: This will always be 0.0 for now.
+            # temp_ptt_displacements[:, 0] *= self.ground_temp_ms_sampled_std_mps * 1e-6
+            # # Sample displacement in radians.
+            # temp_ptt_displacements[:, 1] *= self.ground_temp_ms_sampled_std_mps * np.pi / (180 * 3600)
+            # temp_ptt_displacements[:, 2] *= self.ground_temp_ms_sampled_std_mps * np.pi / (180 * 3600)
+            # self._apply_ptt_displacements(temp_ptt_displacements)
+
+        if self.model_gravity_diff_motion:
+
+            # # Compute and apply the gravity displacments.
+            # self.gravity_normal_ms_sampled_std_mps
+            # self.gravity_normal_deg
+            # # TODO: Compute these values. Need help from Tim and Ye.
+            gravity_ptt_displacements = np.random.randn(self.num_apertures, 3)
+            # # TODO: This will always be 0.0 for now.
+            # # Sample displacement in meters.
+            # gravity_ptt_displacements[:, 0] *= self.gravity_normal_ms_sampled_std_mps * 1e-6
+            # # Sample displacement in radians.
+            # gravity_ptt_displacements[:, 1] *= self.gravity_normal_ms_sampled_std_mps * np.pi / (180 * 3600)
+            # gravity_ptt_displacements[:, 2] *= self.gravity_normal_ms_sampled_std_mps * np.pi / (180 * 3600)
+            # self._apply_ptt_displacements(gravity_ptt_displacements)
+        
 
         return
     
@@ -1008,140 +998,203 @@ class OpticalSystem(object):
         displacements.
         """
 
-        # Compute and apply the wind displacments.
-        self.ground_wind_speed_ms_sampled_std_mps
-        self.ground_wind_speed_mps
-        # TODO: Compute these values. Need help from Tim and Ye.
-        wind_diff_motion_piston_micron_std = 1.0
-        wind_diff_motion_tip_arcsec_std = 0.25
-        wind_diff_motion_tilt_arcsec_std = 0.25
-        wind_ptt_displacements = np.random.randn(self.num_apertures, 3)
-        # Sample displacement in meters.
-        # wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
-        # # Sample displacement in radians.
-        # wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
-        # wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
-        self._apply_ptt_displacements(wind_ptt_displacements)
-        
-        # Compute and apply the temperature displacments.
-        self.ground_temp_ms_sampled_std_mps
-        self.ground_temp_degcel
-        # TODO: Compute these values. Need help from Tim and Ye.
-        temp_diff_motion_piston_micron_std = 0.0
-        temp_diff_motion_tip_arcsec_std = 0.0
-        temp_diff_motion_tilt_arcsec_std = 0.0
-        temp_ptt_displacements = np.random.randn(self.num_apertures, 3)
-        # Sample displacement in meters.
-        # temp_ptt_displacements[:, 0] *= temp_diff_motion_piston_micron_std * 1e-6
-        # # Sample displacement in radians.
-        # temp_ptt_displacements[:, 1] *= temp_diff_motion_tip_arcsec_std  * np.pi / (180 * 3600)
-        # temp_ptt_displacements[:, 2] *= temp_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
-        self._apply_ptt_displacements(temp_ptt_displacements)
+        if self.model_wind_diff_motion:
 
-        # Compute and apply the gravity displacments.
-        self.gravity_normal_ms_sampled_std_mps
-        self.gravity_normal_deg
-        # TODO: Compute these values. Need help from Tim and Ye.
-        gravity_diff_motion_piston_micron_std = 300.0
-        gravity_diff_motion_tip_arcsec_std = 15.0
-        gravity_diff_motion_tilt_arcsec_std = 15.0
-        gravity_ptt_displacements = np.random.randn(self.num_apertures, 3)
-        # Sample displacement in meters.
-        # gravity_ptt_displacements[:, 0] *= gravity_diff_motion_piston_micron_std * 1e-6
-        # # Sample displacement in radians.
-        # gravity_ptt_displacements[:, 1] *= gravity_diff_motion_tip_arcsec_std * np.pi / (180 * 3600) 
-        # gravity_ptt_displacements[:, 2] *= gravity_diff_motion_tilt_arcsec_std * np.pi / (180 * 3600)
-        self._apply_ptt_displacements(gravity_ptt_displacements)
+            # Compute and apply the wind displacments.
+            self.ground_wind_speed_ms_sampled_std_mps
+            self.ground_wind_speed_mps
+            # TODO: Compute these values. Need help from Tim and Ye.
+            # TDOD: Validate "3 sigma" assuption here
+            wind_diff_motion_piston_micron_std = 1.0 / 3
+            wind_diff_motion_tip_arcsec_std = 0.25 / 3 
+            wind_diff_motion_tilt_arcsec_std = 0.25 / 3
+            wind_ptt_displacements = np.random.randn(self.num_apertures, 3)
+            # Sample displacement in meters.
+            wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
+            # Sample displacement in radians.
+            wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
+            wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
+            self._apply_ptt_displacements(wind_ptt_displacements)
+
+
+        if self.model_temp_diff_motion:
+            # Compute and apply the temperature displacments.
+            self.ground_temp_ms_sampled_std_mps
+            self.ground_temp_degcel
+            # TODO: Compute these values. Need help from Tim and Ye.
+            temp_diff_motion_piston_micron_std = 0.0
+            temp_diff_motion_tip_arcsec_std = 0.0
+            temp_diff_motion_tilt_arcsec_std = 0.0
+            temp_ptt_displacements = np.random.randn(self.num_apertures, 3)
+            # Sample displacement in meters.
+            temp_ptt_displacements[:, 0] *= temp_diff_motion_piston_micron_std * 1e-6
+            # Sample displacement in radians.
+            temp_ptt_displacements[:, 1] *= temp_diff_motion_tip_arcsec_std  * np.pi / (180 * 3600)
+            temp_ptt_displacements[:, 2] *= temp_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
+            self._apply_ptt_displacements(temp_ptt_displacements)
+
+
+        if self.model_gravity_diff_motion:
+            # Compute and apply the gravity displacments.
+            self.gravity_normal_ms_sampled_std_mps
+            self.gravity_normal_deg
+            # TODO: Compute these values. Need help from Tim and Ye.
+            gravity_diff_motion_piston_micron_std = 300.0
+            gravity_diff_motion_tip_arcsec_std = 15.0
+            gravity_diff_motion_tilt_arcsec_std = 15.0
+            gravity_ptt_displacements = np.random.randn(self.num_apertures, 3)
+            # Sample displacement in meters.
+            gravity_ptt_displacements[:, 0] *= gravity_diff_motion_piston_micron_std * 1e-6
+            # # Sample displacement in radians.
+            gravity_ptt_displacements[:, 1] *= gravity_diff_motion_tip_arcsec_std * np.pi / (180 * 3600) 
+            gravity_ptt_displacements[:, 2] *= gravity_diff_motion_tilt_arcsec_std * np.pi / (180 * 3600)
+            self._apply_ptt_displacements(gravity_ptt_displacements)
     
   
-    def _apply_ptt_displacements(self, ptt_displacements):
+    # def _apply_ptt_displacements(self, ptt_displacements):
+    #     """
+    #     Apply the provided incremental PTT displacements to the segmented
+    #     mirror.
+
+    #     Parameters
+    #     ----------
+    #     ptt_displacements : np.ndarray
+    #         An array of shape (num_apertures, 3) containing the commanded
+    #         PTT displacements to be applied to each segment. These are scaled
+    #         from 0.0 to 1.0, and must be converted to physical units here.
+
+
+    #     """
+
+    #     segments_ptt_commands = ptt_displacements
+
+    #     max_piston_correction_micron = 3000.0
+    #     max_tip_correction_as = 2000.0
+    #     max_tilt_correction_as = 2000.0
+
+    #     max_piston_correction_meters = max_piston_correction_micron * 1e-6
+    #     max_tip_correction_radians = max_tip_correction_as * np.pi / (180 * 3600)
+    #     max_tilt_correction_radians = max_tilt_correction_as * np.pi / (180 * 3600)
+
+    #     # Iterate over each segment, applying the provided displacements.
+    #     for segment_id in range(self.num_apertures):
+    #         print("Segment ID: %s" % segment_id)
+
+    #         # TODO: the following three lines need be generalized to nested lists.
+    #         segment_piston_command = segments_ptt_commands[segment_id, 0]
+    #         segment_tip_command = segments_ptt_commands[segment_id, 1]
+    #         segment_tilt_command = segments_ptt_commands[segment_id, 2]
+
+    #         # segment_piston_command = ((segment_piston_command - (0.5)) * 2)
+    #         # segment_tip_command = ((segment_tip_command - (0.5)) * 2)
+    #         # segment_tilt_command = ((segment_tilt_command - (0.5)) * 2)
+
+
+    #         segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
+    #         segment_tip_command_radians = segment_tip_command * max_tip_correction_radians
+    #         segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
+
+
+    #         # TODO: Externalize.
+    #         direct_command = True
+
+    #         if direct_command:
+
+    #             piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
+    #             tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
+    #             tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + segment_tilt_command_radians
+
+    #         else:
+
+
+    #             # First, get the ptt displacements in meters of of this segement...
+    #             (segment_piston,
+    #              segment_tip,
+    #              segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+
+    #             piston_state = segment_piston + segment_piston_command_meters
+    #             tip_state = segment_tip + segment_tip_command_radians
+    #             tilt_state = segment_tilt + segment_tilt_command_radians
+
+    #             # Enforce limits on incremental commmands.
+    #             if abs(piston_state) > abs(max_piston_correction_meters):
+                    
+    #                 # If a command would exceed limits, it is ignored entirely.
+    #                 piston_state = segment_piston
+                
+    #             if abs(tip_state) > abs(max_tip_correction_radians):
+
+    #                 # If a command would exceed limits, it is ignored entirely.
+    #                 tip_state = segment_tip
+
+    #             if abs(tilt_state) > abs(max_tilt_correction_radians):
+
+    #                 # If a command would exceed limits, it is ignored entirely.
+    #                 tilt_state = segment_tilt
+
+
+    #         print("+apply_ptt_displacements-get_set_segment_actuators")
+    #         print(self.segmented_mirror.get_segment_actuators(segment_id))
+    #         # Set the actuators in meter and radians.
+    #         self.segmented_mirror.set_segment_actuators(
+    #             segment_id,
+    #             piston_state,
+    #             tip_state,
+    #             tilt_state
+    #         )
+    #         print(self.segmented_mirror.get_segment_actuators(segment_id))
+    #         print("-apply_ptt_displacements-get_set_segment_actuators")
+  
+    def _apply_ptt_displacements(self,
+                                 ptt_displacements,
+                                 incremental=False,
+                                 incremental_factor=1.0):
+
         """
         Apply the provided incremental PTT displacements to the segmented
         mirror.
+
 
         Parameters
         ----------
         ptt_displacements : np.ndarray
             An array of shape (num_apertures, 3) containing the commanded
-            PTT displacements to be applied to each segment. These are scaled
-            from 0.0 to 1.0, and must be converted to physical units here.
-
-
+            PTT displacements to be applied to each segment. Each displacement
+            is to be provided in microns, while both tip and tilt are to be 
+            given in arcseconds.
         """
-
-        segments_ptt_commands = ptt_displacements
-
-        max_piston_correction_micron = 3000.0
-        max_tip_correction_as = 2000.0
-        max_tilt_correction_as = 2000.0
-
-        max_piston_correction_meters = max_piston_correction_micron * 1e-6
-        max_tip_correction_radians = max_tip_correction_as * np.pi / (180 * 3600)
-        max_tilt_correction_radians = max_tilt_correction_as * np.pi / (180 * 3600)
 
         # Iterate over each segment, applying the provided displacements.
         for segment_id in range(self.num_apertures):
+            # print("Segment ID: %s" % segment_id)
 
-            # TODO: the following three lines need be generalized to nested lists.
-            segment_piston_command = segments_ptt_commands[segment_id, 0]
-            segment_tip_command = segments_ptt_commands[segment_id, 1]
-            segment_tilt_command = segments_ptt_commands[segment_id, 2]
-
-            # segment_piston_command = ((segment_piston_command - (0.5)) * 2)
-            # segment_tip_command = ((segment_tip_command - (0.5)) * 2)
-            # segment_tilt_command = ((segment_tilt_command - (0.5)) * 2)
-
-
-            segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
-            segment_tip_command_radians = segment_tip_command * max_tip_correction_radians
-            segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
-
-
-            # TODO: Externalize.
-            direct_command = True
-
-            if direct_command:
-
-                piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
-                tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
-                tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + segment_tilt_command_radians
-
-            else:
-
+            if incremental:
 
                 # First, get the ptt displacements in meters of of this segement...
                 (segment_piston,
                  segment_tip,
                  segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
 
-                piston_state = segment_piston + segment_piston_command_meters
-                tip_state = segment_tip + segment_tip_command_radians
-                tilt_state = segment_tilt + segment_tilt_command_radians
+                segment_piston_displacement = segment_piston + (incremental_factor * ptt_displacements[segment_id, 0])
+                segment_tip_displacement = segment_tip + (incremental_factor * ptt_displacements[segment_id, 1])
+                segment_tilt_displacement = segment_tilt + (incremental_factor * ptt_displacements[segment_id, 2])
 
-                # Enforce limits on incremental commmands.
-                if abs(piston_state) > abs(max_piston_correction_meters):
-                    
-                    # If a command would exceed limits, it is ignored entirely.
-                    piston_state = segment_piston
-                
-                if abs(tip_state) > abs(max_tip_correction_radians):
+            else:
 
-                    # If a command would exceed limits, it is ignored entirely.
-                    tip_state = segment_tip
-
-                if abs(tilt_state) > abs(max_tilt_correction_radians):
-
-                    # If a command would exceed limits, it is ignored entirely.
-                    tilt_state = segment_tilt
+                # TODO: the following three lines need be generalized to nested lists.
+                segment_piston_displacement = ptt_displacements[segment_id, 0]
+                segment_tip_displacement = ptt_displacements[segment_id, 1]
+                segment_tilt_displacement = ptt_displacements[segment_id, 2]
 
 
             # Set the actuators in meter and radians.
             self.segmented_mirror.set_segment_actuators(
                 segment_id,
-                piston_state,
-                tip_state,
-                tilt_state
-            ) 
+                segment_piston_displacement,
+                segment_tip_displacement,
+                segment_tilt_displacement
+            )
+
 
     def command_tensioners(self, tensioner_commands):
 
@@ -1158,6 +1211,7 @@ class OpticalSystem(object):
         self._optomechanical_interaction(tension_forces)
 
         return
+
 
     def _store_baseline_segment_displacements(self):
 
@@ -1205,7 +1259,6 @@ class OpticalSystem(object):
         # max_piston_correction_micron = .25
         # max_tip_correction_as = 2.0
         # max_tilt_correction_as = 2.0
-
 
         max_piston_correction_meters = max_piston_correction_micron * 1e-6
         max_tip_correction_radians = max_tip_correction_as * np.pi / (180 * 3600)
@@ -1265,25 +1318,30 @@ class OpticalSystem(object):
                     # If a command would exceed limits, it is ignored entirely.
                     tilt_state = segment_tilt
 
-
             # Set the actuators in meter and radians.
             self.segmented_mirror.set_segment_actuators(
                 segment_id,
                 piston_state,
                 tip_state,
                 tilt_state
-            ) 
-
+            )
 
 
     
 class DasieEnv(gym.Env):
     """
     Description:
-        A distributed aperture telescope is tasked to observe an extended space
-        object. This object and the intervening atmosphere cause an at-aperture
-        illuminance for each aperture. These apertures reflect light onto a
-        deformable secondary mirror, which is actuated by a grid of actuators.
+        A distributed aperture telescope is tasked to observe an astrophysical 
+        scene. This scene and the intervening atmosphere cause an at-aperture
+        illuminance for each aperture. Each apertures reflects light onto an
+        articulated secondary mirror. Finally, the light is split and then
+        propogated to both a science camera and a wavefront sensor. The science
+        camera produces a focal plane image, while the wavefront sensor
+        produces a set of slopes. The agent is tasked with controlling the 
+        optomechanical system, including the optomechanical support structure 
+        actuators, the articulated secondary mirror actuators, and the
+        defromable mirror actuators. Several reawrd functions are available, 
+        and the control surfaces, scene, and atmosphere are all configurable.
 
         We adopt the convention that an environment step comprises a single
         occurence of the longest amonst the frame, control, and decision (i.e.,
@@ -1308,10 +1366,12 @@ class DasieEnv(gym.Env):
         Each observation is a single frame of the focal plane image.
         
     Actions:
-        Type: N x N int16 ndarray
 
     Reward:
-        Currently undefined. Eventually computed from SNIIRS gains.
+        Several reward functions are available. The default is the negative
+        sum of the squared differences between the current and target focal
+        plane images. Reward can be configured using the reward_function
+        parameter.
 
     Starting State:
         Currently undefined.
@@ -1349,10 +1409,12 @@ class DasieEnv(gym.Env):
         self.randomize_dm = kwargs['randomize_dm']
         self.reward_function = kwargs['reward_function']
         self.ao_loop_active = kwargs['ao_loop_active']
-        # TODO: Externalize.
+
+        # TODO: Externalize these.
         self.microns_opd_per_actuator_bit = 0.00015
         self.stroke_count_limit = 20000
-        self.dm_gain = 0.6
+        self.dm_gain = 0.3
+        # self.dm_gain = 0.6
         self.dm_leakage = 0.01
 
         print("==== Start: Initializing Environment ====")
@@ -1610,21 +1672,21 @@ class DasieEnv(gym.Env):
             return lst
 
 
-    def assign_value_by_tree_address(self, action_space_list, value, tree_address):
+    # def assign_value_by_tree_address(self, action_space_list, value, tree_address):
 
-        # Define the string of indices
-        indices_str = "0_1_0_1"
+    #     # Define the string of indices
+    #     indices_str = "0_1_0_1"
 
-        # Convert the string to a list of integers
-        indices = list(map(int, tree_address.split('_')))
+    #     # Convert the string to a list of integers
+    #     indices = list(map(int, tree_address.split('_')))
 
-        # Use the indices to assign a new value to the corresponding element in the nested list
-        sublist = action_space_list
-        for index in indices[:-1]:
-            sublist = sublist[index]
-        sublist[indices[-1]] = value
+    #     # Use the indices to assign a new value to the corresponding element in the nested list
+    #     sublist = action_space_list
+    #     for index in indices[:-1]:
+    #         sublist = sublist[index]
+    #     sublist[indices[-1]] = value
 
-        return action_space
+    #     return action_space
 
     def build_tree_from_action_space(self, action_space):
 
@@ -1707,7 +1769,6 @@ class DasieEnv(gym.Env):
         except:
 
             raise Warning("No action tree found. Building tree from action space.")
-
             action_tree = self.build_tree_from_action_space(action_space)
 
 
@@ -1758,10 +1819,11 @@ class DasieEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
 
-        full_reset = False
+        print("=== Start: Reset Environment ===")
+        full_reset = True
         if full_reset: 
+
             # Set the initial state. This is the first thing called in an episode.
-            print("=== Start: Reset Environment ===")
             print("Instantiating a New Optical System")
 
             self.build_optical_system(**self.kwargs)
@@ -1780,8 +1842,6 @@ class DasieEnv(gym.Env):
             # self.action = np.zeros_like(self.action_space.sample())
             self.action = self.zero_action_space.sample()
 
-            print("Populating Initial State")
-
             # TODO: Compute the calibration noise level to generate a sample.
             calibration_noise_nm = 10.0
             calibration_noise_microns = calibration_noise_nm / 1000
@@ -1798,12 +1858,14 @@ class DasieEnv(gym.Env):
             # )
             # dm_calibration_noise_counts = dm_calibration_noise.astype(np.int16)
 
+        # Initialize natural structural differential motion.
+        if self.kwargs['init_differential_motion']:
+            print("Initializing differential motion.")
+            self.optical_system._init_natural_diff_motion()
 
-            # if self.randomize_dm:
-                
-            #     print("Randomizing DM")
-            #     self.optical_system.randomize_dm()
+        self.optical_system._store_baseline_segment_displacements()
 
+        print("Populating Initial State")
         for _ in range(self.frames_per_decision):
 
             (initial_state, _, _, _, info) = self.step(
@@ -1885,11 +1947,6 @@ class DasieEnv(gym.Env):
             deepcopy_science_readout_raster
         )
 
-        # deepcopy_shwfs_slopes = copy.deepcopy(self.shwfs_slopes)
-        # self.state_content["shwfs_slopes"].append(
-        #     deepcopy_shwfs_slopes
-        # )
-
         if self.report_time:
             print("- Deepcopy time:   %.6f" %
                     (time.time() - deepcopy_start))
@@ -1932,7 +1989,6 @@ class DasieEnv(gym.Env):
         # Update the current action to be the provided action.
 
         # TODO: Convert vector action to tree action here.
-        # structured_action = self.flat_to_dict(action, self.dict_action_space)
         self.action = self.flat_to_dict(action, self.dict_action_space)
         
         # TODO: Replace this with a static property.
@@ -1942,9 +1998,6 @@ class DasieEnv(gym.Env):
         # Run the step simulation loop.
         for frame_num in range(self.frames_per_decision):
 
-            # print("-Running frame %s of %s." % (frame_num + 1,
-            #                                     self.frames_per_decision))
-
             # Create a blank frame for manual integration.
             frame = np.zeros(self.image_shape, dtype=np.float64)
 
@@ -1952,7 +2005,6 @@ class DasieEnv(gym.Env):
             for command_num in range(self.commands_per_frame):
 
                 self.episode_time_ms += self.control_interval_ms
-                # self.state_content["action_times"].append(self.episode_time_ms)
 
                 # Evolve the atmosphere to the current time.
                 atmospere_evolution_start = time.time()
@@ -1961,11 +2013,10 @@ class DasieEnv(gym.Env):
                     print("- Atmosphere time: %.6f" % (time.time() - atmospere_evolution_start))
 
                 # Get the commanded actuations.
-                # TODO: Add direct dm command support to enable focal plane ao.
                 command = self.action[command_num]
                     
                 # TODO: externalize this.
-                command_tensioners = True
+                command_tensioners = False
                 if command_tensioners:
 
                     tensioner_commands = command[1]
@@ -1979,6 +2030,7 @@ class DasieEnv(gym.Env):
                     self.optical_system.command_secondaries(secondaries_commands)
 
                 # TODO: externalize this.
+                # TODO: Add direct dm command support to enable focal plane ao.
                 command_dm = False
                 if command_dm:
 
@@ -2013,7 +2065,6 @@ class DasieEnv(gym.Env):
                             integration_seconds=integration_seconds
                         )
                         
-                        # TODO: Record the slopes.
                         # Compute the correction slopes for the DM.
                         shwfs_slopes = self.optical_system.shwfse.estimate([shwfs_readout_vector + 1e-10])
                         shwfs_slopes -= self.optical_system.reference_slopes
@@ -2033,8 +2084,8 @@ class DasieEnv(gym.Env):
                     self.science_readout_raster = np.reshape(science_readout_vector,
                                                              self.image_shape)
 
-                    # Note: This step accumulates the partial readout rasters, in effect manually
-                    #       integrating them outside of HCIPy.
+                    # Note: This step accumulates the partial readout rasters,
+                    # in effect manually integrating them outside of HCIPy.
                     frame += self.science_readout_raster
 
                     # Deepcopy the environment state so that it can be stored later.
@@ -2044,21 +2095,23 @@ class DasieEnv(gym.Env):
             # Finally, append this frame to the stack of focal plane images.
             self.focal_plane_images.append(frame)
 
-        # Encode the frames as 256
+        # Encode the frames as 256 ** 2
 
         # Set the state to focal plane image.
         self.state = self.focal_plane_images
-
-        # self.reward_function = "ao_rms_slope"
-
-        # print(self.reward_function)
-        # die
 
         if self.reward_function == "strehl":
 
             strehls = list()
         
             for focal_plane_image in self.focal_plane_images:
+
+                # reshape to image
+                # test_perfect_image = np.reshape(self.optical_system.perfect_image, self.image_shape)
+                # plt.imshow(np.log(test_perfect_image / np.max(test_perfect_image)))
+                # plt.colorbar()
+                # plt.show()
+                # die
 
                 strehls.append(hcipy.metrics.get_strehl_from_focal(
                     focal_plane_image.flatten() / np.max(focal_plane_image),
