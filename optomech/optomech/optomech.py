@@ -1328,7 +1328,7 @@ class OpticalSystem(object):
 
 
     
-class DasieEnv(gym.Env):
+class OptomechEnv(gym.Env):
     """
     Description:
         A distributed aperture telescope is tasked to observe an astrophysical 

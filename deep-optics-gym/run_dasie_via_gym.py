@@ -102,7 +102,8 @@ def cli_main(flags):
 
             elif flags.action_type == "none":
                 
-                action = np.zeros_like(env.action_space.sample())
+                action = env.zero_action_space.sample()
+                # action = np.zeros_like(env.action_space.sample())
 
             else: 
 
@@ -199,13 +200,14 @@ if __name__ == "__main__":
                         type=float,
                         default=25.0,
                         help='Max reward per episode.')
-
+    
     parser.add_argument('--num_steps',
                         type=int,
                         default=500,
                         help='Number of steps to run.')
 
-    parser.add_argument('--silence', action='store_true',
+    parser.add_argument('--silence',
+                        action='store_true',
                         default=False,
                         help='If provided, be quiet.')
 
@@ -213,6 +215,13 @@ if __name__ == "__main__":
                         type=str,
                         default="test",
                         help='Which version of the DASIE sim do we use?')
+
+    
+    parser.add_argument('--reward_function', 
+                        type=str,
+                        default="ao_rms_slope",
+                        help='The reward function name.')
+
 
     parser.add_argument('--render_frequency',
                         type=int,
@@ -229,6 +238,16 @@ if __name__ == "__main__":
                         default=4.0,
                         help='Action control interval in milliseconds.')
     
+    # Flags for natural differntial motion.
+
+    # Flag for simulate_differential_motion
+    parser.add_argument('--simulate_differential_motion',
+                        action='store_true',
+                        default=False,
+                        help='If provided, simulate differential motion.')
+    
+
+
     parser.add_argument('--frame_interval_ms',
                         type=float,
                         default=12.0,
@@ -249,11 +268,13 @@ if __name__ == "__main__":
                         default=500.0,
                         help='DPI of the rendered image.')
 
-    parser.add_argument('--record_env_state_info', action='store_true',
+    parser.add_argument('--record_env_state_info',
+                        action='store_true',
                         default=False,
                         help='If provided, record the environment state info.')
     
-    parser.add_argument('--write_env_state_info', action='store_true',
+    parser.add_argument('--write_env_state_info',
+                        action='store_true',
                         default=False,
                         help='If provided, write the env state info to disk.')
     
@@ -262,12 +283,14 @@ if __name__ == "__main__":
                         default="./tmp/",
                         help='The directory in which to write state data.')
     
-    parser.add_argument('--randomize_dm', action='store_true',
+    parser.add_argument('--randomize_dm',
+                        action='store_true',
                         default=False,
                         help='If True, randomize the DM on reset.')
     
+
     
-    
+
 
     ############################ DASIE FLAGS ##################################
     parser.add_argument('--extended_object_image_file', type=str,
@@ -286,6 +309,13 @@ if __name__ == "__main__":
                         type=int,
                         default=2**1,
                         help='Number of frames input to the model.')
+    
+    parser.add_argument('--num_tensioners',
+                        type=int,
+                        default=16,
+                        help='Number of tensioners to model.')
+    
+    
 
     parsed_flags, _ = parser.parse_known_args()
 
