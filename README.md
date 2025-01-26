@@ -102,20 +102,20 @@ pip install hcipy
 You have now completed and verfied installation of all external dependencies. Next, validate build and install the DeepOpticsGym-v0 environment used for this work. 
 
 ```
-python deep-optics-gym/run_dasie_via_gym.py
+python optomech/run_dasie_via_gym.py
 ```
 
 If successful, this test should run the environment open-loop. To see a live visualization, run:
 
 ```
-python deep-optics-gym/run_dasie_via_gym.py --render --record_env_state_info
+python optomech/run_dasie_via_gym.py --render --record_env_state_info
 
 ```
 
 You should see the latest science frame and partial PSF as debug_output.png in the repo top-level directory. To see running times and add an atmosphere, invoke:
 
 ```
-python deep-optics-gym/run_dasie_via_gym.py --report_time --num_atmosphere_layers=2
+python optomech/run_dasie_via_gym.py --report_time --num_atmosphere_layers=2
 ```
 
 ## Adding an agent.
@@ -127,13 +127,13 @@ There is an place for an agent in `run_dasie_via_gym.py`. Please don't directly 
 Rendering is deliberately decoupled from epsiode simulation. To render an environment, you must both record and write environment state information. These are flag-configurable variables so that users can optionally disable them to minimize step time during model training.
 
 '''
-python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --num_atmosphere_layers=2
+python optomech/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --num_atmosphere_layers=2
 '''
 
 Once you have a saved episode, you can render it using the following command by substituting the directory of your choice for the UUID shown below. If mulitple episode save directories are present in the provided directory, the `render_history.py` will choose the most recently modified one by default, as a convenience to the developer. Note that this is a little buggy cross-OS, so YMMV.
 
 '''
-python deep-optics-gym/render_history.py --episode_info_dir=./tmp/a3161c4f-00ed-4fbe-841e-bc4f42c810f2 
+python optomech/render_history.py --episode_info_dir=./tmp/a3161c4f-00ed-4fbe-841e-bc4f42c810f2 
 '''
 
 ## Running an AO test.
@@ -143,37 +143,37 @@ You can exercise the functionality of the AO-based reward function independently
 The command below will initialize and run an episode in which a scene comprising a single non-resolved target is imaged without an atmosphere by a perfectly stable optomechanical system that is initialized with a small random deformation in a deformable mirror placed along the optical path.
 
 ```
-python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf
+python optomech/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf
 ```
 
 The following command will render the prior episode. The render should show a speckle pattern that gradually converges to a sharp PSF, along with a view of the DM surface, which should flatten out.
 
 ```
-python deep-optics-gym/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=dm
+python optomech/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=dm
 ```
 
 Now that we know the AO is working, we can increase the scenario complexity until it fails, thereby establishing the task to be addressed by an autonomous agent. The following command will construct a scenario in which the differential motion of the sub-apertures is realistic, which prevents AO loop closure. Here, differential motion is a forward-controllable proxy for phase wrap - as differential motion increases, so does the maximium phase difference across a wavefront.
 
 ```
-python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf --simulate_differential_motion
+python optomech/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf --simulate_differential_motion
 ```
 
 In the example below, the post-correction surface of the segments are shown. Due to the random walk of the natural differential motion they vary across time and prevent AO loop closure.
 
 ```
-python deep-optics-gym/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=diffmotion
+python optomech/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=diffmotion
 ```
 
 By running this experiment, we see that AO correction begins to fail under conditions of relatively modest differential motion. This poses the problem to be solved: we must produce an agent that mitigates natural differential motion to improve wavefront stability and allow the AO loop to close. Since AO loop closure is our first objective, we introduce a reward function that is a proxy for that objective. The next command will run a few steps in an environment with this reward. Note that the agent here is a null agent, it takes no action.
 
 ```
-python deep-optics-gym/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf --simulate_differential_motion --reward_function=ao_rms_slope
+python optomech/run_dasie_via_gym.py --record_env_state_info --write_env_state_info --report_time --action_type=none --object_type=single --randomize_dm --ao_interval_ms=1.0 --control_interval_ms=2.0 --frame_interval_ms=4.0 --decision_interval_ms=8.0 --num_steps=4 --num_atmosphere_layers=1 --aperture_type=elf --simulate_differential_motion --reward_function=ao_rms_slope
 ```
 
 Now we have all we need to visualize the problem from our agent's point of view. The next command renders the environment as the agent would see it. Each step is rendered individually, beginning with the focal plane observations that inform the agent. The agents actions are shown as tensors encoding control surface commands, and several environment and performance values are plotted. 
 
 ```
-python deep-optics-gym/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=agent_view
+python optomech/render_history.py --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/tmp/ --render_mode=agent_view
 ```
 
 Note that the agent here is a null agent - it takes no action. To visualize a randomly acting agent, rerun the experiment and switch `action_type=none` to `action_type=random`.
@@ -297,7 +297,7 @@ range of the control task. After running the command below, we find that
 training fails.
 
 ```
-poetry run python ./deep-optics-gym/ddpg_continuous_action_optomech.py --env-id DASIE-v1 --object_type=single --ao_interval_ms=8.0 --control_interval_ms=8.0 --frame_interval_ms=8.0 --decision_interval_ms=8.0 --num_atmosphere_layers=0 --aperture_type=elf --focal_plane_image_size_pixels=256 --seed=88887 --tau=0.004 --exploration_noise=0.001 --reward_function negastrehl --learning_starts=25000 --policy_frequency 2 --batch_size=128 --max_episode_steps=200
+poetry run python ./optomech/ddpg_continuous_action_optomech.py --env-id DASIE-v1 --object_type=single --ao_interval_ms=8.0 --control_interval_ms=8.0 --frame_interval_ms=8.0 --decision_interval_ms=8.0 --num_atmosphere_layers=0 --aperture_type=elf --focal_plane_image_size_pixels=256 --seed=88887 --tau=0.004 --exploration_noise=0.001 --reward_function negastrehl --learning_starts=25000 --policy_frequency 2 --batch_size=128 --max_episode_steps=200
 ```
 
 
@@ -313,7 +313,7 @@ each pre-training episode, the standard deviation of the distribution is
 choosen with uniform probability from a set of scale values. 
 
 ```
-poetry run python ./deep-optics-gym/ddpg_continuous_action_optomech.py --env-id DASIE-v1 --object_type=single --ao_interval_ms=8.0 --control_interval_ms=8.0 --frame_interval_ms=8.0 --decision_interval_ms=8.0 --num_atmosphere_layers=0 --aperture_type=elf --focal_plane_image_size_pixels=256 --seed=88887 --tau=0.004 --exploration_noise=0.001 --reward_function negastrehl --learning_starts=25000 --policy_frequency 2 --batch_size=128 --max_episode_steps=1000 --prelearning_sample=scales
+poetry run python ./optomech/ddpg_continuous_action_optomech.py --env-id DASIE-v1 --object_type=single --ao_interval_ms=8.0 --control_interval_ms=8.0 --frame_interval_ms=8.0 --decision_interval_ms=8.0 --num_atmosphere_layers=0 --aperture_type=elf --focal_plane_image_size_pixels=256 --seed=88887 --tau=0.004 --exploration_noise=0.001 --reward_function negastrehl --learning_starts=25000 --policy_frequency 2 --batch_size=128 --max_episode_steps=1000 --prelearning_sample=scales
 ```
 
 Now, the training routine produces a stable, high-performance model. On a 
@@ -321,7 +321,7 @@ high-performance system, we can increase the number of environment replicas
 and scale of the model to improve training performance.
 
 ```
-poetry run python ./deep-optics-gym/ddpg_continuous_action_optomech.py --env-id DASIE-v1 --object_type=single --ao_interval_ms=8.0 --control_interval_ms=8.0 --frame_interval_ms=8.0 --decision_interval_ms=8.0 --num_atmosphere_layers=0 --aperture_type=elf --focal_plane_image_size_pixels=256 --seed=88887 --tau=0.004 --exploration_noise=0.001 --reward_function negastrehl --learning_starts=100000 --policy_frequency 4 --batch_size=512 --max_episode_steps=125 --prelearning_sample=scales --num_envs=64 --async_env --low_dim_actor --low_dim_qnetwork --actor_fc_scale=1024 --qnetwork_fc_scale=1024
+poetry run python ./optomech/ddpg_continuous_action_optomech.py --env-id DASIE-v1 --object_type=single --ao_interval_ms=8.0 --control_interval_ms=8.0 --frame_interval_ms=8.0 --decision_interval_ms=8.0 --num_atmosphere_layers=0 --aperture_type=elf --focal_plane_image_size_pixels=256 --seed=88887 --tau=0.004 --exploration_noise=0.001 --reward_function negastrehl --learning_starts=100000 --policy_frequency 4 --batch_size=512 --max_episode_steps=125 --prelearning_sample=scales --num_envs=64 --async_env --low_dim_actor --low_dim_qnetwork --actor_fc_scale=1024 --qnetwork_fc_scale=1024
 ```
 
 Without aberration, the model can maximize performance by simply predicting an
@@ -333,21 +333,21 @@ periodically saving the model then rendering on-policy rollouts. To save the
 actor model, simply add the `save_model` flag to any run, like so:
 
 ```
-poetry run python ./deep-optics-gym/ddpg_continuous_action_optomech.py --env-id DASIE-v1 --object_type=single --ao_interval_ms=8.0 --control_interval_ms=8.0 --frame_interval_ms=8.0 --decision_interval_ms=8.0 --num_atmosphere_layers=0 --aperture_type=elf --focal_plane_image_size_pixels=256 --seed=88887 --tau=0.004 --exploration_noise=0.001 --reward_function=negastrehl --learning_starts=25000 --policy_frequency 2 --batch_size=128 --max_episode_steps=1000 --prelearning_sample=scales --model_save_interval=10000 --save_model
+poetry run python ./optomech/ddpg_continuous_action_optomech.py --env-id DASIE-v1 --object_type=single --ao_interval_ms=8.0 --control_interval_ms=8.0 --frame_interval_ms=8.0 --decision_interval_ms=8.0 --num_atmosphere_layers=0 --aperture_type=elf --focal_plane_image_size_pixels=256 --seed=88887 --tau=0.004 --exploration_noise=0.001 --reward_function=negastrehl --learning_starts=25000 --policy_frequency 2 --batch_size=128 --max_episode_steps=1000 --prelearning_sample=scales --model_save_interval=10000 --save_model
 ```
 
 To rollout the saved policy, use the following command and insert the path to 
 the policy model that you wish to view.
 
 ```
-poetry run python ./deep-optics-gym/rollout.py --model_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/eval_ddpg_continuous_action_optomech_800/ddpg_continuous_action_optomech_800_policy.pt --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True
+poetry run python ./optomech/rollout.py --model_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/eval_ddpg_continuous_action_optomech_800/ddpg_continuous_action_optomech_800_policy.pt --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True
 ```
 
 Once this is complete, you have a rollout with all the environment data saved.
 To view it, run:
 
 ```
-poetry run python deep-optics-gym/render_history.py --render_mode=agent_view --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/eval_ddpg_continuous_action_optomech_800/0bc2cd6e-4d1e-4b93-aa7a-c3557ace1945
+poetry run python optomech/render_history.py --render_mode=agent_view --episode_info_dir=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/eval_ddpg_continuous_action_optomech_800/0bc2cd6e-4d1e-4b93-aa7a-c3557ace1945
 ```
 
 Finally, it may be useful to generate static, off-policy datasets to evaluate 
@@ -356,7 +356,7 @@ entirely at random. Either a path to a saved environment variable JSON or
 keywords must be provided. 
 
 ```
-poetry run python ./deep-optics-gym/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True --dataset  --eval_save_path=./tmp/dataset_example --num_episodes=4
+poetry run python ./optomech/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True --dataset  --eval_save_path=./tmp/dataset_example --num_episodes=4
 ```
 
 To increase the size of the dataset, increase the 
@@ -365,7 +365,7 @@ increase the sample rate, at the cost of removing detailed rollout logging for
 visualization of training data.
 
 ```
-poetry run python ./deep-optics-gym/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=False --record_env_state_info=True --dataset  --eval_save_path=./tmp/dataset_example --num_episodes=100
+poetry run python ./optomech/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=False --record_env_state_info=True --dataset  --eval_save_path=./tmp/dataset_example --num_episodes=100
 ```
 
 ### Static Aberration
@@ -376,13 +376,13 @@ aberrations to an episode, set the environment flag `init_differential_motion`
 to `True`.
 
 ```
-poetry run python ./deep-optics-gym/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True --eval_save_path=./tmp/debug --num_episodes=1 --init_differential_motion=True --prelearning_sample=zeros  --simulate_differential_motion=False --model_wind_diff_motion=True --model_gravity_diff_motion=False --model_temp_diff_motion=False
+poetry run python ./optomech/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True --eval_save_path=./tmp/debug --num_episodes=1 --init_differential_motion=True --prelearning_sample=zeros  --simulate_differential_motion=False --model_wind_diff_motion=True --model_gravity_diff_motion=False --model_temp_diff_motion=False
 ```
 
 We can render this rollout with the following command. 
 
 ```
-poetry run python deep-optics-gym/render_history.py --render_mode=agent_view --episode_info_dir=./tmp/debug/
+poetry run python optomech/render_history.py --render_mode=agent_view --episode_info_dir=./tmp/debug/
 ```
 
 This render displays the expected instrumental scenario: there are static
@@ -392,14 +392,14 @@ episodes. We can also introduce AO to this scenario to show that AO apartially,
 but not entirely, corrects for the aberrations.
 
 ```
-poetry run python ./deep-optics-gym/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True --dataset  --eval_save_path=./tmp/dataset_example --num_episodes=4 --model_wind_diff_motion=True --model_gravity_diff_motion=False --model_temp_diff_motion=False --prelearning_sample=zeros --init_differential_motion=True --ao_loop_active=True
+poetry run python ./optomech/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True --dataset  --eval_save_path=./tmp/dataset_example --num_episodes=4 --model_wind_diff_motion=True --model_gravity_diff_motion=False --model_temp_diff_motion=False --prelearning_sample=zeros --init_differential_motion=True --ao_loop_active=True
 ```
 
 To learn correction policies for the static abberation scenario, we may train a
 model, as follows.
 
 ```
-poetry run python ./deep-optics-gym/ddpg_continuous_action_optomech.py \
+poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --env-id DASIE-v1 \
 --object_type=single \
 --ao_interval_ms=1.0 \
@@ -440,7 +440,7 @@ though you made need to create some empty directories if you wish to use the
 command unchanged.
 
 ```
-poetry run python ./deep-optics-gym/rollout.py \
+poetry run python ./optomech/rollout.py \
 --env_vars_path=./datasets/wind_diff_motion_random_action/args_wind_init_motion.json \
 --write_env_state_info=True \
 --record_env_state_info=True \
@@ -453,7 +453,7 @@ We recommend visually verifying the desired behavor of the dataset before
 proceeding. This can be done via:
 
 ```
-poetry run python deep-optics-gym/render_history.py \
+poetry run python optomech/render_history.py \
 --render_mode=agent_view \
 --episode_info_dir=./datasets/wind_diff_motion_random_action/
 ```
@@ -465,7 +465,7 @@ same experiment with the rollout sample (i.e., action) policy set to `zeros`.
 
 
 ```
-poetry run python ./deep-optics-gym/rollout.py \
+poetry run python ./optomech/rollout.py \
 --env_vars_path=./datasets/wind_diff_motion_random_action/args_wind_init_motion.json \
 --write_env_state_info=True \
 --record_env_state_info=True \
@@ -478,7 +478,7 @@ poetry run python ./deep-optics-gym/rollout.py \
 This, viewed as before, will reveal the small perturbations due to wind. 
 
 ```
-poetry run python deep-optics-gym/render_history.py \
+poetry run python optomech/render_history.py \
 --render_mode=agent_view \
 --episode_info_dir=./datasets/wind_diff_motion_random_action/ \
 ```
@@ -493,7 +493,7 @@ helpful to sample actions at multiple scales. This may be done as follows:
 
 
 ```
-poetry run python ./deep-optics-gym/rollout.py \
+poetry run python ./optomech/rollout.py \
 --env_vars_path=./datasets/wind_diff_motion_scales_action/args_wind_init_motion.json \
 --write_env_state_info=True \
 --record_env_state_info=True \
@@ -508,7 +508,7 @@ poetry run python ./deep-optics-gym/rollout.py \
 Visualizing this, we can see that every 10 steps a new scale is choose.
 
 ```
-poetry run python deep-optics-gym/render_history.py \
+poetry run python optomech/render_history.py \
 --render_mode=agent_view \
 --episode_info_dir=./datasets/wind_diff_motion_scales_action/ \
 ```
@@ -516,7 +516,7 @@ poetry run python deep-optics-gym/render_history.py \
 
 
 ```
-poetry run python ./deep-optics-gym/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True --eval_save_path=./tmp/debug --num_episodes=1 --init_differential_motion=True --prelearning_sample=zeros  --simulate_differential_motion=True --model_wind_diff_motion=True --model_gravity_diff_motion=False --model_temp_diff_motion=False
+poetry run python ./optomech/rollout.py --env_vars_path=/Users/fletcher/research/visuomotor-deep-optics/runs/DASIE-v1__ddpg_continuous_action_optomech__88887__1737236515/args.json --write_env_state_info=True --record_env_state_info=True --eval_save_path=./tmp/debug --num_episodes=1 --init_differential_motion=True --prelearning_sample=zeros  --simulate_differential_motion=True --model_wind_diff_motion=True --model_gravity_diff_motion=False --model_temp_diff_motion=False
 ```
 
 
