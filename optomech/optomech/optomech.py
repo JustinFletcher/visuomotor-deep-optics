@@ -273,10 +273,11 @@ class OpticalSystem(object):
 
         # Parameters for the atmosphere. Caution: better seeing = longer runs.
         # TODO: Externalize.
-        # seeing = 0.6 # arcsec @ 500nm (convention)
-        seeing = 0.1 # arcsec @ 500nm (convention)
+        seeing = 0.5 # arcsec @ 500nm (convention)
+        # seeing = 0.0001 # arcsec @ 500nm (convention)
         outer_scale = 40 # meter
-        tau0 = 1.0 / 30.0 # seconds (30 hz)
+        # Greenwood time constant seconds
+        tau0 = 10.0
 
         self.simulate_differential_motion = kwargs['simulate_differential_motion']
         self.init_differential_motion = kwargs['init_differential_motion']
@@ -326,7 +327,6 @@ class OpticalSystem(object):
         num_focal_grid_pixels = kwargs['focal_plane_image_size_pixels']
         # # TODO: Externalize.
         kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
-        # kwargs['focal_plane_image_size_meters'] = 0.
         focal_plane_extent_metres = kwargs['focal_plane_image_size_meters']
 
         airy_extent_radians = 1.22 * self.wavelength / pupil_diameter
@@ -367,6 +367,7 @@ class OpticalSystem(object):
         print("ifov (arcsec/pixel): %s" % self.ifov)
 
         # Build the object plane for this system.
+        print("Building object plane.")
         object_plane_extent_meters = 1.0
         object_plane_distance_meters = 1.0
         object_type=kwargs['object_type']
@@ -378,6 +379,7 @@ class OpticalSystem(object):
         )
 
         # Make the simulation grid for the pupil plane.
+        print("Building pupil grid.")
         self.pupil_grid = hcipy.make_pupil_grid(
             dims=num_pupil_grid_simulation_pixels,
             diameter=pupil_diameter
@@ -387,6 +389,7 @@ class OpticalSystem(object):
         self.atmosphere_layers = list()
 
         # Add the atmosphere layers.
+        print("Building atmosphere layers.")
         for layer_num in range(kwargs['num_atmosphere_layers']):
 
             layer = hcipy.InfiniteAtmosphericLayer(self.pupil_grid,
@@ -405,6 +408,7 @@ class OpticalSystem(object):
         focal_grid = focal_grid.shifted(focal_grid.delta / 2)
 
         # Instantiate a Fraunhofer propagator from the pupil to focal plane.
+        print("Building pupil to focal propagator.")
         self.pupil_to_focal_propagator = hcipy.FraunhoferPropagator(
             self.pupil_grid,
             focal_grid, 
@@ -413,6 +417,7 @@ class OpticalSystem(object):
 
         # Build the selected aperture; elf is the default.
         # TODO: Someday we should generalize this to accept any HCIPy aperture.
+        print("Building aperture.")
         if aperture_type == "elf":
 
             # Instantiate a segmented aperture.
@@ -486,6 +491,7 @@ class OpticalSystem(object):
         
         # TODO: Externalize and modularize for other WFS types, including none.
         # Instantiate a Shack-Hartmann wavefront sensor.
+        print("Building Shack-Hartmann wavefront sensor.")
         f_number = 50
         num_lenslets = 40 # 40 lenslets along one diameter
         sh_diameter = 5e-3 # m
@@ -506,36 +512,44 @@ class OpticalSystem(object):
         self.shwfs_camera = hcipy.NoiselessDetector(focal_grid)
 
         # Instantiate a deformable mirror.
-        num_modes = 500
-        dm_modes = hcipy.make_disk_harmonic_basis(
-            self.pupil_grid,
-            num_modes,
-            pupil_diameter,
-            'neumann'
-        )
-        dm_modes = hcipy.ModeBasis(
-            [mode / np.ptp(mode) for mode in dm_modes],
-            self.pupil_grid
-        )
-        self.dm = hcipy.DeformableMirror(dm_modes)
+        print("Building deformable mirror.")
+        dm_model_type = "gaussian_influence"
 
-        # TODO: Remove? This is an alternative way to build a DM.
-        # Build a DM on the pupil grid.
-        # self.dm_influence_functions = hcipy.make_gaussian_influence_functions(
-        #     self.pupil_grid,
-        #     num_actuators_across_pupil=35,
-        #     actuator_spacing=pupil_diameter / 35
-        # )
-        # self.dm = hcipy.DeformableMirror(self.dm_influence_functions)
+        if dm_model_type == "disk_harmonic_basis":
+            num_modes = 500
+            dm_modes = hcipy.make_disk_harmonic_basis(
+                self.pupil_grid,
+                num_modes,
+                pupil_diameter,
+                'neumann'
+            )
+            dm_modes = hcipy.ModeBasis(
+                [mode / np.ptp(mode) for mode in dm_modes],
+                self.pupil_grid
+            )
+            self.dm = hcipy.DeformableMirror(dm_modes)
+
+        elif dm_model_type == "gaussian_influence":
+            self.dm_influence_functions = hcipy.make_gaussian_influence_functions(
+                self.pupil_grid,
+                num_actuators_across_pupil=35,
+                actuator_spacing=pupil_diameter / 35
+            )
+
+            self.dm = hcipy.DeformableMirror(self.dm_influence_functions)
 
         # Initialize natural structural differential motion.
         if self.init_differential_motion:
-            print("Initializing differential motion.")
+
+            print("Initializing natural differential motion.")
             self._init_natural_diff_motion()
 
         # Finally, make a camera.
         # Note: The camera is noiseless here; we add noise in the Env step().
+        print("Building camera.")
         self.camera = hcipy.NoiselessDetector(focal_grid)
+
+        print("Optical system initialized.")
 
     
 
@@ -585,11 +599,22 @@ class OpticalSystem(object):
         return
 
 
-    def command_dm(self, command_grid):
+    def command_dm(self, dm_command):
 
-        meters_opd_per_actuator_bit = self.microns_opd_per_actuator_bit * 1e-6
-        command_vector = command_grid.flatten().astype(np.float64)
-        self.dm.actuators += meters_opd_per_actuator_bit * command_vector
+        # meters_opd_per_actuator_bit = self.microns_opd_per_actuator_bit * 1e-6
+        # command_vector = command_grid.flatten().astype(np.float64)
+
+        # Compute the stroke limit of the DM.
+        dm_stroke_meters = self.stroke_count_limit * self.microns_opd_per_actuator_bit * 1e-6
+
+        # Unpack the DM command into a command vector with range [-1, 1].
+        command_vector = np.array([x[0] for x in dm_command])
+
+        # Scale the command vector to the phyiscal stroke limit of the DM.
+        dm_command_meters = (dm_stroke_meters / 2.0) * command_vector
+
+        # Set the dm actuators to the command vector, in meters.
+        self.dm.actuators = dm_command_meters
 
         return
     
@@ -708,6 +733,8 @@ class OpticalSystem(object):
         self.reference_slopes = self.shwfse.estimate([reference_image])
 
         for i in range(len(self.dm.actuators)):
+
+            print("Calibrating DM actuator %s." % i)
             
             slope = 0
 
@@ -870,7 +897,7 @@ class OpticalSystem(object):
         # Reshape the outputs to model three displacements per aperture.
         optomech_ptt_displacements = optomech_ptt_displacements.reshape((self.num_apertures, 3))
 
-        # Debug
+        # TODO: this turns off the optomechanical interaction.
         optomech_ptt_displacements = np.zeros((self.num_apertures, 3))
 
 
@@ -880,7 +907,7 @@ class OpticalSystem(object):
         optomech_ptt_displacements[:, 2] *= np.pi / (180 * 3600)
 
         # Limit the displacements to the phsyical range of the optomechanical system.
-        optomech_ptt_displacements[:, 0] 
+        # optomech_ptt_displacements[:, 0] = np.clip(optomech_ptt_displacements[:, 0], -1.0, 1.0)
 
 
         # Apply the displacements.
@@ -1050,100 +1077,6 @@ class OpticalSystem(object):
             gravity_ptt_displacements[:, 2] *= gravity_diff_motion_tilt_arcsec_std * np.pi / (180 * 3600)
             self._apply_ptt_displacements(gravity_ptt_displacements)
     
-  
-    # def _apply_ptt_displacements(self, ptt_displacements):
-    #     """
-    #     Apply the provided incremental PTT displacements to the segmented
-    #     mirror.
-
-    #     Parameters
-    #     ----------
-    #     ptt_displacements : np.ndarray
-    #         An array of shape (num_apertures, 3) containing the commanded
-    #         PTT displacements to be applied to each segment. These are scaled
-    #         from 0.0 to 1.0, and must be converted to physical units here.
-
-
-    #     """
-
-    #     segments_ptt_commands = ptt_displacements
-
-    #     max_piston_correction_micron = 3000.0
-    #     max_tip_correction_as = 2000.0
-    #     max_tilt_correction_as = 2000.0
-
-    #     max_piston_correction_meters = max_piston_correction_micron * 1e-6
-    #     max_tip_correction_radians = max_tip_correction_as * np.pi / (180 * 3600)
-    #     max_tilt_correction_radians = max_tilt_correction_as * np.pi / (180 * 3600)
-
-    #     # Iterate over each segment, applying the provided displacements.
-    #     for segment_id in range(self.num_apertures):
-    #         print("Segment ID: %s" % segment_id)
-
-    #         # TODO: the following three lines need be generalized to nested lists.
-    #         segment_piston_command = segments_ptt_commands[segment_id, 0]
-    #         segment_tip_command = segments_ptt_commands[segment_id, 1]
-    #         segment_tilt_command = segments_ptt_commands[segment_id, 2]
-
-    #         # segment_piston_command = ((segment_piston_command - (0.5)) * 2)
-    #         # segment_tip_command = ((segment_tip_command - (0.5)) * 2)
-    #         # segment_tilt_command = ((segment_tilt_command - (0.5)) * 2)
-
-
-    #         segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
-    #         segment_tip_command_radians = segment_tip_command * max_tip_correction_radians
-    #         segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
-
-
-    #         # TODO: Externalize.
-    #         direct_command = True
-
-    #         if direct_command:
-
-    #             piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
-    #             tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
-    #             tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + segment_tilt_command_radians
-
-    #         else:
-
-
-    #             # First, get the ptt displacements in meters of of this segement...
-    #             (segment_piston,
-    #              segment_tip,
-    #              segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
-
-    #             piston_state = segment_piston + segment_piston_command_meters
-    #             tip_state = segment_tip + segment_tip_command_radians
-    #             tilt_state = segment_tilt + segment_tilt_command_radians
-
-    #             # Enforce limits on incremental commmands.
-    #             if abs(piston_state) > abs(max_piston_correction_meters):
-                    
-    #                 # If a command would exceed limits, it is ignored entirely.
-    #                 piston_state = segment_piston
-                
-    #             if abs(tip_state) > abs(max_tip_correction_radians):
-
-    #                 # If a command would exceed limits, it is ignored entirely.
-    #                 tip_state = segment_tip
-
-    #             if abs(tilt_state) > abs(max_tilt_correction_radians):
-
-    #                 # If a command would exceed limits, it is ignored entirely.
-    #                 tilt_state = segment_tilt
-
-
-    #         print("+apply_ptt_displacements-get_set_segment_actuators")
-    #         print(self.segmented_mirror.get_segment_actuators(segment_id))
-    #         # Set the actuators in meter and radians.
-    #         self.segmented_mirror.set_segment_actuators(
-    #             segment_id,
-    #             piston_state,
-    #             tip_state,
-    #             tilt_state
-    #         )
-    #         print(self.segmented_mirror.get_segment_actuators(segment_id))
-    #         print("-apply_ptt_displacements-get_set_segment_actuators")
   
     def _apply_ptt_displacements(self,
                                  ptt_displacements,
@@ -1410,12 +1343,17 @@ class OptomechEnv(gym.Env):
         self.reward_function = kwargs['reward_function']
         self.ao_loop_active = kwargs['ao_loop_active']
 
+        self.command_tensioners = kwargs['command_tensioners']
+        self.command_secondaries = kwargs['command_secondaries']
+        self.command_dm = kwargs['command_dm']
+
         # TODO: Externalize these.
         self.microns_opd_per_actuator_bit = 0.00015
         self.stroke_count_limit = 20000
-        self.dm_gain = 0.3
-        # self.dm_gain = 0.6
+        # self.dm_gain = 0.9
+        self.dm_gain = 0.6
         self.dm_leakage = 0.01
+        # self.dm_leakage = 0.001
 
         print("==== Start: Initializing Environment ====")
 
@@ -1471,50 +1409,9 @@ class OptomechEnv(gym.Env):
         print("AO steps per frame: %s" % self.ao_steps_per_frame)
         print("Frames per decision: %s" % self.frames_per_decision)
 
-        # Create a dict to hold the some hidden state content.
         self.build_optical_system(**kwargs)
 
         self.episode_time_ms = 0.0
-
-        # Build the command grid, which is one-to-one with the action space.
-        # TODO: In the active optics formulation, this needs to be ttp secondaries and tensioners.
-        # TODO: Retain the ability to control any subset fo actuators.
-        # self.actuator_command_grid = np.zeros(
-        #     shape=(35, 35),
-        #     dtype=np.int16
-        # )
-        # Define a symmetric action space.
-        # action_shape = (self.commands_per_decision,
-        #                 self.actuator_command_grid.shape[0],
-        #                 self.actuator_command_grid.shape[1],)
-        # self.action_space = spaces.Box(low=-self.stroke_count_limit,
-        #                                high=self.stroke_count_limit,
-        #                                shape=action_shape,
-        #                                dtype=np.int16)
-
-        # FEATURE: Redefining to allow for better DM calibration.
-        # num_dm_modes = 500
-        # self.actuator_command_grid = np.zeros(
-        #     shape=(num_dm_modes),
-        #     dtype=np.float32
-        # )
-        # # FEATURE: redefining action space to match mode-based DM.
-        # action_shape = (self.commands_per_decision,
-        #                 num_dm_modes)
-        # # FEATURE: redefining action space to match mode-based DM; replace stroke limits.
-        # self.action_space = spaces.Box(low=-self.stroke_count_limit,
-        #                                high=self.stroke_count_limit,
-        #                                shape=action_shape,
-        #                                dtype=np.float32)
-        
-        # # FEATURE: reconfiguring action space to optomech
-        # num_tensioners = 16
-        # self.optical_system.num_apertures
-
-        # action_shape = (self.commands_per_decision,
-        #                 ((1, num_tensioners),
-        #                  (3, self.optical_system.num_apertures)
-        #                 ))
         
         self.secondary_max_displacement_micron = 1.0
         piston_space = spaces.Box(
@@ -1556,18 +1453,52 @@ class OptomechEnv(gym.Env):
         tensioners_tuple = tuple([tensioner_space] * self.optical_system.num_tensioners)
 
         tensioners_space = spaces.Tuple(tensioners_tuple)
+
+        len(self.optical_system.dm.actuators)
+
+
+        # Build the command grid, which is one-to-one with the action space.
+        # TODO: In the active optics formulation, this needs to be ttp secondaries and tensioners.
+        # TODO: Retain the ability to control any subset fo actuators.
+        # self.actuator_command_grid = np.zeros(
+        #     shape=(35, 35),
+        #     dtype=np.int16
+        # )
+        # Define a symmetric action space.
+        # action_shape = (self.commands_per_decision,
+        #                 self.actuator_command_grid.shape[0],
+        #                 self.actuator_command_grid.shape[1],)
+        # self.action_space = spaces.Box(low=-self.stroke_count_limit,
+        #                                high=self.stroke_count_limit,
+        #                                shape=action_shape,
+        #                                dtype=np.int16)
+
+
+        # TODO: Externalize
+        self.dm_stroke_micron = 1.0
+        dm_actuator_space = spaces.Box(
+            low=-self.dm_stroke_micron,
+            high=self.dm_stroke_micron,
+            shape=(1,),
+            dtype=np.float32
+        )
+
+        dm_tuple = tuple([dm_actuator_space] * len(self.optical_system.dm.actuators))
+        dm_space = spaces.Tuple(dm_tuple)
         
         single_command_space = spaces.Tuple((secondaries_space,
-                                             tensioners_space))
+                                             tensioners_space,
+                                             dm_space))
         
         self.dict_action_space = spaces.Tuple([single_command_space] * self.commands_per_decision)
 
+
         # Build a tree from the action space to enable translation.
         self.action_tree = self.build_tree_from_action_space(self.dict_action_space)
-
         self.action_space = self.flatten(self.dict_action_space,
                                          flat_space_low=-1.0,
                                          flat_space_high=1.0)
+        
 
         zero_piston_space = spaces.Box(
             low=0.0,
@@ -1606,9 +1537,20 @@ class OptomechEnv(gym.Env):
         zero_tensioners_tuple = tuple([zero_tensioner_space] * self.optical_system.num_tensioners)
 
         zero_tensioners_space = spaces.Tuple(zero_tensioners_tuple)
+
+        zero_dm_actuator_space = spaces.Box(
+            low=0.0,
+            high=0.0,
+            shape=(len(self.optical_system.dm.actuators),),
+            dtype=np.float32
+        )
+
+        zero_dm_tuple = tuple([zero_dm_actuator_space])
+
+        zero_dm_space = spaces.Tuple(zero_dm_tuple)
         
         zero_single_command_space = spaces.Tuple(
-            (zero_secondaries_space, zero_tensioners_space)
+            (zero_secondaries_space, zero_tensioners_space, zero_dm_space)
         )
 
         self.zero_dict_action_space = spaces.Tuple([zero_single_command_space] * self.commands_per_decision)
@@ -2015,27 +1957,20 @@ class OptomechEnv(gym.Env):
                 # Get the commanded actuations.
                 command = self.action[command_num]
                     
-                # TODO: externalize this.
-                command_tensioners = False
-                if command_tensioners:
+                if self.command_tensioners:
 
                     tensioner_commands = command[1]
                     self.optical_system.command_tensioners(tensioner_commands)
 
-                # TODO: externalize this.
-                command_secondaries = True
-                if command_secondaries:
+                if self.command_secondaries:
 
                     secondaries_commands = command[0]
                     self.optical_system.command_secondaries(secondaries_commands)
 
-                # TODO: externalize this.
-                # TODO: Add direct dm command support to enable focal plane ao.
-                command_dm = False
-                if command_dm:
-
-                    raise NotImplementedError("Agent DM command isn't implemented.")
+                if self.command_dm:
+                    
                     dm_command = command[2]
+
                     self.optical_system.command_dm(dm_command)
 
                 # Compute the number of seconds of integration per AO loop step.
@@ -2073,6 +2008,18 @@ class OptomechEnv(gym.Env):
 
                         # Perform wavefront compensation by setting the DM actuators.
                         self.optical_system.dm.actuators = (1 - self.dm_leakage) * self.optical_system.dm.actuators - self.dm_gain * self.reconstruction_matrix.dot(self.shwfs_slopes)
+
+
+                        self.microns_opd_per_actuator_bit = 0.00015
+                        self.stroke_count_limit = 20000
+
+                        stroke_limit = self.microns_opd_per_actuator_bit * self.stroke_count_limit * 1e-6 / 2
+                        # Finally, clip actuator values to the stroke limit.
+                        self.optical_system.dm.actuators = np.clip(
+                            self.optical_system.dm.actuators,
+                            -stroke_limit,
+                            stroke_limit
+                        )
 
                     if self.report_time:
                         print("-- AO Step time: %.6f" % (time.time() - ao_step_time_start))
