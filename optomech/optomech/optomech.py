@@ -34,6 +34,9 @@ from matplotlib import pyplot as plt
 from matplotlib import image
 from matplotlib.figure import Figure
 
+import pickle
+from pathlib import Path
+
 
 import astropy.units as u
 import hcipy
@@ -249,27 +252,106 @@ class OpticalSystem(object):
 
         self.report_time = kwargs["report_time"]
         self.microns_opd_per_actuator_bit = 0.00015
-        self.num_apertures = 15
+        # self.num_apertures = 15
+        self.num_apertures = 2
 
         self.num_tensioners = kwargs["num_tensioners"]
 
-        # Parameters for the pupil function
-        # focal_length = 200.0 # m
-        focal_length = 200.0 # m
-        pupil_diameter = 3.6 # m
-        elf_segment_centroid_diameter = 2.5 # m
+
+        aperture_type = kwargs['aperture_type']
+        # Build the selected aperture; elf is the default.
+        # TODO: Someday we should generalize this to accept any HCIPy aperture.
+        print("Building aperture.")
+        if aperture_type == "elf":
+
+            # Parameters for the pupil function
+            focal_length = 200.0 # m
+            pupil_diameter = 3.6 # m
+            elf_segment_centroid_diameter = 2.5 # m
+
+            # Initialize an empty structual interaction matrix.
+            self.optomech_interaction_matrix = None
+            interaction_size = 1
+            self._optomech_encoder = np.random.rand(self.num_tensioners, interaction_size)
+            self._optomech_decoder = np.random.rand(interaction_size, self.num_apertures * 3)
+
+
+            # Instantiate a segmented aperture.
+            aperture, segments = self.make_elf_aperture(
+                pupil_diameter=elf_segment_centroid_diameter,
+                num_apertures=15,
+                segment_diameter=0.5,
+                return_segments=True,
+            )
+
+        elif aperture_type == "circular":
+
+
+            # Parameters for the pupil function
+            focal_length = 200.0 # m
+            pupil_diameter = 3.6 # m
+            elf_segment_centroid_diameter = 2.5 # m
+
+            # Instantiate a circular aperture.
+            aper_coords = hcipy.SeparatedCoords(
+                (np.array([0.0]), np.array([0.0]))
+            )
+            segment_centers = hcipy.PolarGrid(aper_coords)
+            aperture = hcipy.make_circular_aperture(
+                elf_segment_centroid_diameter
+            )
+            segments = hcipy.make_segmented_aperture(
+                aperture,
+                segment_centers,
+                return_segments=True
+            )
+
+        elif aperture_type == "nanoelf":
+
+
+            # Parameters for the pupil function
+            focal_length = 60.0 # m
+            pupil_diameter = 0.0528 # m
+            elf_segment_centroid_diameter = 2.5 # m
+    
+            # Instantiate a segmented aperture.
+            aperture, segments = self.make_nanoelf_aperture(
+                pupil_diameter=pupil_diameter / 2.0,
+                num_apertures=2,
+                segment_diameter=0.0254 / 1.5,
+                return_segments=True,
+            )
+
+        elif aperture_type == "nanoelfplus":
+
+
+            # Parameters for the pupil function
+            focal_length = 60.0 # m
+            pupil_diameter = 0.0528 # m
+            elf_segment_centroid_diameter = 2.5 # m
+    
+            # Instantiate a segmented aperture.
+            aperture, segments = self.make_nanoelf_aperture(
+                pupil_diameter=pupil_diameter / 2.0,
+                num_apertures=3,
+                segment_diameter=0.0254 / 1.5,
+                return_segments=True,
+            )
+
+        else:
+
+            # Note: if you add aperture types, update this exception.
+            raise NotImplementedError(
+                "aperture_type was %s, but only 'elf' and 'circular' are \
+                implemented." % aperture_type)
+
+
         
         # Parameters for the optical simulation.
         num_pupil_grid_simulation_pixels = kwargs['focal_plane_image_size_pixels']
         self.wavelength = 763e-9
         # self.wavelength = 1000e-9
-        aperture_type = kwargs['aperture_type']
         oversampling_factor = 8
-
-        # Parameters for the instrument. 
-        # TODO: Make use of these.
-        flat_field = 0.00001
-        dark_current_rate = 1
 
         # Parameters for the atmosphere. Caution: better seeing = longer runs.
         # TODO: Externalize.
@@ -348,14 +430,6 @@ class OpticalSystem(object):
         num_airy = num_focal_grid_pixels / (2 * sampling)
 
 
-
-        # Initialize an empty structual interaction matrix.
-        self.interaction_matrix = None
-        interaction_size = 1
-        self._optomech_encoder = np.random.rand(self.num_tensioners, interaction_size)
-        self._optomech_decoder = np.random.rand(interaction_size, self.num_apertures * 3)
-
-
         # Log computed values to aid in debugging.
         print("num_focal_grid_pixels: %s" % num_focal_grid_pixels)
         print("focal_plane_extent_metres: %s" % focal_plane_extent_metres)
@@ -415,79 +489,26 @@ class OpticalSystem(object):
             focal_length
         )
 
-        # Build the selected aperture; elf is the default.
-        # TODO: Someday we should generalize this to accept any HCIPy aperture.
-        print("Building aperture.")
-        if aperture_type == "elf":
+        
 
-            # Instantiate a segmented aperture.
-            aperture, segments = self.make_elf_aperture(
-                pupil_diameter=elf_segment_centroid_diameter,
-                num_apertures=self.num_apertures,
-                segment_diameter=0.5,
-                return_segments=True,
-            )
+        # Evaluate the aperture and segments, initializing them.
+        aperture = hcipy.evaluate_supersampled(aperture,
+                                                self.pupil_grid,
+                                                oversampling_factor)
+        segments = hcipy.evaluate_supersampled(segments,
+                                                self.pupil_grid,
+                                                oversampling_factor)
+        
+        # Unite the segments into a single mirror for low order modeling.
+        self.segmented_mirror = hcipy.SegmentedDeformableMirror(segments)
+        self.aperture = aperture
 
-            # Evaluate the aperture, initializing them.
-            aperture = hcipy.evaluate_supersampled(aperture,
-                                                   self.pupil_grid,
-                                                   oversampling_factor)
-            segments = hcipy.evaluate_supersampled(segments,
-                                                   self.pupil_grid,
-                                                   oversampling_factor)
+        wavefront = hcipy.Wavefront(self.aperture, self.wavelength)
+        perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
+        self.perfect_image = perfect_image.intensity
 
-            # Unite the segments into a single mirror for low order modeling.
-            self.segmented_mirror = hcipy.SegmentedDeformableMirror(segments)
-            self.aperture = aperture
-
-            wavefront = hcipy.Wavefront(self.aperture, self.wavelength)
-            perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
-            self.perfect_image = perfect_image.intensity
-    
-            # Store the baseline segment displacements.
-            self._store_baseline_segment_displacements()
-
-        elif aperture_type == "circular":
-
-            # Instantiate a circular aperture.
-            aper_coords = hcipy.SeparatedCoords(
-                (np.array([0.0]), np.array([0.0]))
-            )
-            segment_centers = hcipy.PolarGrid(aper_coords)
-            aperture = hcipy.make_circular_aperture(
-                elf_segment_centroid_diameter
-            )
-            segments = hcipy.make_segmented_aperture(
-                aperture,
-                segment_centers,
-                return_segments=True
-            )
-
-            # Evaluate the aperture and segments, initializing them.
-            aperture = hcipy.evaluate_supersampled(aperture,
-                                                   self.pupil_grid,
-                                                   oversampling_factor)
-            segments = hcipy.evaluate_supersampled(segments,
-                                                   self.pupil_grid,
-                                                   oversampling_factor)
-
-            # Unite the segments into a single mirror for low order modeling.
-            self.segmented_mirror = hcipy.SegmentedDeformableMirror(segments)
-            self.aperture = aperture
-
-            wavefront = hcipy.Wavefront(self.aperture, self.wavelength)
-            perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
-            self.perfect_image = perfect_image.intensity
-
-            # Store the baseline segment displacements.
-            self._store_baseline_segment_displacements()
-
-        else:
-
-            # Note: if you add aperture types, update this exception.
-            raise NotImplementedError(
-                "aperture_type was %s, but only 'elf' and 'circular' are \
-                implemented." % aperture_type)
+        # Store the baseline segment displacements.
+        self._store_baseline_segment_displacements()
         
         # TODO: Externalize and modularize for other WFS types, including none.
         # Instantiate a Shack-Hartmann wavefront sensor.
@@ -705,12 +726,28 @@ class OpticalSystem(object):
         return shwfs_readout_image
     
 
-    def calibrate_dm_interaction_matrix(self):
+    def calibrate_dm_interaction_matrix(self, env_uuid):
 
         probe_amp = 0.01 * self.wavelength
         response_matrix = list()
 
         print("Calibrating DM.")
+
+        # If a DM interaction matrix pickle has already been computed, load it.
+        # Create save directory if it doesn't already exist.
+        dm_cache_path = os.path.join(
+                "./tmp/cache/",
+                str(env_uuid),
+            )
+        
+        if os.path.exists(dm_cache_path):
+                print("Found Cached Interaction Matrix.")
+                
+                with open(os.path.join(dm_cache_path,
+                          'dm_interaction_matrix.pkl'), 'rb') as f:
+                    self.interaction_matrix = pickle.load(f)
+                    return
+
 
         # First, take a reference image, which is just the aperture.
         wf = hcipy.Wavefront(self.aperture, self.wavelength)
@@ -758,6 +795,10 @@ class OpticalSystem(object):
             response_matrix.append(slope.ravel())
 
         self.interaction_matrix = hcipy.ModeBasis(response_matrix)
+
+        Path(dm_cache_path).mkdir(parents=True, exist_ok=True)
+        with open(os.path.join(dm_cache_path, "dm_interaction_matrix.pkl"), 'wb') as f:
+            pickle.dump(self.interaction_matrix, f)
 
 
     def get_science_frame(self, integration_seconds=1.0):
@@ -875,6 +916,71 @@ class OpticalSystem(object):
 
             return aperture
 
+
+    def make_nanoelf_aperture(self,
+                              pupil_diameter=2.5,
+                              num_apertures=15,
+                              segment_diameter=0.5,
+                              return_segments=True,
+                              **kwargs):
+
+        """
+        Create a ExoLife finder segmented aperture.
+
+
+        Parameters
+        ----------
+        pupil_diameter : float
+            The edge-to-edge diameter of the pupil in meters. TODO: Update
+        num_segments : int
+            The number of segments to add to the aperture 
+        segment_diameter : float
+            The diameter of each circular segment in meters.
+
+        return_segments : boolean
+            Whether to return a ModeBasis of all segments as well.
+
+        Returns
+        -------
+        Field generator
+            The segmented aperture.
+        list of Field generators
+            The segments. Only returned if return_segments is True.
+        """
+
+        pupil_radius = pupil_diameter / 2
+        segments = list()
+
+        # Linear space of angular coordinates for mirror centers
+        segment_angles = np.linspace(0, 2 * np.pi, num_apertures + 1)[:-1]
+
+        # Use HCIPy coordinate generation to generate mirror centers
+        aper_coords = hcipy.SeparatedCoords(
+                (np.array([pupil_radius]), segment_angles)
+        )
+
+        # Create an HCIPy "CartesianGrid" by creating PolarGrid and converting
+        segment_centers = hcipy.PolarGrid(aper_coords).as_('cartesian')
+
+        # Build a circular aperture.
+        aperture = hcipy.make_circular_aperture(
+                segment_diameter,
+        )       
+
+        # Place copies of the circular aperture at the segment centers.
+        aperture, segments = hcipy.make_segmented_aperture(
+            aperture,
+            segment_centers,
+            return_segments=return_segments
+        )
+
+        if return_segments:
+
+            return aperture, segments
+        
+        else:
+
+            return aperture
 
     def _optomechanical_interaction(self, tension_forces):
 
@@ -1203,8 +1309,14 @@ class OpticalSystem(object):
 
             # TODO: the following three lines need be generalized to nested lists.
             segment_piston_command = segments_ptt_commands[segment_id][0]
-            segment_tip_command = segments_ptt_commands[segment_id][1]
-            segment_tilt_command = segments_ptt_commands[segment_id][2]
+
+            if len(segments_ptt_commands[segment_id]) == 3:
+                segment_tip_command = segments_ptt_commands[segment_id][1]
+                segment_tilt_command = segments_ptt_commands[segment_id][2]
+
+            else:
+                segment_tip_command = 0.0
+                segment_tilt_command = 0.0
 
             # segment_piston_command = ((segment_piston_command - (0.5)) * 2)
             # segment_tip_command = ((segment_tip_command - (0.5)) * 2)
@@ -1412,86 +1524,104 @@ class OptomechEnv(gym.Env):
         self.build_optical_system(**kwargs)
 
         self.episode_time_ms = 0.0
-        
-        self.secondary_max_displacement_micron = 1.0
-        piston_space = spaces.Box(
-            low=-self.secondary_max_displacement_micron,
-            high=self.secondary_max_displacement_micron,
-            shape=(1,),
-            dtype=np.float32
-        )
-        
-        self.secondary_max_deflection_arcsec = 1.0
-        tip_space = spaces.Box(
-            low=-self.secondary_max_deflection_arcsec,
-            high=self.secondary_max_deflection_arcsec,
-            shape=(1,),
-            dtype=np.float32
-        )
-        tilt_space = spaces.Box(
-            low=-self.secondary_max_deflection_arcsec,
-            high=self.secondary_max_deflection_arcsec,
-            shape=(1,),
-            dtype=np.float32
-        )
 
-        ptt_space = spaces.Tuple((piston_space, tip_space, tilt_space)) 
+        self.command_tip_tilt = False
 
-        secondaries_tuple = tuple([ptt_space] * self.optical_system.num_apertures)
+        command_space_list = list()
 
-        secondaries_space = spaces.Tuple(secondaries_tuple)
+        if self.command_secondaries:
 
-        self.tensioner_max_force = 1.0
+            ptt_space_list = list()
+            
+            self.secondary_max_displacement_micron = 1.0
+            piston_space = spaces.Box(
+                low=-self.secondary_max_displacement_micron,
+                high=self.secondary_max_displacement_micron,
+                shape=(1,),
+                dtype=np.float32
+            )
 
-        tensioner_space = spaces.Box(
-            low=-self.tensioner_max_force,
-            high=self.tensioner_max_force,
-            shape=(1,),
-            dtype=np.float32
-        )
+            ptt_space_list.append(piston_space)
 
-        tensioners_tuple = tuple([tensioner_space] * self.optical_system.num_tensioners)
+            if self.command_tip_tilt:
+            
+                self.secondary_max_deflection_arcsec = 1.0
+                tip_space = spaces.Box(
+                    low=-self.secondary_max_deflection_arcsec,
+                    high=self.secondary_max_deflection_arcsec,
+                    shape=(1,),
+                    dtype=np.float32
+                )
 
-        tensioners_space = spaces.Tuple(tensioners_tuple)
+                ptt_space_list.append(tip_space)
+                tilt_space = spaces.Box(
+                    low=-self.secondary_max_deflection_arcsec,
+                    high=self.secondary_max_deflection_arcsec,
+                    shape=(1,),
+                    dtype=np.float32
+                )
 
-        len(self.optical_system.dm.actuators)
+                ptt_space_list.append(tilt_space)   
 
+            ptt_space = spaces.Tuple((tuple(ptt_space_list))) 
 
-        # Build the command grid, which is one-to-one with the action space.
-        # TODO: In the active optics formulation, this needs to be ttp secondaries and tensioners.
-        # TODO: Retain the ability to control any subset fo actuators.
-        # self.actuator_command_grid = np.zeros(
-        #     shape=(35, 35),
-        #     dtype=np.int16
-        # )
-        # Define a symmetric action space.
-        # action_shape = (self.commands_per_decision,
-        #                 self.actuator_command_grid.shape[0],
-        #                 self.actuator_command_grid.shape[1],)
-        # self.action_space = spaces.Box(low=-self.stroke_count_limit,
-        #                                high=self.stroke_count_limit,
-        #                                shape=action_shape,
-        #                                dtype=np.int16)
+            secondaries_tuple = tuple([ptt_space] * self.optical_system.num_apertures)
+
+            secondaries_space = spaces.Tuple(secondaries_tuple)
+
+            command_space_list.append(secondaries_space)
 
 
-        # TODO: Externalize
-        self.dm_stroke_micron = 1.0
-        dm_actuator_space = spaces.Box(
-            low=-self.dm_stroke_micron,
-            high=self.dm_stroke_micron,
-            shape=(1,),
-            dtype=np.float32
-        )
+        if self.command_dm:
+            self.tensioner_max_force = 1.0
 
-        dm_tuple = tuple([dm_actuator_space] * len(self.optical_system.dm.actuators))
-        dm_space = spaces.Tuple(dm_tuple)
-        
-        single_command_space = spaces.Tuple((secondaries_space,
-                                             tensioners_space,
-                                             dm_space))
+            tensioner_space = spaces.Box(
+                low=-self.tensioner_max_force,
+                high=self.tensioner_max_force,
+                shape=(1,),
+                dtype=np.float32
+            )
+
+            tensioners_tuple = tuple([tensioner_space] * self.optical_system.num_tensioners)
+
+            tensioners_space = spaces.Tuple(tensioners_tuple)
+            command_space_list.append(tensioners_space)
+
+
+        if self.command_dm:
+            # Build the command grid, which is one-to-one with the action space.
+            # TODO: In the active optics formulation, this needs to be ttp secondaries and tensioners.
+            # TODO: Retain the ability to control any subset fo actuators.
+            # self.actuator_command_grid = np.zeros(
+            #     shape=(35, 35),
+            #     dtype=np.int16
+            # )
+            # Define a symmetric action space.
+            # action_shape = (self.commands_per_decision,
+            #                 self.actuator_command_grid.shape[0],
+            #                 self.actuator_command_grid.shape[1],)
+            # self.action_space = spaces.Box(low=-self.stroke_count_limit,
+            #                                high=self.stroke_count_limit,
+            #                                shape=action_shape,
+            #                                dtype=np.int16)
+
+            # TODO: Externalize
+            self.dm_stroke_micron = 1.0
+            dm_actuator_space = spaces.Box(
+                low=-self.dm_stroke_micron,
+                high=self.dm_stroke_micron,
+                shape=(1,),
+                dtype=np.float32
+            )
+
+            dm_tuple = tuple([dm_actuator_space] * len(self.optical_system.dm.actuators))
+            dm_space = spaces.Tuple(dm_tuple)
+
+            command_space_list.append(dm_space)
+            
+        single_command_space = spaces.Tuple(tuple(command_space_list))
         
         self.dict_action_space = spaces.Tuple([single_command_space] * self.commands_per_decision)
-
 
         # Build a tree from the action space to enable translation.
         self.action_tree = self.build_tree_from_action_space(self.dict_action_space)
@@ -1499,58 +1629,82 @@ class OptomechEnv(gym.Env):
                                          flat_space_low=-1.0,
                                          flat_space_high=1.0)
         
-
-        zero_piston_space = spaces.Box(
-            low=0.0,
-            high=0.0,
-            shape=(1,),
-            dtype=np.float32
-        )
+        # Define the zero action space.
+        zero_command_space_list = list()
         
-        zero_tip_space = spaces.Box(
-            low=0.0,
-            high=0.0,
-            shape=(1,),
-            dtype=np.float32
-        )
+        if self.command_secondaries:
 
-        zero_tilt_space = spaces.Box(
-            low=0.0,
-            high=0.0,
-            shape=(1,),
-            dtype=np.float32
-        )
+            zero_ptt_space_list = list()
+            zero_piston_space = spaces.Box(
+                low=0.0,
+                high=0.0,
+                shape=(1,),
+                dtype=np.float32
+            )
 
-        zero_ptt_space = spaces.Tuple((zero_piston_space, zero_tip_space, zero_tilt_space)) 
+            zero_ptt_space_list.append(zero_piston_space)
 
-        zero_secondaries_tuple = tuple([zero_ptt_space] * self.optical_system.num_apertures)
+            if self.command_tip_tilt:
+            
+                zero_tip_space = spaces.Box(
+                    low=0.0,
+                    high=0.0,
+                    shape=(1,),
+                    dtype=np.float32
+                )
 
-        zero_secondaries_space = spaces.Tuple(zero_secondaries_tuple)
+                zero_ptt_space_list.append(zero_tip_space)
 
-        zero_tensioner_space = spaces.Box(
-            low=0.0,
-            high=0.0,
-            shape=(1,),
-            dtype=np.float32
-        )
+                zero_tilt_space = spaces.Box(
+                    low=0.0,
+                    high=0.0,
+                    shape=(1,),
+                    dtype=np.float32
+                )
 
-        zero_tensioners_tuple = tuple([zero_tensioner_space] * self.optical_system.num_tensioners)
+                zero_ptt_space_list.append(zero_tilt_space)
 
-        zero_tensioners_space = spaces.Tuple(zero_tensioners_tuple)
+            zero_ptt_space = spaces.Tuple((tuple(zero_ptt_space_list))) 
 
-        zero_dm_actuator_space = spaces.Box(
-            low=0.0,
-            high=0.0,
-            shape=(len(self.optical_system.dm.actuators),),
-            dtype=np.float32
-        )
+            zero_secondaries_tuple = tuple([zero_ptt_space] * self.optical_system.num_apertures)
 
-        zero_dm_tuple = tuple([zero_dm_actuator_space])
+            zero_secondaries_space = spaces.Tuple(zero_secondaries_tuple)
 
-        zero_dm_space = spaces.Tuple(zero_dm_tuple)
+            zero_command_space_list.append(zero_secondaries_space)
+
+        if self.command_tensioners:
+
+            zero_tensioner_space = spaces.Box(
+                low=0.0,
+                high=0.0,
+                shape=(1,),
+                dtype=np.float32
+            )
+
+            zero_tensioners_tuple = tuple([zero_tensioner_space] * self.optical_system.num_tensioners)
+
+            zero_tensioners_space = spaces.Tuple(zero_tensioners_tuple)
+
+            zero_command_space_list.append(zero_tensioners_space)
+
+
+        if self.command_dm:
+
+            zero_dm_actuator_space = spaces.Box(
+                low=0.0,
+                high=0.0,
+                shape=(len(self.optical_system.dm.actuators),),
+                dtype=np.float32
+            )
+
+            zero_dm_tuple = tuple([zero_dm_actuator_space])
+
+            zero_dm_space = spaces.Tuple(zero_dm_tuple)
+
+            zero_command_space_list.append(zero_dm_space)
         
         zero_single_command_space = spaces.Tuple(
-            (zero_secondaries_space, zero_tensioners_space, zero_dm_space)
+            tuple(zero_command_space_list)
         )
 
         self.zero_dict_action_space = spaces.Tuple([zero_single_command_space] * self.commands_per_decision)
@@ -1612,7 +1766,6 @@ class OptomechEnv(gym.Env):
             return tuple(self.list_to_tuple(i) for i in lst)
         else:
             return lst
-
 
     # def assign_value_by_tree_address(self, action_space_list, value, tree_address):
 
@@ -1770,14 +1923,15 @@ class OptomechEnv(gym.Env):
 
             self.build_optical_system(**self.kwargs)
 
-            # Calibrate the DM interaction matrix.
-            self.optical_system.calibrate_dm_interaction_matrix()
-            rcond = 1e-3
-            self.reconstruction_matrix = hcipy.inverse_tikhonov(
-                self.optical_system.interaction_matrix.transformation_matrix,
-                rcond=rcond)
+            if self.command_dm or self.ao_loop_active:
+                # Calibrate the DM interaction matrix.
+                self.optical_system.calibrate_dm_interaction_matrix(self.uuid)
+                rcond = 1e-3
+                self.reconstruction_matrix = hcipy.inverse_tikhonov(
+                    self.optical_system.interaction_matrix.transformation_matrix,
+                    rcond=rcond)
 
-            self.episode_time_ms = 0.0
+                self.episode_time_ms = 0.0
         
             print("Populating Initial Action")
 
@@ -2214,4 +2368,3 @@ class OptomechEnv(gym.Env):
         self.optical_system = OpticalSystem(**kwargs)
 
         return
-
