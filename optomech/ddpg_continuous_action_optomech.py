@@ -442,7 +442,7 @@ class QNetwork(nn.Module):
         self.visual = not(low_dim)
 
         self.o_conv = nn.Sequential(
-                nn.MaxPool2d(8),
+                nn.MaxPool2d(4),
                 conv_init(
                     nn.Conv2d(
                         input_channels, 
@@ -540,7 +540,7 @@ class Actor(nn.Module):
         self.visual = not(low_dim)
 
         self.conv = nn.Sequential(
-                nn.MaxPool2d(8),
+                nn.MaxPool2d(4),
                 conv_init(
                     nn.Conv2d(input_channels, 
                               channel_scale,
