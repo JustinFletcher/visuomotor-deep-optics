@@ -67,7 +67,7 @@ class Args:
     # learning_rate: float = 3e-4
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    buffer_size: int = int(1e7)
+    buffer_size: int = int(1e6)
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
