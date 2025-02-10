@@ -67,7 +67,7 @@ class Args:
     # learning_rate: float = 3e-4
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    buffer_size: int = int(1e6)
+    buffer_size: int = int(1e7)
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -850,6 +850,12 @@ if __name__ == "__main__":
                          channel_scale=args.actor_channel_scale,
                          fc_scale=args.actor_fc_scale,
                          low_dim=args.low_dim_actor).to(device)
+    
+    # if torch.cuda.device_count() > 1:
+    #     print(f"Using {torch.cuda.device_count()} GPUs!")
+    #     model = nn.DataParallel(SimpleModel())  # Wrap the model with DataParallel
+    # else:
+    #     model = SimpleModel()
     print("Actor and Critic parameter counts:")
     print(sum(p.numel() for p in actor.parameters() if p.requires_grad))
     print(sum(p.numel() for p in qf1.parameters() if p.requires_grad))
@@ -869,11 +875,14 @@ if __name__ == "__main__":
         n_envs=args.num_envs
     )
 
+
     # TODO: Add a dud check here.
 
     start_time = time.time()
     # TRY NOT TO MODIFY: start the game
+    print("Resetting Environments.")
     obs, _ = envs.reset(seed=args.seed)
+    print("Environments Reset.")
     global_step = 0
     for iteration in range(args.total_timesteps):
 
@@ -966,20 +975,21 @@ if __name__ == "__main__":
 
         else:
             with torch.no_grad():
+
+                decay_rate = 0.1
+                decay_noise = True
+                if decay_noise:
+                    decay = 1.0 / (1.0 + (decay_rate *iteration))
+                else:
+                    decay = 1.0
                 
                 actions = actor(torch.Tensor(obs).to(device))
-                # we need action noise at multiple scales.
-                # periodic functions could help here - one for each scale.
-                # Scale that actions by a value that varies sinusoidally with global step
-                # sin_value = np.sin((global_step / 64.0)/ (2 * np.pi))
-                # print(sin_value)
-                # actions = actions * sin_value
-                # Idea: replace this with a (envs.single_action_space.sample() * actor.action_scale.item()
                 # actions += torch.normal(0, actor.action_scale * args.exploration_noise)
-                noise = torch.normal(0.0,
-                                    actor.action_scale.cpu() * args.exploration_noise,
-                                    # actions.cpu().size()
-                                    ).to(device)
+                noise = torch.normal(
+                    0.0,
+                    actor.action_scale.cpu() * args.exploration_noise * decay,
+                    # actions.cpu().size()
+                    ).to(device)
                 actions += noise
                 actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
 
