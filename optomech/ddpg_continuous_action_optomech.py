@@ -5,7 +5,6 @@ import json
 import random
 import time
 import pickle
-import argparse
 from dataclasses import dataclass
 
 import math
@@ -86,9 +85,9 @@ class Args:
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
     # Actor model parameters
-    actor_channel_scale: int = 32
+    actor_channel_scale: int = 16
     """The scale of the actor model channels."""
-    actor_fc_scale: int = 128
+    actor_fc_scale: int = 64
     """The scale of the actor model fully connected layers."""
     low_dim_actor: bool = False
     """Whether the actor model is visual."""
@@ -96,9 +95,9 @@ class Args:
     """whether to save model into the `runs/{run_name}` folder"""
 
     # QNetwork model parameters
-    qnetwork_channel_scale: int = 32
+    qnetwork_channel_scale: int = 16
     """The scale of the QNetwork model channels."""
-    qnetwork_fc_scale: int = 128
+    qnetwork_fc_scale: int = 64
     """The scale of the QNetwork model fully connected layers."""
     low_dim_qnetwork: bool = False
     """Whether the qnetwork model is visual."""
@@ -143,6 +142,13 @@ class Args:
     aperture_type: str = "elf"
     """The type of aperture to use."""
     max_episode_steps: int = 1000
+    """Toggle to enable agent control of tensioners."""
+    command_tensioners: bool = False
+    """Toggle to enable agent control of tensioners."""
+    command_secondaries: bool = False
+    """Toggle to enable agent control of tensioners."""
+    command_dm: bool = False
+
     """The type of aperture to use."""
     ao_loop_active: bool = False
     """The maximum number of steps per episode."""
@@ -413,9 +419,11 @@ class DenseNet3(nn.Module):
         return self.fc(out)
 
 
+
+
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env, channel_scale=32, fc_scale=128, low_dim=True):
+    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
         super().__init__()
 
         # Get the observation space shape from the environment.
@@ -434,11 +442,30 @@ class QNetwork(nn.Module):
         self.visual = not(low_dim)
 
         self.o_conv = nn.Sequential(
-                layer_init(nn.Conv2d(input_channels, channel_scale, kernel_size=4, stride=2)),
+                nn.MaxPool2d(8),
+                conv_init(
+                    nn.Conv2d(
+                        input_channels, 
+                        channel_scale, 
+                        kernel_size=3, 
+                        stride=2)
+                        ),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(channel_scale, channel_scale // 2, kernel_size=4, stride=2)),
+                conv_init(
+                    nn.Conv2d(
+                        channel_scale, 
+                        channel_scale // 2, 
+                        kernel_size=3, 
+                        stride=2)
+                        ),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(channel_scale // 2, channel_scale // 4, kernel_size=3, stride=1)),
+                conv_init(
+                    nn.Conv2d(
+                        channel_scale // 2,
+                        channel_scale // 4,
+                        kernel_size=3,
+                        stride=2)
+                    ),
                 nn.Flatten(),
             )
 
@@ -451,17 +478,26 @@ class QNetwork(nn.Module):
             output_dim = self.o_conv(x).shape[1]
 
         if self.visual:
-            self.merge_fc1 = uniform_init(nn.Linear(output_dim + vector_action_size, fc_scale),
-                                        lower_bound=-1/np.sqrt(output_dim + vector_action_size),
-                                        upper_bound=1/np.sqrt(output_dim))
+            self.merge_fc1 = uniform_init(
+                nn.Linear(output_dim + vector_action_size, fc_scale),
+                lower_bound=-1/np.sqrt(output_dim + vector_action_size),
+                upper_bound=1/np.sqrt(output_dim + vector_action_size))
         
         else:
-            self.merge_fc1 = uniform_init(nn.Linear(vector_action_size, fc_scale),
-                                        lower_bound=-1/np.sqrt(output_dim + vector_action_size),
-                                        upper_bound=1/np.sqrt(output_dim))
-        self.merge_fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
-                                      lower_bound=-1/np.sqrt(fc_scale),
-                                      upper_bound=1/np.sqrt(fc_scale))
+            self.merge_fc1 = uniform_init(
+                nn.Linear(vector_action_size, fc_scale),
+                lower_bound=-1/np.sqrt(vector_action_size),
+                upper_bound=1/np.sqrt(vector_action_size))
+            
+        self.merge_fc2 = uniform_init(
+            nn.Linear(fc_scale, fc_scale),
+            lower_bound=-1/np.sqrt(fc_scale),
+            upper_bound=1/np.sqrt(fc_scale))
+
+        self.merge_fc3 = uniform_init(
+            nn.Linear(fc_scale, fc_scale),
+            lower_bound=-1/np.sqrt(fc_scale),
+            upper_bound=1/np.sqrt(fc_scale))
 
         self.fc_q = nn.Linear(fc_scale, 1)
 
@@ -472,23 +508,26 @@ class QNetwork(nn.Module):
             o = o.permute(0, 3, 1, 2)
 
         if self.visual:
-            x_o = F.relu(self.o_conv(o / 255.0))
+            x_o = F.relu(self.o_conv(o))
             x = torch.cat([x_o, a], 1)
 
         else: 
             x = a 
         x = F.relu(self.merge_fc1(x))
         x = F.relu(self.merge_fc2(x))
+        x = F.relu(self.merge_fc3(x))
         q_vals = self.fc_q(x)
 
         return q_vals
 
 class Actor(nn.Module):
 
-    def __init__(self, env, channel_scale=32, fc_scale=128, low_dim=True):
+    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
         super().__init__()
         # Get the observation space shape from the environment.
-        obs_shape = env.single_observation_space.shape
+        obs_shape = envs.single_observation_space.shape
+
+        vector_action_size = envs.single_action_space.shape[0]
 
         # Check if this is a channels-last environment
         if obs_shape[-1] < obs_shape[0]:
@@ -501,11 +540,22 @@ class Actor(nn.Module):
         self.visual = not(low_dim)
 
         self.conv = nn.Sequential(
-                layer_init(nn.Conv2d(input_channels, channel_scale, kernel_size=4, stride=2)),
+                nn.MaxPool2d(8),
+                conv_init(
+                    nn.Conv2d(input_channels, 
+                              channel_scale,
+                              kernel_size=3,
+                              stride=2)),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(channel_scale, channel_scale // 2, kernel_size=4, stride=2)),
+                conv_init(nn.Conv2d(channel_scale,
+                                    channel_scale // 2,
+                                    kernel_size=3,
+                                    stride=2)),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(channel_scale // 2, channel_scale // 4, kernel_size=3, stride=1)),
+                conv_init(nn.Conv2d(channel_scale // 2,
+                                    channel_scale // 4,
+                                    kernel_size=3,
+                                    stride=2)),
                 nn.Flatten(),
             )
         
@@ -519,19 +569,26 @@ class Actor(nn.Module):
 
         self.ones_output = torch.ones(1, output_dim)
 
-        self.fc1 = uniform_init(nn.Linear(output_dim, fc_scale),
-                                lower_bound=-1/np.sqrt(output_dim),
-                                upper_bound=1/np.sqrt(output_dim))
+        self.fc1 = uniform_init(
+            nn.Linear(output_dim, fc_scale),
+            lower_bound=-1/np.sqrt(output_dim),
+            upper_bound=1/np.sqrt(output_dim)
+            )
         self.fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
                                 lower_bound=-1/np.sqrt(fc_scale),
                                 upper_bound=1/np.sqrt(fc_scale))
-        self.fc3 = uniform_init(nn.Linear(fc_scale, int(np.prod(env.single_action_space.shape))),
-                                lower_bound=-3e-4,
-                                upper_bound=3e-4)
-        # self.fc3 = nn.Linear(fc_scale, np.prod(env.single_action_space.shape))
-        # self.fc3 = uniform_init(nn.Linear(fc_scale, np.prod(env.single_action_space.shape)),
-        #                         lower_bound=-1/np.sqrt(fc_scale),
-        #                         upper_bound=1/np.sqrt(fc_scale))
+        # self.fc3 = uniform_init(
+        #     nn.Linear(
+        #         fc_scale,
+        #         int(np.prod(envs.single_action_space.shape))
+        #         ),
+        #     lower_bound=-3e-4,
+        #     upper_bound=3e-4
+        #     )
+        self.fc3 = uniform_init(
+            nn.Linear(fc_scale, int(np.prod(envs.single_action_space.shape))),
+            lower_bound=-1/np.sqrt(fc_scale),
+            upper_bound=1/np.sqrt(fc_scale))
                                 
         # action rescaling
         self.register_buffer(
@@ -550,12 +607,14 @@ class Actor(nn.Module):
             x = x.permute(0, 3, 1, 2)
 
         if self.visual:
-            x = F.relu(self.conv(x / 255.0))
+            x = F.tanh(self.conv(x))
         else:
             x = self.ones_output
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = torch.tanh(self.fc3(x))
+        x = F.tanh(self.fc3(x))
+
+        # x = F.tanh(self.fc1(x))
 
         a = (x * self.action_scale + self.action_bias)
         return a
@@ -791,7 +850,9 @@ if __name__ == "__main__":
                          channel_scale=args.actor_channel_scale,
                          fc_scale=args.actor_fc_scale,
                          low_dim=args.low_dim_actor).to(device)
-    
+    print("Actor and Critic parameter counts:")
+    print(sum(p.numel() for p in actor.parameters() if p.requires_grad))
+    print(sum(p.numel() for p in qf1.parameters() if p.requires_grad))
 
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
@@ -823,10 +884,7 @@ if __name__ == "__main__":
             if iteration % args.model_save_interval == 0:
 
                 use_torchsctipt = True
-
-
                 eval_save_path = f"runs/{run_name}/eval_{args.exp_name}_{str(iteration)}"
-
                 Path(eval_save_path).mkdir(parents=True, exist_ok=True)
 
                 if use_torchsctipt:
