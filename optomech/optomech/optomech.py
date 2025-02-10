@@ -249,14 +249,15 @@ class OpticalSystem(object):
         self.model_gravity_diff_motion = kwargs["model_gravity_diff_motion"]
         self.model_temp_diff_motion = kwargs["model_temp_diff_motion"]
 
-
+        print(self.model_wind_diff_motion)
         self.report_time = kwargs["report_time"]
         self.microns_opd_per_actuator_bit = 0.00015
         # self.num_apertures = 15
-        self.num_apertures = 2
+        # self.num_apertures = 2
 
         self.num_tensioners = kwargs["num_tensioners"]
 
+        self.model_ao = kwargs['model_ao']
 
         aperture_type = kwargs['aperture_type']
         # Build the selected aperture; elf is the default.
@@ -264,10 +265,26 @@ class OpticalSystem(object):
         print("Building aperture.")
         if aperture_type == "elf":
 
+            # The sELF FOV is narrow (about 10 arcsec) so that its volume is small 
+            # and it can use optically fast primary and small secondary mirrors.
+            # The telescope has an effective focal length of 32.5m at focal 
+            # ratio F/8.25. The outer circumscribing radius of the M1 subapertures 
+            # is 3.46m with an effective fill-factor of 0.3.
+
+            self.num_apertures = 15
+
+
+            # # TODO: Externalize.
+            # kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
+            kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-4
+
+
             # Parameters for the pupil function
-            focal_length = 200.0 # m
+            # focal_length = 32.5 # m
+            focal_length = 32.5 # m
             pupil_diameter = 3.6 # m
-            elf_segment_centroid_diameter = 2.5 # m
+            segment_diameter = 0.5
+            elf_segment_centroid_diameter = 2.7 # m
 
             # Initialize an empty structual interaction matrix.
             self.optomech_interaction_matrix = None
@@ -279,8 +296,8 @@ class OpticalSystem(object):
             # Instantiate a segmented aperture.
             aperture, segments = self.make_elf_aperture(
                 pupil_diameter=elf_segment_centroid_diameter,
-                num_apertures=15,
-                segment_diameter=0.5,
+                num_apertures=self.num_apertures,
+                segment_diameter=segment_diameter,
                 return_segments=True,
             )
 
@@ -291,6 +308,11 @@ class OpticalSystem(object):
             focal_length = 200.0 # m
             pupil_diameter = 3.6 # m
             elf_segment_centroid_diameter = 2.5 # m
+
+            # # TODO: Externalize.
+            # kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
+            kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-4
+
 
             # Instantiate a circular aperture.
             aper_coords = hcipy.SeparatedCoords(
@@ -309,16 +331,22 @@ class OpticalSystem(object):
         elif aperture_type == "nanoelf":
 
 
+            self.num_apertures = 2
+
             # Parameters for the pupil function
-            focal_length = 60.0 # m
-            pupil_diameter = 0.0528 # m
-            elf_segment_centroid_diameter = 2.5 # m
+            focal_length = 1.018 # m
+            pupil_diameter = 0.1408 # m
+
+            # # TODO: Externalize.
+            # kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
+            kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-5
+
     
             # Instantiate a segmented aperture.
             aperture, segments = self.make_nanoelf_aperture(
                 pupil_diameter=pupil_diameter / 2.0,
-                num_apertures=2,
-                segment_diameter=0.0254 / 1.5,
+                num_apertures=self.num_apertures,
+                segment_diameter=0.0254 * 2,
                 return_segments=True,
             )
 
@@ -326,15 +354,20 @@ class OpticalSystem(object):
 
 
             # Parameters for the pupil function
-            focal_length = 60.0 # m
-            pupil_diameter = 0.0528 # m
-            elf_segment_centroid_diameter = 2.5 # m
+            focal_length = 1.018 # m
+            pupil_diameter = 0.1408 # m
+            self.num_apertures = 3
+
+            # # TODO: Externalize.
+            # kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
+            kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-5
+
     
             # Instantiate a segmented aperture.
             aperture, segments = self.make_nanoelf_aperture(
                 pupil_diameter=pupil_diameter / 2.0,
-                num_apertures=3,
-                segment_diameter=0.0254 / 1.5,
+                num_apertures=self.num_apertures,
+                segment_diameter=0.0254 * 2,
                 return_segments=True,
             )
 
@@ -349,8 +382,8 @@ class OpticalSystem(object):
         
         # Parameters for the optical simulation.
         num_pupil_grid_simulation_pixels = kwargs['focal_plane_image_size_pixels']
-        self.wavelength = 763e-9
-        # self.wavelength = 1000e-9
+        # self.wavelength = 763e-9
+        self.wavelength = 1000e-9
         oversampling_factor = 8
 
         # Parameters for the atmosphere. Caution: better seeing = longer runs.
@@ -407,21 +440,27 @@ class OpticalSystem(object):
         # Extract the provided focal plane pararmeters.
         # TODO: Refactor to add a separate focal grid for the SHWFS.
         num_focal_grid_pixels = kwargs['focal_plane_image_size_pixels']
-        # # TODO: Externalize.
-        kwargs['focal_plane_image_size_meters'] = 8.192  * 1e-3
         focal_plane_extent_metres = kwargs['focal_plane_image_size_meters']
 
         airy_extent_radians = 1.22 * self.wavelength / pupil_diameter
         airy_extent_meters = airy_extent_radians * focal_length
         focal_plane_pixel_extent_meters = focal_plane_extent_metres / num_focal_grid_pixels
         sampling = airy_extent_meters / focal_plane_pixel_extent_meters
-
-
+        sampling = airy_extent_meters / focal_plane_pixel_extent_meters
 
         focal_plane_resolution_element = self.wavelength * focal_length / pupil_diameter
         focal_plane_pixels_per_meter = num_focal_grid_pixels / focal_plane_extent_metres
         focal_plane_pixel_extent_meters = focal_plane_extent_metres /  num_focal_grid_pixels
-        self.ifov = 206265 / focal_length * focal_plane_pixel_extent_meters
+        self.ifov = (206265 / focal_length) * focal_plane_pixel_extent_meters
+        fov = self.ifov * num_focal_grid_pixels
+
+        # self.ifov = 10.0 / num_focal_grid_pixels
+
+        # The sELF FOV is narrow (about 10 arcsec) so that its volume is small 
+        # and it can use optically fast primary and small secondary mirrors.
+        # The telescope has an effective focal length of 32.5m at focal 
+        # ratio F/8.25. The outer circumscribing radius of the M1 subapertures 
+        # is 3.46m with an effective fill-factor of 0.3.
 
 
         # sampling: The number of pixels per resolution element (= lambda f / D).
@@ -439,6 +478,7 @@ class OpticalSystem(object):
         print("num_airy (The spatial extent of the grid in radius in resolution elements): %s" % num_airy)
         print("sampling (number of pixels per resolution element): %s" % sampling)
         print("ifov (arcsec/pixel): %s" % self.ifov)
+        print("fov (arcsec): %s" % fov)
 
         # Build the object plane for this system.
         print("Building object plane.")
@@ -474,10 +514,15 @@ class OpticalSystem(object):
             self.atmosphere_layers.append(layer)
         
         # Make the simulation grid for the focal plane.
-        focal_grid = hcipy.make_focal_grid(
-            sampling,
-            num_airy,
-            spatial_resolution=self.wavelength * focal_length / pupil_diameter,
+        # focal_grid = hcipy.make_focal_grid(
+        #     sampling,
+        #     num_airy,
+        #     spatial_resolution=self.wavelength * focal_length / pupil_diameter,
+        # )
+
+        focal_grid = hcipy.make_pupil_grid(
+            dims=num_pupil_grid_simulation_pixels,
+            diameter=focal_plane_extent_metres
         )
         focal_grid = focal_grid.shifted(focal_grid.delta / 2)
 
@@ -533,31 +578,32 @@ class OpticalSystem(object):
         self.shwfs_camera = hcipy.NoiselessDetector(focal_grid)
 
         # Instantiate a deformable mirror.
-        print("Building deformable mirror.")
-        dm_model_type = "gaussian_influence"
+        if self.model_ao:
+            print("Building deformable mirror.")
+            dm_model_type = "gaussian_influence"
 
-        if dm_model_type == "disk_harmonic_basis":
-            num_modes = 500
-            dm_modes = hcipy.make_disk_harmonic_basis(
-                self.pupil_grid,
-                num_modes,
-                pupil_diameter,
-                'neumann'
-            )
-            dm_modes = hcipy.ModeBasis(
-                [mode / np.ptp(mode) for mode in dm_modes],
-                self.pupil_grid
-            )
-            self.dm = hcipy.DeformableMirror(dm_modes)
+            if dm_model_type == "disk_harmonic_basis":
+                num_modes = 500
+                dm_modes = hcipy.make_disk_harmonic_basis(
+                    self.pupil_grid,
+                    num_modes,
+                    pupil_diameter,
+                    'neumann'
+                )
+                dm_modes = hcipy.ModeBasis(
+                    [mode / np.ptp(mode) for mode in dm_modes],
+                    self.pupil_grid
+                )
+                self.dm = hcipy.DeformableMirror(dm_modes)
 
-        elif dm_model_type == "gaussian_influence":
-            self.dm_influence_functions = hcipy.make_gaussian_influence_functions(
-                self.pupil_grid,
-                num_actuators_across_pupil=35,
-                actuator_spacing=pupil_diameter / 35
-            )
+            elif dm_model_type == "gaussian_influence":
+                self.dm_influence_functions = hcipy.make_gaussian_influence_functions(
+                    self.pupil_grid,
+                    num_actuators_across_pupil=35,
+                    actuator_spacing=pupil_diameter / 35
+                )
 
-            self.dm = hcipy.DeformableMirror(self.dm_influence_functions)
+                self.dm = hcipy.DeformableMirror(self.dm_influence_functions)
 
         # Initialize natural structural differential motion.
         if self.init_differential_motion:
@@ -696,15 +742,18 @@ class OpticalSystem(object):
         if self.report_time:
             print("--- Segments Forward time: %0.6f" % (time.time() - segmented_mirror_forward_start_time))
 
-        dm_forawrd_start_time = time.time()
-        # Propagate the wavefront from the segmented mirror through the DM.
-        # Note: counter-intuitively, the DM must be re-applied after changes.
-        self.post_dm_wavefront = self.dm.forward(self.pupil_wavefront)
+        if self.model_ao:
+            dm_forawrd_start_time = time.time()
+            # Propagate the wavefront from the segmented mirror through the DM.
+            # Note: counter-intuitively, the DM must be re-applied after changes.
+            self.post_dm_wavefront = self.dm.forward(self.pupil_wavefront)
 
-        if self.report_time:
+            if self.report_time:
 
-            print("--- DM Forward time: %0.6f" % (time.time() - dm_forawrd_start_time))
-      
+                print("--- DM Forward time: %0.6f" % (time.time() - dm_forawrd_start_time))
+        else:
+            self.post_dm_wavefront = self.pupil_wavefront
+
         pupil_focal_prop_start_time = time.time()
 
         # Propagate from the DM (M2) to the focal (image) plane.
@@ -1131,6 +1180,15 @@ class OpticalSystem(object):
         displacements.
         """
 
+        if not(self.model_wind_diff_motion) and \
+            not(self.model_temp_diff_motion) and \
+            not(self.model_gravity_diff_motion):
+
+            raise ValueError("You initialized differential motion, but no " + \
+                             "types of differential motion are selected " + \
+                             "for modeling. This may produce undesired " + \
+                             "results.")
+
         if self.model_wind_diff_motion:
 
             # Compute and apply the wind displacments.
@@ -1459,6 +1517,12 @@ class OptomechEnv(gym.Env):
         self.command_secondaries = kwargs['command_secondaries']
         self.command_dm = kwargs['command_dm']
 
+        if self.command_dm or self.ao_loop_active:
+            kwargs['model_ao'] = True
+        else:
+
+            kwargs['model_ao'] = False
+
         # TODO: Externalize these.
         self.microns_opd_per_actuator_bit = 0.00015
         self.stroke_count_limit = 20000
@@ -1521,18 +1585,27 @@ class OptomechEnv(gym.Env):
         print("AO steps per frame: %s" % self.ao_steps_per_frame)
         print("Frames per decision: %s" % self.frames_per_decision)
 
+
+        # Build the optical system by passing in the kwargs.
         self.build_optical_system(**kwargs)
 
+        # Reset the episode clock.
         self.episode_time_ms = 0.0
 
+        # TODO: Externalize.
         self.command_tip_tilt = False
 
+        # Build the command spaces and add them to a list.
         command_space_list = list()
 
+        # Build the secondaries command space.
         if self.command_secondaries:
 
+            # Secondaries can be piston-only, so we build a list for subspaces.
             ptt_space_list = list()
             
+            # Build a piston space. We assume [-1., 1.] spaces for commands.
+            # The physical units for command must be handled post-interface.
             self.secondary_max_displacement_micron = 1.0
             piston_space = spaces.Box(
                 low=-self.secondary_max_displacement_micron,
@@ -1540,9 +1613,9 @@ class OptomechEnv(gym.Env):
                 shape=(1,),
                 dtype=np.float32
             )
-
             ptt_space_list.append(piston_space)
 
+            # If tip and tilt controls are modeled, add thier spaces.
             if self.command_tip_tilt:
             
                 self.secondary_max_deflection_arcsec = 1.0
@@ -1563,16 +1636,20 @@ class OptomechEnv(gym.Env):
 
                 ptt_space_list.append(tilt_space)   
 
+            # Convert the list to a tuple and the tuple to a Tuple space.
             ptt_space = spaces.Tuple((tuple(ptt_space_list))) 
 
+            # Create one tuple for each sequence element.
             secondaries_tuple = tuple([ptt_space] * self.optical_system.num_apertures)
 
+            # Combine the tuple sequence into a final Gym space.
             secondaries_space = spaces.Tuple(secondaries_tuple)
 
+            # Add the finalized secondaries command space to the system list.
             command_space_list.append(secondaries_space)
 
+        if self.command_tensioners:
 
-        if self.command_dm:
             self.tensioner_max_force = 1.0
 
             tensioner_space = spaces.Box(
@@ -1589,6 +1666,7 @@ class OptomechEnv(gym.Env):
 
 
         if self.command_dm:
+
             # Build the command grid, which is one-to-one with the action space.
             # TODO: In the active optics formulation, this needs to be ttp secondaries and tensioners.
             # TODO: Retain the ability to control any subset fo actuators.
@@ -1618,7 +1696,8 @@ class OptomechEnv(gym.Env):
             dm_space = spaces.Tuple(dm_tuple)
 
             command_space_list.append(dm_space)
-            
+        
+        # TODO: Refactor to use spaces.Dict for easier integration w/ hardware.
         single_command_space = spaces.Tuple(tuple(command_space_list))
         
         self.dict_action_space = spaces.Tuple([single_command_space] * self.commands_per_decision)
@@ -1767,22 +1846,6 @@ class OptomechEnv(gym.Env):
         else:
             return lst
 
-    # def assign_value_by_tree_address(self, action_space_list, value, tree_address):
-
-    #     # Define the string of indices
-    #     indices_str = "0_1_0_1"
-
-    #     # Convert the string to a list of integers
-    #     indices = list(map(int, tree_address.split('_')))
-
-    #     # Use the indices to assign a new value to the corresponding element in the nested list
-    #     sublist = action_space_list
-    #     for index in indices[:-1]:
-    #         sublist = sublist[index]
-    #     sublist[indices[-1]] = value
-
-    #     return action_space
-
     def build_tree_from_action_space(self, action_space):
 
         action_node = Node("action",
@@ -1873,8 +1936,6 @@ class OptomechEnv(gym.Env):
 
             tree_address = action_tree.linear_to_tree_dict[n]
 
-            # assign_value_by_tree_address(action_space_list, action_value, tree_address)
-
             # Convert the string to a list of integers
             indices = list(map(int, tree_address.split('_')))
 
@@ -1912,6 +1973,7 @@ class OptomechEnv(gym.Env):
 
         return [seed]
 
+
     def reset(self, seed=None, options=None):
 
         print("=== Start: Reset Environment ===")
@@ -1935,24 +1997,6 @@ class OptomechEnv(gym.Env):
         
             print("Populating Initial Action")
 
-            # self.action = np.zeros_like(self.action_space.sample())
-            self.action = self.zero_action_space.sample()
-
-            # TODO: Compute the calibration noise level to generate a sample.
-            calibration_noise_nm = 10.0
-            calibration_noise_microns = calibration_noise_nm / 1000
-            calibration_noise_counts = self.microns_opd_per_actuator_bit / \
-                calibration_noise_microns
-            
-            # Build a DM command that corresponds to the calibration noise.
-            # TODO: refactor to remove sampling.
-            # ones_like_action = np.ones_like(self.action_space.sample())
-            # zeros_like_action = np.zeros_like(self.action_space.sample())
-            # dm_calibration_noise = np.random.normal(
-            #     loc=zeros_like_action,
-            #     scale=calibration_noise_counts * ones_like_action
-            # )
-            # dm_calibration_noise_counts = dm_calibration_noise.astype(np.int16)
 
         # Initialize natural structural differential motion.
         if self.kwargs['init_differential_motion']:
@@ -1982,9 +2026,11 @@ class OptomechEnv(gym.Env):
         if self.report_time:
             deepcopy_start = time.time()
 
-        self.state_content["dm_surfaces"].append(
-            copy.deepcopy(self.optical_system.dm.surface)
-        )
+        if self.optical_system.model_ao:
+
+            self.state_content["dm_surfaces"].append(
+                copy.deepcopy(self.optical_system.dm.surface)
+            )
 
         # TODO: Add support for saving the rest of the atmosphere layers.
         if len(self.optical_system.atmosphere_layers) > 0:
@@ -2163,11 +2209,11 @@ class OptomechEnv(gym.Env):
                         # Perform wavefront compensation by setting the DM actuators.
                         self.optical_system.dm.actuators = (1 - self.dm_leakage) * self.optical_system.dm.actuators - self.dm_gain * self.reconstruction_matrix.dot(self.shwfs_slopes)
 
-
                         self.microns_opd_per_actuator_bit = 0.00015
                         self.stroke_count_limit = 20000
 
                         stroke_limit = self.microns_opd_per_actuator_bit * self.stroke_count_limit * 1e-6 / 2
+                        
                         # Finally, clip actuator values to the stroke limit.
                         self.optical_system.dm.actuators = np.clip(
                             self.optical_system.dm.actuators,
