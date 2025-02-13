@@ -1386,7 +1386,7 @@ class OpticalSystem(object):
 
 
             # TODO: Externalize.
-            direct_command = True
+            direct_command = False
 
             if direct_command:
 
@@ -1997,7 +1997,7 @@ class OptomechEnv(gym.Env):
         
             print("Populating Initial Action")
 
-
+ 
         # Initialize natural structural differential motion.
         if self.kwargs['init_differential_motion']:
             print("Initializing differential motion.")
