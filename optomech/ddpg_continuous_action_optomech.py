@@ -141,7 +141,7 @@ class Args:
     """The type of object to use."""
     aperture_type: str = "elf"
     """The type of aperture to use."""
-    max_episode_steps: int = 1000
+    max_episode_steps: int = 100
     """Toggle to enable agent control of tensioners."""
     command_tensioners: bool = False
     """Toggle to enable agent control of tensioners."""
@@ -442,7 +442,7 @@ class QNetwork(nn.Module):
         self.visual = not(low_dim)
 
         self.o_conv = nn.Sequential(
-                # nn.MaxPool2d(4),
+                nn.MaxPool2d(4),
                 conv_init(
                     nn.Conv2d(
                         input_channels, 
@@ -540,7 +540,7 @@ class Actor(nn.Module):
         self.visual = not(low_dim)
 
         self.conv = nn.Sequential(
-                # nn.MaxPool2d(4),
+                nn.MaxPool2d(4),
                 conv_init(
                     nn.Conv2d(input_channels, 
                               channel_scale,
@@ -976,19 +976,19 @@ if __name__ == "__main__":
         else:
             with torch.no_grad():
 
-                decay_rate = 0.1
+                decay_rate = 0.00001
                 decay_noise = True
                 if decay_noise:
-                    decay = 1.0 / (1.0 + (decay_rate * (iteration - args.learning_starts)))
+                    decay = 1.0 / (1.0 + (decay_rate * (global_step - args.learning_starts)))
                 else:
                     decay = 1.0
+
                 
                 actions = actor(torch.Tensor(obs).to(device))
                 # actions += torch.normal(0, actor.action_scale * args.exploration_noise)
                 noise = torch.normal(
                     0.0,
                     actor.action_scale.cpu() * args.exploration_noise * decay,
-                    # actions.cpu().size()
                     ).to(device)
                 actions += noise
                 actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
@@ -1061,6 +1061,7 @@ if __name__ == "__main__":
                     writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                     writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                     writer.add_scalar("reward/", rewards.mean().item(), global_step)
+                    writer.add_scalar("decay/", decay, global_step)
                     writer.add_scalar("reward_std/", rewards.std().item(), global_step)
 
             gradient_log_interval = 256
