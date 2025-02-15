@@ -442,7 +442,7 @@ class QNetwork(nn.Module):
         self.visual = not(low_dim)
 
         self.o_conv = nn.Sequential(
-                nn.MaxPool2d(4),
+                # nn.MaxPool2d(4),
                 conv_init(
                     nn.Conv2d(
                         input_channels, 
@@ -540,7 +540,7 @@ class Actor(nn.Module):
         self.visual = not(low_dim)
 
         self.conv = nn.Sequential(
-                nn.MaxPool2d(4),
+                # nn.MaxPool2d(4),
                 conv_init(
                     nn.Conv2d(input_channels, 
                               channel_scale,
@@ -979,7 +979,7 @@ if __name__ == "__main__":
                 decay_rate = 0.1
                 decay_noise = True
                 if decay_noise:
-                    decay = 1.0 / (1.0 + (decay_rate *iteration))
+                    decay = 1.0 / (1.0 + (decay_rate * iteration))
                 else:
                     decay = 1.0
                 
