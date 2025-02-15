@@ -1061,6 +1061,7 @@ if __name__ == "__main__":
                     writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                     writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                     writer.add_scalar("reward/", rewards.mean().item(), global_step)
+                    writer.add_scalar("reward_std/", rewards.std().item(), global_step)
 
             gradient_log_interval = 256
             if iteration % gradient_log_interval == 0:
