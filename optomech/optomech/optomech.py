@@ -552,9 +552,6 @@ class OpticalSystem(object):
         perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
         self.perfect_image = perfect_image.intensity
 
-        # Store the baseline segment displacements.
-        self._store_baseline_segment_displacements()
-        
         # TODO: Externalize and modularize for other WFS types, including none.
         # Instantiate a Shack-Hartmann wavefront sensor.
         print("Building Shack-Hartmann wavefront sensor.")
@@ -610,6 +607,10 @@ class OpticalSystem(object):
 
             print("Initializing natural differential motion.")
             self._init_natural_diff_motion()
+        
+        # Store the baseline segment displacements.
+        self._store_baseline_segment_displacements()
+        
 
         # Finally, make a camera.
         # Note: The camera is noiseless here; we add noise in the Env step().
@@ -1406,20 +1407,23 @@ class OpticalSystem(object):
                 tilt_state = segment_tilt + segment_tilt_command_radians
 
                 # Enforce limits on incremental commmands with clip.
-                piston_state = np.clip(piston_state,
-                                       -max_piston_correction_meters,
-                                       max_piston_correction_meters)
-                tip_state = np.clip(tip_state,
-                                    -max_tip_correction_radians,
-                                    max_tip_correction_radians)
-                tilt_state = np.clip(tilt_state,
-                                        -max_tilt_correction_radians,
-                                        max_tilt_correction_radians)
+                piston_state = np.clip(
+                    piston_state,
+                    -max_piston_correction_meters + self.segment_baseline_dict[segment_id]["piston"],
+                    max_piston_correction_meters + self.segment_baseline_dict[segment_id]["piston"])
+                tip_state = np.clip(
+                    tip_state,
+                    -max_tip_correction_radians + self.segment_baseline_dict[segment_id]["tip"],
+                    max_tip_correction_radians + self.segment_baseline_dict[segment_id]["tip"])
+                tilt_state = np.clip(
+                    tilt_state,
+                    -max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"],
+                    max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"])
                 
-
-                piston_state = self.segment_baseline_dict[segment_id]["piston"] + piston_state
-                tip_state = self.segment_baseline_dict[segment_id]["tip"] + tip_state
-                tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + tilt_state
+                # TODO: this is wrong
+                # piston_state = self.segment_baseline_dict[segment_id]["piston"] + piston_state
+                # tip_state = self.segment_baseline_dict[segment_id]["tip"] + tip_state
+                # tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + tilt_state
 
 
                 # if abs(piston_state) > abs(max_piston_correction_meters):
