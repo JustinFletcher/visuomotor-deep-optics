@@ -1405,21 +1405,37 @@ class OpticalSystem(object):
                 tip_state = segment_tip + segment_tip_command_radians
                 tilt_state = segment_tilt + segment_tilt_command_radians
 
-                # Enforce limits on incremental commmands.
-                if abs(piston_state) > abs(max_piston_correction_meters):
-                    
-                    # If a command would exceed limits, it is ignored entirely.
-                    piston_state = segment_piston
+                # Enforce limits on incremental commmands with clip.
+                piston_state = np.clip(piston_state,
+                                       -max_piston_correction_meters,
+                                       max_piston_correction_meters)
+                tip_state = np.clip(tip_state,
+                                    -max_tip_correction_radians,
+                                    max_tip_correction_radians)
+                tilt_state = np.clip(tilt_state,
+                                        -max_tilt_correction_radians,
+                                        max_tilt_correction_radians)
                 
-                if abs(tip_state) > abs(max_tip_correction_radians):
 
-                    # If a command would exceed limits, it is ignored entirely.
-                    tip_state = segment_tip
+                piston_state = self.segment_baseline_dict[segment_id]["piston"] + piston_state
+                tip_state = self.segment_baseline_dict[segment_id]["tip"] + tip_state
+                tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + tilt_state
 
-                if abs(tilt_state) > abs(max_tilt_correction_radians):
 
-                    # If a command would exceed limits, it is ignored entirely.
-                    tilt_state = segment_tilt
+                # if abs(piston_state) > abs(max_piston_correction_meters):
+                    
+                #     # If a command would exceed limits, it is ignored entirely.
+                #     piston_state = segment_piston
+                
+                # if abs(tip_state) > abs(max_tip_correction_radians):
+
+                #     # If a command would exceed limits, it is ignored entirely.
+                #     tip_state = segment_tip
+
+                # if abs(tilt_state) > abs(max_tilt_correction_radians):
+
+                #     # If a command would exceed limits, it is ignored entirely.
+                #     tilt_state = segment_tilt
 
             # Set the actuators in meter and radians.
             self.segmented_mirror.set_segment_actuators(
