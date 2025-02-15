@@ -577,18 +577,18 @@ class Actor(nn.Module):
         self.fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
                                 lower_bound=-1/np.sqrt(fc_scale),
                                 upper_bound=1/np.sqrt(fc_scale))
-        # self.fc3 = uniform_init(
-        #     nn.Linear(
-        #         fc_scale,
-        #         int(np.prod(envs.single_action_space.shape))
-        #         ),
-        #     lower_bound=-3e-4,
-        #     upper_bound=3e-4
-        #     )
         self.fc3 = uniform_init(
-            nn.Linear(fc_scale, int(np.prod(envs.single_action_space.shape))),
-            lower_bound=-1/np.sqrt(fc_scale),
-            upper_bound=1/np.sqrt(fc_scale))
+            nn.Linear(
+                fc_scale,
+                int(np.prod(envs.single_action_space.shape))
+                ),
+            lower_bound=-3e-4,
+            upper_bound=3e-4
+            )
+        # self.fc3 = uniform_init(
+        #     nn.Linear(fc_scale, int(np.prod(envs.single_action_space.shape))),
+        #     lower_bound=-1/np.sqrt(fc_scale),
+        #     upper_bound=1/np.sqrt(fc_scale))
                                 
         # action rescaling
         self.register_buffer(
@@ -607,7 +607,7 @@ class Actor(nn.Module):
             x = x.permute(0, 3, 1, 2)
 
         if self.visual:
-            x = F.tanh(self.conv(x))
+            x = F.relu(self.conv(x))
         else:
             x = self.ones_output
         x = F.relu(self.fc1(x))
@@ -1060,6 +1060,9 @@ if __name__ == "__main__":
                     writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                     writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                     writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
+                    writer.add_scalar("action/mean", actions.mean().item(), global_step)
+                    writer.add_scalar("action/std", actions.std().item(), global_step)
+                    # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
                     writer.add_scalar("reward/", rewards.mean().item(), global_step)
                     writer.add_scalar("decay/", decay, global_step)
                     writer.add_scalar("reward_std/", rewards.std().item(), global_step)
