@@ -1200,9 +1200,11 @@ class OpticalSystem(object):
             self.ground_wind_speed_mps
             # TODO: Compute these values. Need help from Tim and Ye.
             # TDOD: Validate "3 sigma" assuption here
-            wind_diff_motion_piston_micron_std = 1.0 / 3
-            wind_diff_motion_tip_arcsec_std = 0.25 / 3 
-            wind_diff_motion_tilt_arcsec_std = 0.25 / 3
+            wind_diff_motion_piston_micron_std = 1.0
+            wind_diff_motion_tip_arcsec_std = 1.0
+            wind_diff_motion_tilt_arcsec_std = 1.0
+            # wind_diff_motion_tip_arcsec_std = 0.0
+            # wind_diff_motion_tilt_arcsec_std = 0.0
             wind_ptt_displacements = np.random.randn(self.num_apertures, 3)
             # Sample displacement in meters.
             wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
