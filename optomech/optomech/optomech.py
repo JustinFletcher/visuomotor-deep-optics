@@ -2297,6 +2297,20 @@ class OptomechEnv(gym.Env):
 
             reward = np.mean(strehls) - 1.0
 
+        elif self.reward_function == "negaexpstrehl":
+
+            strehls = list()
+        
+            for focal_plane_image in self.focal_plane_images:
+
+                strehls.append(hcipy.metrics.get_strehl_from_focal(
+                    focal_plane_image.flatten() / np.max(focal_plane_image),
+                    self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
+                ))
+
+
+            reward = (np.mean(strehls) ** np.e) - 1.0
+
         elif self.reward_function == "strehl_closed":
 
             strehls = list()
