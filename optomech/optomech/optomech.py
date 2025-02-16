@@ -1618,7 +1618,7 @@ class OptomechEnv(gym.Env):
         self.episode_time_ms = 0.0
 
         # TODO: Externalize.
-        self.command_tip_tilt = False
+        self.command_tip_tilt = True
 
         # Build the command spaces and add them to a list.
         command_space_list = list()
