@@ -83,6 +83,8 @@ class Args:
     """the frequency of training policy (delayed)"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
+    decay_rate: float = 0.00001
+    """Decay rate for noise decay"""
 
     # Actor model parameters
     actor_channel_scale: int = 16
@@ -977,10 +979,9 @@ if __name__ == "__main__":
         else:
             with torch.no_grad():
 
-                decay_rate = 0.001
                 decay_noise = True
                 if decay_noise:
-                    decay = 1.0 / (1.0 + (decay_rate * (global_step - args.learning_starts)))
+                    decay = 1.0 / (1.0 + (args.decay_rate * (global_step - args.learning_starts)))
                 else:
                     decay = 1.0
 
