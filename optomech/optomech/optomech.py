@@ -552,30 +552,33 @@ class OpticalSystem(object):
         perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
         self.perfect_image = perfect_image.intensity
 
-        # TODO: Externalize and modularize for other WFS types, including none.
-        # Instantiate a Shack-Hartmann wavefront sensor.
-        print("Building Shack-Hartmann wavefront sensor.")
-        f_number = 50
-        num_lenslets = 40 # 40 lenslets along one diameter
-        sh_diameter = 5e-3 # m
 
-        magnification = sh_diameter / pupil_diameter
-        self.magnifier = hcipy.Magnifier(magnification)
-        self.shwfs = hcipy.SquareShackHartmannWavefrontSensorOptics(
-            self.pupil_grid.scaled(magnification),
-            f_number,
-            num_lenslets,
-            sh_diameter)
-        self.shwfse = hcipy.ShackHartmannWavefrontSensorEstimator(
-            self.shwfs.mla_grid,
-            self.shwfs.micro_lens_array.mla_index
-        )
-
-        # TODO: Refactor to add a separate focal grid for the SHWFS.
-        self.shwfs_camera = hcipy.NoiselessDetector(focal_grid)
 
         # Instantiate a deformable mirror.
         if self.model_ao:
+
+            # TODO: Externalize and modularize for other WFS types, including none.
+            # Instantiate a Shack-Hartmann wavefront sensor.
+            print("Building Shack-Hartmann wavefront sensor.")
+            f_number = 50
+            num_lenslets = 40 # 40 lenslets along one diameter
+            sh_diameter = 5e-3 # m
+
+            magnification = sh_diameter / pupil_diameter
+            self.magnifier = hcipy.Magnifier(magnification)
+            self.shwfs = hcipy.SquareShackHartmannWavefrontSensorOptics(
+                self.pupil_grid.scaled(magnification),
+                f_number,
+                num_lenslets,
+                sh_diameter)
+            self.shwfse = hcipy.ShackHartmannWavefrontSensorEstimator(
+                self.shwfs.mla_grid,
+                self.shwfs.micro_lens_array.mla_index
+            )
+
+            # TODO: Refactor to add a separate focal grid for the SHWFS.
+
+            self.shwfs_camera = hcipy.NoiselessDetector(focal_grid)
             print("Building deformable mirror.")
             dm_model_type = "gaussian_influence"
 
@@ -2273,12 +2276,6 @@ class OptomechEnv(gym.Env):
         
             for focal_plane_image in self.focal_plane_images:
 
-                # reshape to image
-                # test_perfect_image = np.reshape(self.optical_system.perfect_image, self.image_shape)
-                # plt.imshow(np.log(test_perfect_image / np.max(test_perfect_image)))
-                # plt.colorbar()
-                # plt.show()
-                # die
 
                 strehls.append(hcipy.metrics.get_strehl_from_focal(
                     focal_plane_image.flatten() / np.max(focal_plane_image),
