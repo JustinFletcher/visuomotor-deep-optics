@@ -444,7 +444,7 @@ class QNetwork(nn.Module):
         self.visual = not(low_dim)
 
         self.o_conv = nn.Sequential(
-                # nn.MaxPool2d(4),
+                nn.MaxPool2d(4),
                 conv_init(
                     nn.Conv2d(
                         input_channels, 
@@ -510,14 +510,14 @@ class QNetwork(nn.Module):
             o = o.permute(0, 3, 1, 2)
 
         if self.visual:
-            x_o = F.relu(self.o_conv(o))
+            x_o = F.tanh(self.o_conv(o))
             x = torch.cat([x_o, a], 1)
 
         else: 
             x = a 
         x = F.relu(self.merge_fc1(x))
         x = F.relu(self.merge_fc2(x))
-        x = F.relu(self.merge_fc3(x))
+        # x = F.relu(self.merge_fc3(x))
         q_vals = self.fc_q(x)
 
         return q_vals
@@ -542,7 +542,7 @@ class Actor(nn.Module):
         self.visual = not(low_dim)
 
         self.conv = nn.Sequential(
-                # nn.MaxPool2d(4),
+                nn.MaxPool2d(4),
                 conv_init(
                     nn.Conv2d(input_channels, 
                               channel_scale,
