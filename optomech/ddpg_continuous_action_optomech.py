@@ -144,11 +144,16 @@ class Args:
     aperture_type: str = "elf"
     """The type of aperture to use."""
     max_episode_steps: int = 100
+
+    """Toggle to enable incremental control."""
+    incremental_control: bool = False
     """Toggle to enable agent control of tensioners."""
     command_tensioners: bool = False
-    """Toggle to enable agent control of tensioners."""
+    """Toggle to enable agent control of secondaries."""
     command_secondaries: bool = False
-    """Toggle to enable agent control of tensioners."""
+    """Toggle to enable agent control of tip/tilt for large mirrors."""
+    command_tip_tilt: bool = False
+    """Toggle to enable agent control of dm."""
     command_dm: bool = False
 
     """The type of aperture to use."""

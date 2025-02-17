@@ -52,7 +52,7 @@ def evaluate(
     Model: nn.Module,
     device: torch.device = torch.device("cpu"),
     capture_video: bool = True,
-    exploration_noise: float = 0.1,
+    exploration_noise: float = 0.0,
 ):
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, 0, capture_video, run_name)])
     actor = Model[0](envs).to(device)
@@ -125,7 +125,7 @@ gym.envs.registration.register(
 def rollout_optomech_policy(model_path=None,
                             env_vars_path=None,
                             rollout_episodes=1,
-                            exploration_noise=0.1,
+                            exploration_noise=0.0,
                             env_kwargs=None,
                             eval_save_path=None,
                             prelearning_sample=None,
@@ -135,10 +135,10 @@ def rollout_optomech_policy(model_path=None,
     
 
     # TODO: Test support for multiple environment rollouts.
-    
+
     # Either load the environment vars from a path or use the provided kwargs.
     if env_vars_path is None:
-
+        
         if env_kwargs is None:
             raise ValueError("Provide either env_vars_path or env_kwargs.")
         else:
@@ -146,13 +146,18 @@ def rollout_optomech_policy(model_path=None,
             args = env_kwargs
 
     else:
+        
         with open(env_vars_path, "r") as f:
             print("Loading args from file")
             args = Namespace(**json.load(f))
 
         # Make only the non-default kwargs overwrite args loaded from disk.
         if env_kwargs:
+
+
             for key, value in env_kwargs.items():
+
+
                 if value is not None:
                     setattr(args, key, value)
 
@@ -203,11 +208,15 @@ def rollout_optomech_policy(model_path=None,
     global_step = 0
 
     # Generate UUIDs for each environment episode.
-    env_uuids = [str(uuid.uuid4()) for _ in range(args.num_envs)]
+    # env_uuids = [env.uuid for env in envs]
+    env_uuid_attrs = envs.get_attr("uuid")
+    env_uuids = [str(env_uuid_attr) for env_uuid_attr in env_uuid_attrs]
     episode_data = list()
 
     # Evaluate the policy for the specified number of episodes.
     while len(episodic_returns) < rollout_episodes:
+        print("Rollout episode: ", len(episodic_returns))
+        print("Global step: ", global_step)
 
         # Create directories for each environment.
         for env_uuid in env_uuids:
@@ -230,9 +239,11 @@ def rollout_optomech_policy(model_path=None,
                 json.dump(envs.metadata, f)
 
         if model_path is not None:
+
             # Get the actions from the actor model, adding noise if requested.
             with torch.no_grad():
                 actions = actor(torch.Tensor(obs).to(device))
+                print(actions)
                 actions += torch.normal(0,
                                         actor.action_scale * exploration_noise)
                 actions = actions.cpu().numpy().clip(
@@ -261,7 +272,8 @@ def rollout_optomech_policy(model_path=None,
             
             elif prelearning_sample == "zeros":
                 
-                actions = np.array([(envs.single_action_space.sample() *0.0) for _ in range(envs.num_envs)])
+                actions = np.array([(envs.single_action_space.sample() * 0.0) for _ in range(envs.num_envs)])
+
             else:
                 
                 actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
@@ -275,9 +287,9 @@ def rollout_optomech_policy(model_path=None,
             for i, (action, reward) in enumerate(zip(actions, rewards)):
                 episode_data += [[action.tolist(), reward]]
 
-
         # Handle special saving for optomech environments.
         if (args.env_id == "optomech-v1") and args.write_env_state_info:
+
 
             # zip over each environment and save the state information.
             for i, (action,
@@ -358,7 +370,7 @@ class Args:
     """The path to the environment variables JSON."""
     num_episodes: int = 1
     """The number of episodes to run."""
-    exploration_noise: float = 0.1
+    exploration_noise: float = 0.0
     """The amount of exploration noise to add."""
     dataset: bool = False
     """Toggle to enable dataset saving."""
@@ -370,10 +382,11 @@ class Args:
     """The name of the dataset file."""
     scale_reset_interval: int = 125
     """The interval to reset the action scale."""
-
     
     # TODO: Replace with an import and manually set each to None.
     # Environment arguments.
+    seed: int = -- 88
+    """the name of this experiment"""
     report_time: bool = False
     """Whether to report time statistics."""
     action_type: str = None
@@ -410,8 +423,6 @@ class Args:
     """The interval between decisions."""
     focal_plane_image_size_pixels: int = None
     """The size of the focal plane image in pixels."""
-    # render_dpi: float = 500.0
-    # """The DPI for rendering."""
     record_env_state_info: bool = None
     """Whether to record environment state information."""
     write_env_state_info: bool = None
@@ -434,10 +445,23 @@ class Args:
     """Whether to model gravity differential motion."""
     model_temp_diff_motion: bool = None
     """Whether to model temperature differential motion."""
-
-
+    command_tensioners: bool = None
+    """Toggle to enable agent control of tensioners."""
+    command_secondaries: bool = None
+    """Toggle to enable agent control of tensioners."""
+    command_tip_tilt: bool = False
+    """Toggle to enable agent control of tip/tilt for large mirrors."""
+    incremental_control: bool = False
+    """Toggle to enable incremental control."""
+    command_dm: bool = None
+    """Toggle to enable agent control of tensioners."""
+    async_env: bool = None
+    """Whether to use an AsynchronousVectorEnv"""
+    subproc_env: bool = None
+    """Whether to use a SubprocVectorEnv"""
+    num_envs: int = 1
+    """The number of environments to create."""
 def cli_main(args): 
-
 
     rollout_optomech_policy(model_path=args.model_path,
                             env_vars_path=args.env_vars_path,

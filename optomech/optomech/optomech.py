@@ -248,18 +248,18 @@ class OpticalSystem(object):
         self.model_wind_diff_motion = kwargs["model_wind_diff_motion"]
         self.model_gravity_diff_motion = kwargs["model_gravity_diff_motion"]
         self.model_temp_diff_motion = kwargs["model_temp_diff_motion"]
+        self.incremental_control= kwargs["incremental_control"]
+        self.command_tip_tilt= kwargs["command_tip_tilt"]
 
-        print(self.model_wind_diff_motion)
         self.report_time = kwargs["report_time"]
-        self.microns_opd_per_actuator_bit = 0.00015
-        # self.num_apertures = 15
-        # self.num_apertures = 2
 
+        self.microns_opd_per_actuator_bit = 0.00015
         self.num_tensioners = kwargs["num_tensioners"]
 
         self.model_ao = kwargs['model_ao']
 
         aperture_type = kwargs['aperture_type']
+
         # Build the selected aperture; elf is the default.
         # TODO: Someday we should generalize this to accept any HCIPy aperture.
         print("Building aperture.")
@@ -1201,10 +1201,17 @@ class OpticalSystem(object):
             # TODO: Compute these values. Need help from Tim and Ye.
             # TDOD: Validate "3 sigma" assuption here
             wind_diff_motion_piston_micron_std = 1.0
-            wind_diff_motion_tip_arcsec_std = 1.0
-            wind_diff_motion_tilt_arcsec_std = 1.0
-            # wind_diff_motion_tip_arcsec_std = 0.0
-            # wind_diff_motion_tilt_arcsec_std = 0.0
+
+            if self.command_tip_tilt:
+
+                wind_diff_motion_tip_arcsec_std = 1.0
+                wind_diff_motion_tilt_arcsec_std = 1.0
+
+            else:
+
+                wind_diff_motion_tip_arcsec_std = 0.0
+                wind_diff_motion_tilt_arcsec_std = 0.0
+
             wind_ptt_displacements = np.random.randn(self.num_apertures, 3)
             # Sample displacement in meters.
             wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
@@ -1220,8 +1227,17 @@ class OpticalSystem(object):
             self.ground_temp_degcel
             # TODO: Compute these values. Need help from Tim and Ye.
             temp_diff_motion_piston_micron_std = 0.0
-            temp_diff_motion_tip_arcsec_std = 0.0
-            temp_diff_motion_tilt_arcsec_std = 0.0
+
+            if self.command_tip_tilt:
+
+                temp_diff_motion_tip_arcsec_std = 0.0
+                temp_diff_motion_tilt_arcsec_std = 0.0
+                    
+            else:
+
+                temp_diff_motion_tip_arcsec_std = 0.0
+                temp_diff_motion_tilt_arcsec_std = 0.0
+
             temp_ptt_displacements = np.random.randn(self.num_apertures, 3)
             # Sample displacement in meters.
             temp_ptt_displacements[:, 0] *= temp_diff_motion_piston_micron_std * 1e-6
@@ -1237,8 +1253,19 @@ class OpticalSystem(object):
             self.gravity_normal_deg
             # TODO: Compute these values. Need help from Tim and Ye.
             gravity_diff_motion_piston_micron_std = 300.0
-            gravity_diff_motion_tip_arcsec_std = 15.0
-            gravity_diff_motion_tilt_arcsec_std = 15.0
+
+
+            if self.command_tip_tilt:
+
+                gravity_diff_motion_tip_arcsec_std = 15.0
+                gravity_diff_motion_tilt_arcsec_std = 15.0
+                    
+            else:
+
+                temp_diff_motion_tip_arcsec_std = 0.0
+                temp_diff_motion_tilt_arcsec_std = 0.0
+
+
             gravity_ptt_displacements = np.random.randn(self.num_apertures, 3)
             # Sample displacement in meters.
             gravity_ptt_displacements[:, 0] *= gravity_diff_motion_piston_micron_std * 1e-6
@@ -1391,10 +1418,7 @@ class OpticalSystem(object):
             segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
 
 
-            # TODO: Externalize.
-            direct_command = False
-
-            if direct_command:
+            if not(self.incremental_control):
 
                 piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
                 tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
@@ -1425,26 +1449,7 @@ class OpticalSystem(object):
                     -max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"],
                     max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"])
                 
-                # TODO: this is wrong
-                # piston_state = self.segment_baseline_dict[segment_id]["piston"] + piston_state
-                # tip_state = self.segment_baseline_dict[segment_id]["tip"] + tip_state
-                # tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + tilt_state
 
-
-                # if abs(piston_state) > abs(max_piston_correction_meters):
-                    
-                #     # If a command would exceed limits, it is ignored entirely.
-                #     piston_state = segment_piston
-                
-                # if abs(tip_state) > abs(max_tip_correction_radians):
-
-                #     # If a command would exceed limits, it is ignored entirely.
-                #     tip_state = segment_tip
-
-                # if abs(tilt_state) > abs(max_tilt_correction_radians):
-
-                #     # If a command would exceed limits, it is ignored entirely.
-                #     tilt_state = segment_tilt
 
             # Set the actuators in meter and radians.
             self.segmented_mirror.set_segment_actuators(
@@ -1538,6 +1543,8 @@ class OptomechEnv(gym.Env):
         self.reward_function = kwargs['reward_function']
         self.ao_loop_active = kwargs['ao_loop_active']
 
+
+        self.command_tip_tilt = kwargs['command_tip_tilt']
         self.command_tensioners = kwargs['command_tensioners']
         self.command_secondaries = kwargs['command_secondaries']
         self.command_dm = kwargs['command_dm']
@@ -1617,8 +1624,6 @@ class OptomechEnv(gym.Env):
         # Reset the episode clock.
         self.episode_time_ms = 0.0
 
-        # TODO: Externalize.
-        self.command_tip_tilt = True
 
         # Build the command spaces and add them to a list.
         command_space_list = list()
