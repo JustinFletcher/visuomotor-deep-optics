@@ -579,18 +579,18 @@ class Actor(nn.Module):
         self.fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
                                 lower_bound=-1/np.sqrt(fc_scale),
                                 upper_bound=1/np.sqrt(fc_scale))
-        self.fc3 = uniform_init(
-            nn.Linear(
-                fc_scale,
-                int(np.prod(envs.single_action_space.shape))
-                ),
-            lower_bound=-3e-4,
-            upper_bound=3e-4
-            )
         # self.fc3 = uniform_init(
-        #     nn.Linear(fc_scale, int(np.prod(envs.single_action_space.shape))),
-        #     lower_bound=-1/np.sqrt(fc_scale),
-        #     upper_bound=1/np.sqrt(fc_scale))
+        #     nn.Linear(
+        #         fc_scale,
+        #         int(np.prod(envs.single_action_space.shape))
+        #         ),
+        #     lower_bound=-3e-4,
+        #     upper_bound=3e-4
+        #     )
+        self.fc3 = uniform_init(
+            nn.Linear(fc_scale, int(np.prod(envs.single_action_space.shape))),
+            lower_bound=-1/np.sqrt(fc_scale),
+            upper_bound=1/np.sqrt(fc_scale))
                                 
         # action rescaling
         self.register_buffer(
@@ -609,7 +609,7 @@ class Actor(nn.Module):
             x = x.permute(0, 3, 1, 2)
 
         if self.visual:
-            x = F.relu(self.conv(x))
+            x = F.tanh(self.conv(x))
         else:
             x = self.ones_output
         x = F.relu(self.fc1(x))
