@@ -65,7 +65,9 @@ class Args:
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     # learning_rate: float = 3e-4
-    learning_rate: float = 3e-4
+    actor_learning_rate: float = 1e-5
+    """the learning rate of the optimizer"""
+    critic_learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""
@@ -79,7 +81,7 @@ class Args:
     """the scale of exploration noise"""
     learning_starts: int = 256
     """timestep to start learning"""
-    policy_frequency: int = 4
+    policy_frequency: int = 1
     """the frequency of training policy (delayed)"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
@@ -426,10 +428,8 @@ class DenseNet3(nn.Module):
         return self.fc(out)
 
 
+class VanillaCritic(nn.Module):
 
-
-# ALGO LOGIC: initialize agent here:
-class QNetwork(nn.Module):
     def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
         super().__init__()
 
@@ -454,15 +454,15 @@ class QNetwork(nn.Module):
                     nn.Conv2d(
                         input_channels, 
                         channel_scale, 
-                        kernel_size=3, 
-                        stride=2)
+                        kernel_size=8, 
+                        stride=4)
                         ),
                 nn.ReLU(),
                 conv_init(
                     nn.Conv2d(
                         channel_scale, 
                         channel_scale // 2, 
-                        kernel_size=3, 
+                        kernel_size=4, 
                         stride=2)
                         ),
                 nn.ReLU(),
@@ -471,7 +471,7 @@ class QNetwork(nn.Module):
                         channel_scale // 2,
                         channel_scale // 4,
                         kernel_size=3,
-                        stride=2)
+                        stride=1)
                     ),
                 nn.Flatten(),
             )
@@ -497,16 +497,16 @@ class QNetwork(nn.Module):
                 upper_bound=1/np.sqrt(vector_action_size))
             
         self.merge_fc2 = uniform_init(
-            nn.Linear(fc_scale, fc_scale),
+            nn.Linear(fc_scale, fc_scale // 2),
             lower_bound=-1/np.sqrt(fc_scale),
             upper_bound=1/np.sqrt(fc_scale))
 
         self.merge_fc3 = uniform_init(
-            nn.Linear(fc_scale, fc_scale),
-            lower_bound=-1/np.sqrt(fc_scale),
-            upper_bound=1/np.sqrt(fc_scale))
+            nn.Linear(fc_scale // 2, fc_scale // 4),
+            lower_bound=-1/np.sqrt(fc_scale // 2),
+            upper_bound=1/np.sqrt(fc_scale // 2))
 
-        self.fc_q = nn.Linear(fc_scale, 1)
+        self.fc_q = nn.Linear(fc_scale // 4, 1)
 
     def forward(self, o, a):
 
@@ -522,12 +522,13 @@ class QNetwork(nn.Module):
             x = a 
         x = F.relu(self.merge_fc1(x))
         x = F.relu(self.merge_fc2(x))
-        # x = F.relu(self.merge_fc3(x))
+        x = F.relu(self.merge_fc3(x))
         q_vals = self.fc_q(x)
 
         return q_vals
 
-class Actor(nn.Module):
+
+class VanillaActor(nn.Module):
 
     def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
         super().__init__()
@@ -551,18 +552,18 @@ class Actor(nn.Module):
                 conv_init(
                     nn.Conv2d(input_channels, 
                               channel_scale,
-                              kernel_size=3,
-                              stride=2)),
+                              kernel_size=8,
+                              stride=4)),
                 nn.ReLU(),
                 conv_init(nn.Conv2d(channel_scale,
                                     channel_scale // 2,
-                                    kernel_size=3,
+                                    kernel_size=4,
                                     stride=2)),
                 nn.ReLU(),
                 conv_init(nn.Conv2d(channel_scale // 2,
                                     channel_scale // 4,
                                     kernel_size=3,
-                                    stride=2)),
+                                    stride=1)),
                 nn.Flatten(),
             )
         
@@ -577,13 +578,13 @@ class Actor(nn.Module):
         self.ones_output = torch.ones(1, output_dim)
 
         self.fc1 = uniform_init(
-            nn.Linear(output_dim, fc_scale),
+            nn.Linear(output_dim, fc_scale // 2),
             lower_bound=-1/np.sqrt(output_dim),
             upper_bound=1/np.sqrt(output_dim)
             )
-        self.fc2 = uniform_init(nn.Linear(fc_scale, fc_scale),
-                                lower_bound=-1/np.sqrt(fc_scale),
-                                upper_bound=1/np.sqrt(fc_scale))
+        self.fc2 = uniform_init(nn.Linear(fc_scale // 2, fc_scale // 4),
+                                lower_bound=-1/np.sqrt(fc_scale // 2),
+                                upper_bound=1/np.sqrt(fc_scale // 2))
         # self.fc3 = uniform_init(
         #     nn.Linear(
         #         fc_scale,
@@ -593,9 +594,9 @@ class Actor(nn.Module):
         #     upper_bound=3e-4
         #     )
         self.fc3 = uniform_init(
-            nn.Linear(fc_scale, int(np.prod(envs.single_action_space.shape))),
-            lower_bound=-1/np.sqrt(fc_scale),
-            upper_bound=1/np.sqrt(fc_scale))
+            nn.Linear(fc_scale // 4, int(np.prod(envs.single_action_space.shape))),
+            lower_bound=-1/np.sqrt(fc_scale // 4),
+            upper_bound=1/np.sqrt(fc_scale // 4))
                                 
         # action rescaling
         self.register_buffer(
@@ -625,6 +626,110 @@ class Actor(nn.Module):
 
         a = (x * self.action_scale + self.action_bias)
         return a
+
+
+class CustomActor(nn.Module):
+
+    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
+        
+        super().__init__()
+        # Initialize the shape parameters
+
+        # Get the observation space shape from the environment.
+        obs_shape = envs.single_observation_space.shape
+        print(obs_shape)
+        die
+
+        vector_action_size = envs.single_action_space.shape[0]
+        # Seperate out the prior action and the image
+        
+        a_prior_shape
+        obs_image_shape
+
+        # Check if this is a channels-last environment
+        if obs_image_shape[-1] < obs_image_shape[0]:
+            self.channels_last = True
+            input_channels = obs_image_shape[-1]
+        else:
+            self.channels_last = False
+            input_channels = obs_image_shape[0]
+
+        # self.visual = not(low_dim)
+
+        # with torch.inference_mode():
+
+        #     # Handle channels-last environments.
+        #     x = torch.zeros(1, *obs_shape)
+        #     if self.channels_last:
+        #         x = x.permute(0, 3, 1, 2)
+        #     output_dim = self.conv(x).shape[1]
+
+        # self.ones_output = torch.ones(1, output_dim)
+
+        self.visual_encoder = nn.Sequential(
+            conv_init(
+                nn.Conv2d(input_channels, 
+                            64,
+                            kernel_size=7,
+                            stride=2)),
+            nn.ReLU(),
+            conv_init(nn.Conv2d(64,
+                                32,
+                                kernel_size=5,
+                                stride=1)),
+            nn.ReLU(),
+            conv_init(nn.Conv2d(32,
+                                16,
+                                kernel_size=5,
+                                stride=1)),
+            nn.Flatten(),
+        )
+
+
+                                
+        # action rescaling
+        self.register_buffer(
+            # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
+            "action_scale", torch.tensor(1.0, dtype=torch.float32)
+        )
+        self.register_buffer(
+            # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
+            "action_bias", torch.tensor(0.0, dtype=torch.float32)
+        )
+
+    def forward(self, x):
+
+        o = x[0]
+        a_prior = x[1]
+
+        # Handle channels-last environments.
+        if self.channels_last:
+            o = o.permute(0, 3, 1, 2)
+
+        if self.visual:
+            x_o = F.tanh(self.conv(o))
+        else:
+            x = self.ones_output
+
+        # Extract visual feature maps
+
+        # Extract action features maps by deconvolution
+
+        # Concatinate vision and action features
+
+        # Merge the vision and action feature maps
+
+        # Apply convolulational LSTM
+
+        # Apply attention
+
+        # Apply action prediciton head
+
+
+        a = (x * self.action_scale + self.action_bias)
+        return a
+
+
     
 def uniform_init(layer, lower_bound=-1e-4, upper_bound=1e-4):
 
@@ -834,30 +939,56 @@ if __name__ == "__main__":
             [make_env(args.env_id, i, args.capture_video, run_name, args) for i in range(args.num_envs)],
         )
     
-    # actor = Actor(envs).to(device)
-    actor = Actor(envs,
-                  channel_scale=args.actor_channel_scale,
-                  fc_scale=args.actor_fc_scale,
-                  low_dim=args.low_dim_actor).to(device)
+
+    actor_type = "vanilla"
+
+    if actor_type == "vanilla":
     
-    # qf1 = QNetwork(envs).to(device)
-    qf1 = QNetwork(envs,
-                   channel_scale=args.qnetwork_channel_scale,
-                   fc_scale=args.qnetwork_fc_scale,
-                   low_dim=args.low_dim_qnetwork).to(device)
+        # actor = Actor(envs).to(device)
+        actor = VanillaActor(envs,
+                    channel_scale=args.actor_channel_scale,
+                    fc_scale=args.actor_fc_scale,
+                    low_dim=args.low_dim_actor).to(device)
+        
+        # target_actor = Actor(envs).to(device)
+        target_actor = VanillaActor(envs,
+                            channel_scale=args.actor_channel_scale,
+                            fc_scale=args.actor_fc_scale,
+                            low_dim=args.low_dim_actor).to(device)
+        
+    elif actor_type == "custom":
+        actor = CustomActor(envs).to(device)
+        target_actor = CustomActor(envs).to(device)
+    else:
+
+        raise ValueError("Invalid actor type specified.")
     
-    # qf1_target = QNetwork(envs).to(device)
-    qf1_target = QNetwork(envs,
-                          channel_scale=args.qnetwork_channel_scale,
-                          fc_scale=args.qnetwork_fc_scale,
-                          low_dim=args.low_dim_qnetwork).to(device)   
+
+
+    critic_type = "vanilla"
+    if critic_type == "vanilla":
+        # qf1 = QNetwork(envs).to(device)
+        qf1 = VanillaCritic(envs,
+                    channel_scale=args.qnetwork_channel_scale,
+                    fc_scale=args.qnetwork_fc_scale,
+                    low_dim=args.low_dim_qnetwork).to(device)
+        
+        # qf1_target = QNetwork(envs).to(device)
+        qf1_target = VanillaCritic(envs,
+                            channel_scale=args.qnetwork_channel_scale,
+                            fc_scale=args.qnetwork_fc_scale,
+                            low_dim=args.low_dim_qnetwork).to(device)
+    elif critic_type == "custom":
+
+        qf1 = CustomCritic(envs).to(device)
+        qf1_target = CustomCritic(envs).to(device)
+
+    else:
+        raise ValueError("Invalid critic type specified.")
     
-    # target_actor = Actor(envs).to(device)
-    target_actor = Actor(envs,
-                         channel_scale=args.actor_channel_scale,
-                         fc_scale=args.actor_fc_scale,
-                         low_dim=args.low_dim_actor).to(device)
-    
+
+
+
     # if torch.cuda.device_count() > 1:
     #     print(f"Using {torch.cuda.device_count()} GPUs!")
     #     model = nn.DataParallel(SimpleModel())  # Wrap the model with DataParallel
@@ -869,8 +1000,8 @@ if __name__ == "__main__":
 
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
-    q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.learning_rate)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
+    q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.critic_learning_rate)
+    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.actor_learning_rate)
 
     envs.single_observation_space.dtype = np.float32
     rb = ReplayBuffer(
@@ -1051,8 +1182,11 @@ if __name__ == "__main__":
             q_optimizer.step()
 
             if iteration % args.policy_frequency == 0:
-                
-                actor_loss = -qf1(data.observations, actor(data.observations)).mean()
+
+                action_reg = 0.001
+                actor_loss = -qf1(data.observations, actor(data.observations)
+                    ).mean() + (action_reg * (actor(data.observations)**2)
+                        ).mean()
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
                 actor_optimizer.step()
