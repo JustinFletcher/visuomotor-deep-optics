@@ -2093,12 +2093,10 @@ if __name__ == "__main__":
                     next_state_actions)
                 
                 # next_q_value = data['rewards'][0].flatten() + (1 - data['dones'][0].flatten()) * args.gamma * (qf1_next_target).view(-1)
-                current_rewards = reward
+                # current_rewards = reward
                 discounted_future_rewards = args.gamma * (qf1_next_target).view(-1)
-                # TODO: Validate this line.
-
                 masked_discounted_future_rewards = ((~done) * discounted_future_rewards)
-                next_q_value = current_rewards + masked_discounted_future_rewards
+                next_q_value = reward + masked_discounted_future_rewards
 
             qf1_a_values = qf1(obs_image, obs_prior_action, action).view(-1)
             qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
@@ -2126,17 +2124,17 @@ if __name__ == "__main__":
 
                 if iteration % 1 == 0:
                     writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                    writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                    writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                    writer.add_scalar("action/mean", actions.mean().item(), global_step)
-                    writer.add_scalar("action/std", actions.std().item(), global_step)
-                    # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
-                    writer.add_scalar("reward/", rewards.mean().item(), global_step)
-                    writer.add_scalar("decay/", decay, global_step)
-                    writer.add_scalar("reward_std/", rewards.std().item(), global_step)
 
-            gradient_log_interval = 2
-            
+            if iteration % 1 == 0:
+                writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
+                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
+                writer.add_scalar("action/mean", actions.mean().item(), global_step)
+                writer.add_scalar("action/std", actions.std().item(), global_step)
+                # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
+                writer.add_scalar("reward/", rewards.mean().item(), global_step)
+                writer.add_scalar("decay/", decay, global_step)
+                writer.add_scalar("reward_std/", rewards.std().item(), global_step)
+
 
 
         print("Step time:", (time.time() - step_time) / args.num_envs)
