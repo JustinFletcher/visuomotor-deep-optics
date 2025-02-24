@@ -987,17 +987,9 @@ class CustomActor(nn.Module):
             conv_init(
                 nn.Conv2d(
                     16,
-                    16,
+                    8,
                     kernel_size=5,
                     stride=2)
-                ),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(
-                    16,
-                    8,
-                    kernel_size=3,
-                    stride=1)
                 ),
             nn.ReLU(),
             conv_init(
@@ -1008,33 +1000,50 @@ class CustomActor(nn.Module):
                     stride=1)
                 ),
             nn.ReLU(),
-            nn.Flatten(),
-        )        
-        
+            conv_init(
+                nn.Conv2d(
+                    4,
+                    4,
+                    kernel_size=1,
+                    stride=2)
+                ),
+            nn.ReLU(),
+        )
+
         # Get the output size of the merge convolutions
         with torch.inference_mode():
             x = torch.zeros(1, 2 * visual_output_channels, visual_output_shape[-2], visual_output_shape[-1])
             if self.channels_last:
                 x = x.permute(0, 3, 1, 2)
             merge_conv_output_shape = self.merge_conv(x).shape
-        merge_mlp_output_size = 64
 
+        merge_mlp_output_size = 64
         self.merge_mlp = nn.Sequential(
+            nn.Flatten(),
             uniform_init(
                 nn.Linear(
                     int(np.prod(merge_conv_output_shape[1:])),
-                    64),
+                    fc_scale),
                 lower_bound=-1/np.sqrt(np.prod(merge_conv_output_shape[1:])),
                 upper_bound=1/np.sqrt(np.prod(merge_conv_output_shape[1:]))
             ),
             nn.ReLU(),
             uniform_init(
                 nn.Linear(
-                    64,
+                    fc_scale,
+                    fc_scale,
+                ),
+                lower_bound=-1/np.sqrt(fc_scale),
+                upper_bound=1/np.sqrt(fc_scale)
+            ),
+            nn.ReLU(),
+            uniform_init(
+                nn.Linear(
+                    fc_scale,
                     merge_mlp_output_size,
                 ),
-                lower_bound=-1/np.sqrt(64),
-                upper_bound=1/np.sqrt(64)
+                lower_bound=-1/np.sqrt(fc_scale),
+                upper_bound=1/np.sqrt(fc_scale)
             )
         )
 
@@ -1090,22 +1099,31 @@ class CustomActor(nn.Module):
 
         # Build the action head following the convolutional LSTM
         self.action_head = nn.Sequential(
-            nn.Flatten(),
+            nn.ReLU(),
             uniform_init(
                 nn.Linear(
                     int(np.prod(pre_head_output_shape[1:])),
-                    32),
+                    fc_scale),
                 lower_bound=-1/np.sqrt(np.prod(pre_head_output_shape[1:])),
                 upper_bound=1/np.sqrt(np.prod(pre_head_output_shape[1:]))
             ),
             nn.ReLU(),
             uniform_init(
                 nn.Linear(
-                    32,
+                    fc_scale,
+                    fc_scale // 2
+                ),
+                lower_bound=-1/np.sqrt(fc_scale),
+                upper_bound=1/np.sqrt(fc_scale)
+            ),
+            nn.ReLU(),
+            uniform_init(
+                nn.Linear(
+                    fc_scale // 2,
                     int(np.prod(envs.single_action_space.shape))
                 ),
-                lower_bound=-1/np.sqrt(32),
-                upper_bound=1/np.sqrt(32)
+                lower_bound=-1/np.sqrt(fc_scale // 2),
+                upper_bound=1/np.sqrt(fc_scale // 2)
             )
         )
                                 
@@ -1263,36 +1281,45 @@ class CustomCritic(nn.Module):
                 uniform_init(
                     nn.Linear(
                         prior_action_shape[0],
-                        64),
+                        fc_scale),
                     lower_bound=-1/np.sqrt(prior_action_shape[0]),
                     upper_bound=1/np.sqrt(prior_action_shape[0])
                     ),
                 nn.ReLU(),
                 uniform_init(
                     nn.Linear(
-                        64,
-                        int(np.prod(visual_output_shape[1:]))
+                        fc_scale,
+                        fc_scale
                         ),
-                    lower_bound=-1/np.sqrt(64),
-                    upper_bound=1/np.sqrt(64)
+                    lower_bound=-1/np.sqrt(fc_scale),
+                    upper_bound=1/np.sqrt(fc_scale)
                     ),
             )
             self.next_action_encoder = nn.Sequential(
                 uniform_init(
                     nn.Linear(
                         prior_action_shape[0],
-                        64),
+                        fc_scale),
                     lower_bound=-1/np.sqrt(prior_action_shape[0]),
                     upper_bound=1/np.sqrt(prior_action_shape[0])
                     ),
                 nn.ReLU(),
                 uniform_init(
                     nn.Linear(
-                        64,
+                        fc_scale,
+                        fc_scale
+                        ),
+                    lower_bound=-1/np.sqrt(fc_scale),
+                    upper_bound=1/np.sqrt(fc_scale)
+                    ),
+                nn.ReLU(),
+                uniform_init(
+                    nn.Linear(
+                        fc_scale,
                         int(np.prod(visual_output_shape[1:]))
                         ),
-                    lower_bound=-1/np.sqrt(64),
-                    upper_bound=1/np.sqrt(64)
+                    lower_bound=-1/np.sqrt(fc_scale),
+                    upper_bound=1/np.sqrt(fc_scale)
                     ),
             )
 
@@ -1323,17 +1350,9 @@ class CustomCritic(nn.Module):
             conv_init(
                 nn.Conv2d(
                     16,
-                    16,
+                    8,
                     kernel_size=5,
                     stride=2)
-                ),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(
-                    16,
-                    8,
-                    kernel_size=3,
-                    stride=1)
                 ),
             nn.ReLU(),
             conv_init(
@@ -1344,7 +1363,14 @@ class CustomCritic(nn.Module):
                     stride=1)
                 ),
             nn.ReLU(),
-            nn.Flatten(),
+            conv_init(
+                nn.Conv2d(
+                    4,
+                    4,
+                    kernel_size=1,
+                    stride=2)
+                ),
+            nn.ReLU(),
         )
 
         # Get the output size of the merge convolutions
@@ -1353,25 +1379,37 @@ class CustomCritic(nn.Module):
             if self.channels_last:
                 x = x.permute(0, 3, 1, 2)
             merge_conv_output_shape = self.merge_conv(x).shape
-        merge_mlp_output_size = 64
 
+
+        merge_mlp_output_size = 64
         self.merge_mlp = nn.Sequential(
+            nn.Flatten(),
             uniform_init(
                 nn.Linear(
                     int(np.prod(merge_conv_output_shape[1:])),
-                    64),
+                    fc_scale),
                 lower_bound=-1/np.sqrt(np.prod(merge_conv_output_shape[1:])),
                 upper_bound=1/np.sqrt(np.prod(merge_conv_output_shape[1:]))
             ),
             nn.ReLU(),
             uniform_init(
                 nn.Linear(
-                    64,
+                    fc_scale,
+                    fc_scale,
+                ),
+                lower_bound=-1/np.sqrt(fc_scale),
+                upper_bound=1/np.sqrt(fc_scale)
+            ),
+            nn.ReLU(),
+            uniform_init(
+                nn.Linear(
+                    fc_scale,
                     merge_mlp_output_size,
                 ),
-                lower_bound=-1/np.sqrt(64),
-                upper_bound=1/np.sqrt(64)
-            )
+                lower_bound=-1/np.sqrt(fc_scale),
+                upper_bound=1/np.sqrt(fc_scale)
+            ),
+            nn.ReLU(),
         )
 
         self.use_lstm = True
@@ -1427,21 +1465,31 @@ class CustomCritic(nn.Module):
 
         # Build the q head following the convolutional LSTM
         self.q_head = nn.Sequential(
+            nn.Flatten(),
             uniform_init(
                 nn.Linear(
                     int(np.prod(pre_head_output_shape[1:])),
-                    64),
+                    fc_scale),
                 lower_bound=-1/np.sqrt(np.prod(pre_head_output_shape[1:])),
                 upper_bound=1/np.sqrt(np.prod(pre_head_output_shape[1:]))
             ),
             nn.ReLU(),
             uniform_init(
                 nn.Linear(
-                    64,
+                    fc_scale,
+                    fc_scale // 2
+                ),
+                lower_bound=-1/np.sqrt(fc_scale),
+                upper_bound=1/np.sqrt(fc_scale)
+            ),
+            nn.ReLU(),
+            uniform_init(
+                nn.Linear(
+                    fc_scale // 2,
                     1
                 ),
-                lower_bound=-1/np.sqrt(64),
-                upper_bound=1/np.sqrt(64)
+                lower_bound=-1/np.sqrt(fc_scale // 2),
+                upper_bound=1/np.sqrt(fc_scale // 2)
             )
         )
 
@@ -1493,14 +1541,8 @@ class CustomCritic(nn.Module):
         # Apply the merge MLP
         x = self.merge_mlp(x)
 
-        # Apply convolulational LSTM
         # Apply LSTM
         if self.use_lstm:
-
-            # If hidden is None, we initialize to zeros automatically:
-            # if self.hidden is None:
-            #     # We'll get batch_size from x.shape[1]
-            #     self.hidden = self.init_hidden()
 
             x, new_hidden = self.lstm(x, self.hidden)
             # new_hidden is a tuple (h, c) after processing x
@@ -1737,8 +1779,14 @@ if __name__ == "__main__":
                             low_dim=args.low_dim_actor).to(device)
         
     elif args.actor_type == "custom":
-        actor = CustomActor(envs, device).to(device)
-        target_actor = CustomActor(envs, device).to(device)
+        actor = CustomActor(envs,
+                            device,
+                            channel_scale=args.actor_channel_scale,
+                            fc_scale=args.actor_fc_scale,).to(device)
+        target_actor = CustomActor(envs,
+                                   device,
+                                   channel_scale=args.actor_channel_scale,
+                                   fc_scale=args.actor_fc_scale,).to(device)
     else:
 
         raise ValueError("Invalid actor type specified.")
@@ -1758,8 +1806,14 @@ if __name__ == "__main__":
                             low_dim=args.low_dim_qnetwork).to(device)
     elif args.critic_type == "custom":
 
-        qf1 = CustomCritic(envs, device).to(device)
-        qf1_target = CustomCritic(envs, device).to(device)
+        qf1 = CustomCritic(envs,
+                           device,
+                           channel_scale=args.actor_channel_scale,
+                           fc_scale=args.actor_fc_scale,).to(device)
+        qf1_target = CustomCritic(envs,
+                                  device,
+                                  channel_scale=args.actor_channel_scale,
+                                  fc_scale=args.actor_fc_scale,).to(device)
 
     else:
         raise ValueError("Invalid critic type specified.")
@@ -2001,7 +2055,7 @@ if __name__ == "__main__":
 
 
             # torch.squeeze(x, 1).to(device)
-            print("====Data shape: ")
+            # print("====Data shape: ")
             next_obs_image = torch.squeeze(data['next_observations']['image'], 1).to(device)
             # print(next_obs_image.shape)
             next_obs_prior_action = torch.squeeze(data['next_observations']['prior_action'], 1).to(device)
@@ -2054,12 +2108,12 @@ if __name__ == "__main__":
             # optimize the model
             q_optimizer.zero_grad()
             # TODO: Experimental. May need to see (https://stackoverflow.com/questions/48274929/pytorch-runtimeerror-trying-to-backward-through-the-graph-a-second-time-but)
-            qf1_loss.backward(retain_graph=True)
+            qf1_loss.backward()
             q_optimizer.step()
 
             if iteration % args.policy_frequency == 0:
 
-                action_reg = 0.001
+                action_reg = 0.0
                 actor_loss = -qf1(obs_image, obs_prior_action, action
                     ).mean() + (action_reg * (actor(obs_image, obs_prior_action)**2)
                         ).mean()
