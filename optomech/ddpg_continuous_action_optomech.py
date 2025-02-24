@@ -1838,8 +1838,7 @@ if __name__ == "__main__":
 
     envs.single_observation_space.dtype = np.float32
 
-    # TODO: Issue. ReplayBuffer does not support Dict Envs.
-    print(envs.single_observation_space)
+
     rb = ReplayBuffer(
         args.buffer_size,
         envs.single_observation_space['image'],
@@ -1849,8 +1848,10 @@ if __name__ == "__main__":
         n_envs=args.num_envs
     )
 
-    replay_buffer = TensorDictReplayBuffer(storage=LazyTensorStorage(
-        args.buffer_size), batch_size=args.batch_size)
+    replay_buffer = TensorDictReplayBuffer(
+        storage=LazyTensorStorage(args.buffer_size),
+        batch_size=args.batch_size
+        )
 
 
     # TODO: Add a dud check here.
@@ -2092,22 +2093,18 @@ if __name__ == "__main__":
                     next_state_actions)
                 
                 # next_q_value = data['rewards'][0].flatten() + (1 - data['dones'][0].flatten()) * args.gamma * (qf1_next_target).view(-1)
-                current_rewards = data['rewards'].flatten().to(device)
+                current_rewards = reward
                 discounted_future_rewards = args.gamma * (qf1_next_target).view(-1)
                 # TODO: Validate this line.
-                masked_discounted_future_rewards = ((~data['dones'].flatten().to(device)) * discounted_future_rewards)
+
+                masked_discounted_future_rewards = ((~done) * discounted_future_rewards)
                 next_q_value = current_rewards + masked_discounted_future_rewards
 
             qf1_a_values = qf1(obs_image, obs_prior_action, action).view(-1)
             qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
 
-
-            # if global_step % 1 == 0:
-            #     display_observation_action(data.observations[0], data.actions[0], num_frames=1)
-
             # optimize the model
             q_optimizer.zero_grad()
-            # TODO: Experimental. May need to see (https://stackoverflow.com/questions/48274929/pytorch-runtimeerror-trying-to-backward-through-the-graph-a-second-time-but)
             qf1_loss.backward()
             q_optimizer.step()
 
