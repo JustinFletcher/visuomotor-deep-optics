@@ -242,8 +242,14 @@ def rollout_optomech_policy(model_path=None,
 
             # Get the actions from the actor model, adding noise if requested.
             with torch.no_grad():
-                actions = actor(torch.Tensor(obs).to(device))
-                print(actions)
+
+                image = torch.Tensor(obs['image']).to(device)
+                print("rollout image shape")
+                print(image.shape)
+                prior_action = torch.Tensor(obs['prior_action']).to(device)
+                print("rollout prior action shape")
+                print(prior_action.shape)
+                actions = actor(image, prior_action)
                 actions += torch.normal(0,
                                         actor.action_scale * exploration_noise)
                 actions = actions.cpu().numpy().clip(
@@ -325,27 +331,30 @@ def rollout_optomech_policy(model_path=None,
                     pickle.dump(info, f)
 
         # Record the episodic returns.
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                if "episode" not in info:
-                    continue
-                print(f"eval_episode={len(episodic_returns)}, episodic_return={info['episode']['r']}")
+        print(infos)
 
-                # Create or open the dataset json.
-                dataset_path = os.path.join(
-                    episode_save_path,
-                    dataset_name + "_" + str(len(episodic_returns)) + ".json")
-                Path(eval_save_path).mkdir(parents=True, exist_ok=True)
-    
-                # Save the dataset back to the file.
-                with open(dataset_path, "w") as f:
-                    json.dump(episode_data, f)
+        # if "final_info" in infos:
+        if infos:
+        # for info in infos["final_info"]:
+            if "episode" not in infos:
+                continue
+            print(f"eval_episode={len(episodic_returns)}, episodic_return={infos['episode']['r']}")
 
-                episodic_returns += [info["episode"]["r"]]
+            # Create or open the dataset json.
+            dataset_path = os.path.join(
+                episode_save_path,
+                dataset_name + "_" + str(len(episodic_returns)) + ".json")
+            Path(eval_save_path).mkdir(parents=True, exist_ok=True)
 
-                episode_data = list()
-                # Generate new UUIDs for the next environments.
-                env_uuids = [str(uuid.uuid4()) for _ in range(args.num_envs)]
+            # Save the dataset back to the file.
+            with open(dataset_path, "w") as f:
+                json.dump(episode_data, f)
+
+            episodic_returns += [infos["episode"]["r"]]
+
+            episode_data = list()
+            # Generate new UUIDs for the next environments.
+            env_uuids = [str(uuid.uuid4()) for _ in range(args.num_envs)]
 
         # Update the observations for the next step.
         obs = next_obs
@@ -454,6 +463,8 @@ class Args:
     incremental_control: bool = False
     """Toggle to enable incremental control."""
     command_dm: bool = None
+    """ The type of observation to model 'image_only' or 'image_action'."""
+    observation_mode: bool = "image_only"
     """Toggle to enable agent control of tensioners."""
     async_env: bool = None
     """Whether to use an AsynchronousVectorEnv"""
