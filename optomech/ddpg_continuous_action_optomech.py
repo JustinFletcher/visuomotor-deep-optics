@@ -16,6 +16,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torchrl.data import ReplayBuffer
+from tensordict import TensorDict
+from torchrl.envs import GymWrapper, TransformedEnv
+# from torchrl.envs.transforms import ToTensor
+from torchrl.data import LazyTensorStorage, TensorDictReplayBuffer
+from torchinfo import summary
 import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
@@ -26,6 +32,7 @@ from anytree import Node, RenderTree
 import matplotlib.pyplot as plt
 
 from pathlib import Path
+
 
 
 @dataclass
@@ -69,7 +76,7 @@ class Args:
     """the learning rate of the optimizer"""
     critic_learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
-    buffer_size: int = int(1e6)
+    buffer_size: int = int(1e5)
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -88,17 +95,22 @@ class Args:
     decay_rate: float = 0.00001
     """Decay rate for noise decay"""
 
+    save_model: bool = False
+    """whether to save model into the `runs/{run_name}` folder"""
+
     # Actor model parameters
+    actor_type: str = "vanilla"
+    """Type of actor model to use."""
     actor_channel_scale: int = 16
     """The scale of the actor model channels."""
     actor_fc_scale: int = 64
     """The scale of the actor model fully connected layers."""
     low_dim_actor: bool = False
     """Whether the actor model is visual."""
-    save_model: bool = False
-    """whether to save model into the `runs/{run_name}` folder"""
 
     # QNetwork model parameters
+    critic_type: str = "vanilla"
+    """Type of QNetwork model to use."""
     qnetwork_channel_scale: int = 16
     """The scale of the QNetwork model channels."""
     qnetwork_fc_scale: int = 64
@@ -157,6 +169,10 @@ class Args:
     command_tip_tilt: bool = False
     """Toggle to enable agent control of dm."""
     command_dm: bool = False
+
+
+    """ The type of observation to model 'image_only' or 'image_action'."""
+    observation_mode: bool = "image_only"
 
     """The type of aperture to use."""
     ao_loop_active: bool = False
@@ -428,6 +444,195 @@ class DenseNet3(nn.Module):
         return self.fc(out)
 
 
+
+class ConvLSTMCell(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim, kernel_size, bias):
+        """
+        Initialize ConvLSTM cell.
+
+        Parameters
+        ----------
+        input_dim: int
+            Number of channels of input tensor.
+        hidden_dim: int
+            Number of channels of hidden state.
+        kernel_size: (int, int)
+            Size of the convolutional kernel.
+        bias: bool
+            Whether or not to add the bias.
+        """
+
+        super(ConvLSTMCell, self).__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+
+        self.kernel_size = kernel_size
+        self.padding = kernel_size[0] // 2, kernel_size[1] // 2
+        self.bias = bias
+
+        self.conv = nn.Conv2d(in_channels=self.input_dim + self.hidden_dim,
+                              out_channels=4 * self.hidden_dim,
+                              kernel_size=self.kernel_size,
+                              padding=self.padding,
+                              bias=self.bias)
+
+    def forward(self, input_tensor, cur_state):
+        h_cur, c_cur = cur_state
+
+        combined = torch.cat([input_tensor, h_cur], dim=1)  # concatenate along channel axis
+
+        combined_conv = self.conv(combined)
+        cc_i, cc_f, cc_o, cc_g = torch.split(combined_conv, self.hidden_dim, dim=1)
+        i = torch.sigmoid(cc_i)
+        f = torch.sigmoid(cc_f)
+        o = torch.sigmoid(cc_o)
+        g = torch.tanh(cc_g)
+
+        c_next = f * c_cur + i * g
+        h_next = o * torch.tanh(c_next)
+
+        return h_next, c_next
+
+    def init_hidden(self, batch_size, image_size):
+        height, width = image_size
+        return (torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device),
+                torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device))
+
+
+class ConvLSTM(nn.Module):
+
+    """
+
+    Parameters:
+        input_dim: Number of channels in input
+        hidden_dim: Number of hidden channels
+        kernel_size: Size of kernel in convolutions
+        num_layers: Number of LSTM layers stacked on each other
+        batch_first: Whether or not dimension 0 is the batch or not
+        bias: Bias or no bias in Convolution
+        return_all_layers: Return the list of computations for all layers
+        Note: Will do same padding.
+
+    Input:
+        A tensor of size B, T, C, H, W or T, B, C, H, W
+    Output:
+        A tuple of two lists of length num_layers (or length 1 if return_all_layers is False).
+            0 - layer_output_list is the list of lists of length T of each output
+            1 - last_state_list is the list of last states
+                    each element of the list is a tuple (h, c) for hidden state and memory
+    Example:
+        >> x = torch.rand((32, 10, 64, 128, 128))
+        >> convlstm = ConvLSTM(64, 16, 3, 1, True, True, False)
+        >> _, last_states = convlstm(x)
+        >> h = last_states[0][0]  # 0 for layer index, 0 for h index
+    """
+
+    def __init__(self, input_dim, hidden_dim, kernel_size, num_layers,
+                 batch_first=False, bias=True, return_all_layers=False):
+        super(ConvLSTM, self).__init__()
+
+        self._check_kernel_size_consistency(kernel_size)
+
+        # Make sure that both `kernel_size` and `hidden_dim` are lists having len == num_layers
+        kernel_size = self._extend_for_multilayer(kernel_size, num_layers)
+        hidden_dim = self._extend_for_multilayer(hidden_dim, num_layers)
+        if not len(kernel_size) == len(hidden_dim) == num_layers:
+            raise ValueError('Inconsistent list length.')
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.kernel_size = kernel_size
+        self.num_layers = num_layers
+        self.batch_first = batch_first
+        self.bias = bias
+        self.return_all_layers = return_all_layers
+
+        cell_list = []
+        for i in range(0, self.num_layers):
+            cur_input_dim = self.input_dim if i == 0 else self.hidden_dim[i - 1]
+
+            cell_list.append(ConvLSTMCell(input_dim=cur_input_dim,
+                                          hidden_dim=self.hidden_dim[i],
+                                          kernel_size=self.kernel_size[i],
+                                          bias=self.bias))
+
+        self.cell_list = nn.ModuleList(cell_list)
+
+    def forward(self, input_tensor, hidden_state=None):
+        """
+
+        Parameters
+        ----------
+        input_tensor: todo
+            5-D Tensor either of shape (t, b, c, h, w) or (b, t, c, h, w)
+        hidden_state: todo
+            None. todo implement stateful
+
+        Returns
+        -------
+        last_state_list, layer_output
+        """
+        if not self.batch_first:
+            # (t, b, c, h, w) -> (b, t, c, h, w)
+            input_tensor = input_tensor.permute(1, 0, 2, 3, 4)
+
+        b, _, _, h, w = input_tensor.size()
+
+        # Implement stateful ConvLSTM
+        if hidden_state is not None:
+            raise NotImplementedError()
+        else:
+            # Since the init is done in forward. Can send image size here
+            hidden_state = self._init_hidden(batch_size=b,
+                                             image_size=(h, w))
+
+        layer_output_list = []
+        last_state_list = []
+
+        seq_len = input_tensor.size(1)
+        cur_layer_input = input_tensor
+
+        for layer_idx in range(self.num_layers):
+
+            h, c = hidden_state[layer_idx]
+            output_inner = []
+            for t in range(seq_len):
+                h, c = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :],
+                                                 cur_state=[h, c])
+                output_inner.append(h)
+
+            layer_output = torch.stack(output_inner, dim=1)
+            cur_layer_input = layer_output
+
+            layer_output_list.append(layer_output)
+            last_state_list.append([h, c])
+
+        if not self.return_all_layers:
+            layer_output_list = layer_output_list[-1:]
+            last_state_list = last_state_list[-1:]
+
+        return layer_output_list, last_state_list
+
+    def _init_hidden(self, batch_size, image_size):
+        init_states = []
+        for i in range(self.num_layers):
+            init_states.append(self.cell_list[i].init_hidden(batch_size, image_size))
+        return init_states
+
+    @staticmethod
+    def _check_kernel_size_consistency(kernel_size):
+        if not (isinstance(kernel_size, tuple) or
+                (isinstance(kernel_size, list) and all([isinstance(elem, tuple) for elem in kernel_size]))):
+            raise ValueError('`kernel_size` must be tuple or list of tuples')
+
+    @staticmethod
+    def _extend_for_multilayer(param, num_layers):
+        if not isinstance(param, list):
+            param = [param] * num_layers
+        return param
+
 class VanillaCritic(nn.Module):
 
     def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
@@ -628,23 +833,76 @@ class VanillaActor(nn.Module):
         return a
 
 
+class RepeatVector(nn.Module):
+    """
+    A simple custom layer that takes an input of shape [batch_size, C]
+    (or [batch_size, C, 1, 1]) and repeats it in H and W dimensions
+    to produce [batch_size, C, H, W].
+    """
+    def __init__(self, out_h=117, out_w=117):
+        super().__init__()
+        self.out_h = out_h
+        self.out_w = out_w
+
+    def forward(self, x):
+        # Assuming x has shape [batch_size, C]
+        # 1) Unsqueeze twice -> shape [batch_size, C, 1, 1]
+        x = x.unsqueeze(-1).unsqueeze(-1)
+        
+        # 2) Repeat along the last two dims -> shape [batch_size, C, H, W]
+        x = x.repeat(1, 1, self.out_h, self.out_w)
+        return x
+    
+class ZeroPad1dToLength(nn.Module):
+    """
+    A custom layer that takes a 2D tensor [batch_size, length]
+    and pads it (on the right) to a specified 'target_length' with zeros.
+    """
+    def __init__(self, target_length: int):
+        super().__init__()
+        self.target_length = target_length
+
+    def forward(self, x):
+        # x has shape: [batch_size, length]
+
+        current_length = x.shape[-1]
+        
+        if current_length > self.target_length:
+            raise ValueError(
+                f"Input length ({current_length}) is greater than "
+                f"the target length ({self.target_length})."
+            )
+        
+        pad_size = self.target_length - current_length
+        
+        # F.pad takes a tuple (pad_left, pad_right) for 1D padding
+        # We pad on the right (second value in tuple).
+        x_padded = F.pad(x, (0, pad_size), mode='constant', value=0.0)
+        # Now x_padded has shape: [batch_size, target_length]
+        
+        return x_padded
+
 class CustomActor(nn.Module):
 
-    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=2, channel_scale=16, fc_scale=8, low_dim=True):
         
         super().__init__()
         # Initialize the shape parameters
 
-        # Get the observation space shape from the environment.
-        obs_shape = envs.single_observation_space.shape
-        print(obs_shape)
-        die
+        self.device = device
+
+        self.lstm_hidden_dim = lstm_hidden_dim
+        self.lstm_num_layers = lstm_num_layers
 
         vector_action_size = envs.single_action_space.shape[0]
         # Seperate out the prior action and the image
+
+        prior_action = envs.single_observation_space["prior_action"]
+        obs_image = envs.single_observation_space["image"]
+
         
-        a_prior_shape
-        obs_image_shape
+        prior_action_shape = prior_action.shape
+        obs_image_shape = obs_image.shape
 
         # Check if this is a channels-last environment
         if obs_image_shape[-1] < obs_image_shape[0]:
@@ -654,38 +912,202 @@ class CustomActor(nn.Module):
             self.channels_last = False
             input_channels = obs_image_shape[0]
 
-        # self.visual = not(low_dim)
-
-        # with torch.inference_mode():
-
-        #     # Handle channels-last environments.
-        #     x = torch.zeros(1, *obs_shape)
-        #     if self.channels_last:
-        #         x = x.permute(0, 3, 1, 2)
-        #     output_dim = self.conv(x).shape[1]
-
-        # self.ones_output = torch.ones(1, output_dim)
-
+        # Define the visual encoder, so that we know the output shape.
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
-                            64,
-                            kernel_size=7,
-                            stride=2)),
+                          64,
+                          kernel_size=7,
+                          stride=2)),
             nn.ReLU(),
-            conv_init(nn.Conv2d(64,
-                                32,
-                                kernel_size=5,
-                                stride=1)),
+            conv_init(
+                nn.Conv2d(64,
+                          32,
+                          kernel_size=5,
+                          stride=1)),
             nn.ReLU(),
-            conv_init(nn.Conv2d(32,
-                                16,
-                                kernel_size=5,
-                                stride=1)),
-            nn.Flatten(),
+            conv_init(
+                nn.Conv2d(32,
+                          16,
+                          kernel_size=5,
+                          stride=1)),
+            nn.ReLU(),
         )
 
+        # Get the output shape of the visual encoder
+        with torch.inference_mode():
 
+            # Handle channels-last environments.
+            x = torch.zeros(1, *obs_image_shape)
+            if self.channels_last:
+                x = x.permute(0, 3, 1, 2)
+            visual_output_shape = self.visual_encoder(x).shape
+            visual_output_channels = self.visual_encoder(x).shape[1]
+
+        # Now, project the action size up to the visual output size
+        action_projection_type = "pad"
+        if action_projection_type == "mlp":
+            self.action_encoder = nn.Sequential(
+                uniform_init(
+                    nn.Linear(
+                        prior_action_shape[0],
+                        1),
+                    lower_bound=-1/np.sqrt(prior_action_shape[0]),
+                    upper_bound=1/np.sqrt(prior_action_shape[0])
+                    ),
+                nn.ReLU(),
+                uniform_init(
+                    nn.Linear(
+                        1,
+                        int(np.prod(visual_output_shape[1:]))
+                        ),
+                    lower_bound=-1/np.sqrt(64),
+                    upper_bound=1/np.sqrt(64)
+                    ),
+            )
+        elif action_projection_type == "pad":
+
+            # Pad action vector with zeros, then dap the action with replicate to match the visual output size
+            self.action_encoder = nn.Sequential(
+                ZeroPad1dToLength(target_length=visual_output_channels),
+                RepeatVector(visual_output_shape[-2], visual_output_shape[-1])
+            )
+
+
+        # Create a merge convolutional block with three layers
+        self.merge_conv = nn.Sequential(
+            conv_init(
+                nn.Conv2d(
+                    2 * visual_output_channels,
+                    16,
+                    kernel_size=7,
+                    stride=2)
+                ),
+            nn.ReLU(),
+            conv_init(
+                nn.Conv2d(
+                    16,
+                    16,
+                    kernel_size=5,
+                    stride=2)
+                ),
+            nn.ReLU(),
+            conv_init(
+                nn.Conv2d(
+                    16,
+                    8,
+                    kernel_size=3,
+                    stride=1)
+                ),
+            nn.ReLU(),
+            conv_init(
+                nn.Conv2d(
+                    8,
+                    4,
+                    kernel_size=3,
+                    stride=1)
+                ),
+            nn.ReLU(),
+            nn.Flatten(),
+        )        
+        
+        # Get the output size of the merge convolutions
+        with torch.inference_mode():
+            x = torch.zeros(1, 2 * visual_output_channels, visual_output_shape[-2], visual_output_shape[-1])
+            if self.channels_last:
+                x = x.permute(0, 3, 1, 2)
+            merge_conv_output_shape = self.merge_conv(x).shape
+        merge_mlp_output_size = 64
+
+        self.merge_mlp = nn.Sequential(
+            uniform_init(
+                nn.Linear(
+                    int(np.prod(merge_conv_output_shape[1:])),
+                    64),
+                lower_bound=-1/np.sqrt(np.prod(merge_conv_output_shape[1:])),
+                upper_bound=1/np.sqrt(np.prod(merge_conv_output_shape[1:]))
+            ),
+            nn.ReLU(),
+            uniform_init(
+                nn.Linear(
+                    64,
+                    merge_mlp_output_size,
+                ),
+                lower_bound=-1/np.sqrt(64),
+                upper_bound=1/np.sqrt(64)
+            )
+        )
+
+        self.use_lstm = True
+        if self.use_lstm:
+
+            self.use_conv_lstm = False
+            if self.use_conv_lstm:
+
+                # Define the convolutional LSTM cell
+                self.conv_lstm = ConvLSTMCell(
+                    input_dim=8,
+                    hidden_dim=8,
+                    kernel_size=(3, 3),
+                    bias=True
+                )
+
+                # Get the output shape of the convolutional LSTM
+                with torch.inference_mode():
+                        
+                        # Handle channels-last environments.
+                        x = torch.zeros(1, 8, 16, 16)
+                        if self.channels_last:
+                            x = x.permute(0, 3, 1, 2)
+                        pre_head_output_shape = self.conv_lstm(x, self.conv_lstm.init_hidden(1, (16, 16)))[0].shape
+            
+            else:
+            
+                # Define the LSTM
+                self.lstm = nn.LSTM(
+                    input_size=merge_mlp_output_size,
+                    hidden_size=self.lstm_hidden_dim,
+                    num_layers=self.lstm_num_layers,
+                    batch_first=True
+                )
+
+                # Get the output shape of the LSTM
+                with torch.inference_mode():
+                    x = torch.zeros(1, merge_mlp_output_size)
+                    pre_head_output_shape = self.lstm(x)[0].shape
+
+        else: 
+
+            # compute merge conve output shape
+            with torch.inference_mode():
+                # Input size is the visual encoder output size, but double the channels
+                x = torch.zeros(1, 3 * visual_output_channels, visual_output_shape[-2], visual_output_shape[-1])
+                if self.channels_last:
+                    x = x.permute(0, 3, 1, 2)
+                pre_head_output_shape = self.merge_conv(x).shape
+
+
+
+        # Build the action head following the convolutional LSTM
+        self.action_head = nn.Sequential(
+            nn.Flatten(),
+            uniform_init(
+                nn.Linear(
+                    int(np.prod(pre_head_output_shape[1:])),
+                    32),
+                lower_bound=-1/np.sqrt(np.prod(pre_head_output_shape[1:])),
+                upper_bound=1/np.sqrt(np.prod(pre_head_output_shape[1:]))
+            ),
+            nn.ReLU(),
+            uniform_init(
+                nn.Linear(
+                    32,
+                    int(np.prod(envs.single_action_space.shape))
+                ),
+                lower_bound=-1/np.sqrt(32),
+                upper_bound=1/np.sqrt(32)
+            )
+        )
                                 
         # action rescaling
         self.register_buffer(
@@ -697,39 +1119,399 @@ class CustomActor(nn.Module):
             "action_bias", torch.tensor(0.0, dtype=torch.float32)
         )
 
-    def forward(self, x):
+        # Important: Set the hidden state to None initially.
+        self.hidden = self.init_hidden()
 
-        o = x[0]
-        a_prior = x[1]
+    def init_hidden(self):
+        """
+        Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
+        Shapes:
+          h, c: [num_layers=1, batch_size, hidden_dim]
+        """
+        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
+        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
+        return (h, c)
+
+    def reset_hidden(self, ):
+        """
+        Reset the agent's internal hidden state to zeros.
+        """
+        self.hidden = self.init_hidden()
+
+    def forward(self, o, a_prior):
+
+        # o = x[0]
+        # a_prior = x[1]
 
         # Handle channels-last environments.
         if self.channels_last:
             o = o.permute(0, 3, 1, 2)
 
-        if self.visual:
-            x_o = F.tanh(self.conv(o))
-        else:
-            x = self.ones_output
 
         # Extract visual feature maps
+        # print("o shape")
+        # print(o.shape)
+        x_o = self.visual_encoder(o)
+        # print(x_o.shape)
 
         # Extract action features maps by deconvolution
+        # print("a_prior shape")
+        # print(a_prior.shape)
+        x_a = self.action_encoder(a_prior)
 
         # Concatinate vision and action features
+        x = torch.cat([x_o, x_a], 1)
 
         # Merge the vision and action feature maps
+        x = self.merge_conv(x)
 
-        # Apply convolulational LSTM
+
+        # Apply the merge MLP
+        x = self.merge_mlp(x)
+
+        # Apply LSTM
+        if self.use_lstm:
+
+            # If hidden is None, we initialize to zeros automatically:
+            # if self.hidden is None:
+            #     # We'll get batch_size from x.shape[1]
+            #     self.hidden = self.init_hidden()
+
+
+            x, new_hidden = self.lstm(x, self.hidden)
+            # new_hidden is a tuple (h, c) after processing x
+
+            detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
+            self.hidden = detached_hidden
 
         # Apply attention
 
-        # Apply action prediciton head
+        # Apply action prediciton head and activation function
+        x = self.action_head(x)
+        a = F.tanh(x)
 
-
-        a = (x * self.action_scale + self.action_bias)
+        a = (a * self.action_scale + self.action_bias)
         return a
 
+class CustomCritic(nn.Module):
+    
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=2, channel_scale=16, fc_scale=8, low_dim=True):
+        
+        super().__init__()
+        # Initialize the shape parameters
 
+        self.device = device
+
+        self.lstm_hidden_dim = lstm_hidden_dim
+        self.lstm_num_layers = lstm_num_layers
+
+
+        vector_action_size = envs.single_action_space.shape[0]
+        # Seperate out the prior action and the image
+
+        prior_action = envs.single_observation_space["prior_action"]
+        obs_image = envs.single_observation_space["image"]
+
+        
+        prior_action_shape = prior_action.shape
+        obs_image_shape = obs_image.shape
+
+        # Check if this is a channels-last environment
+        if obs_image_shape[-1] < obs_image_shape[0]:
+            self.channels_last = True
+            input_channels = obs_image_shape[-1]
+        else:
+            self.channels_last = False
+            input_channels = obs_image_shape[0]
+
+        # Define the visual encoder, so that we know the output shape.
+        self.visual_encoder = nn.Sequential(
+            conv_init(
+                nn.Conv2d(input_channels, 
+                        64,
+                        kernel_size=7,
+                        stride=2)),
+            nn.ReLU(),
+            conv_init(
+                nn.Conv2d(64,
+                        32,
+                        kernel_size=5,
+                        stride=1)),
+            nn.ReLU(),
+            conv_init(
+                nn.Conv2d(32,
+                        16,
+                        kernel_size=5,
+                        stride=1)),
+            nn.ReLU(),
+        )
+
+        # Get the output shape of the visual encoder
+        with torch.inference_mode():
+
+            # Handle channels-last environments.
+            x = torch.zeros(1, *obs_image_shape)
+            if self.channels_last:
+                x = x.permute(0, 3, 1, 2)
+            visual_output_shape = self.visual_encoder(x).shape
+            visual_output_channels = self.visual_encoder(x).shape[1]
+
+        # Now, project the action size up to the visual output size
+        action_projection_type = "pad"
+        if action_projection_type == "mlp":
+            self.prior_action_encoder = nn.Sequential(
+                uniform_init(
+                    nn.Linear(
+                        prior_action_shape[0],
+                        64),
+                    lower_bound=-1/np.sqrt(prior_action_shape[0]),
+                    upper_bound=1/np.sqrt(prior_action_shape[0])
+                    ),
+                nn.ReLU(),
+                uniform_init(
+                    nn.Linear(
+                        64,
+                        int(np.prod(visual_output_shape[1:]))
+                        ),
+                    lower_bound=-1/np.sqrt(64),
+                    upper_bound=1/np.sqrt(64)
+                    ),
+            )
+            self.next_action_encoder = nn.Sequential(
+                uniform_init(
+                    nn.Linear(
+                        prior_action_shape[0],
+                        64),
+                    lower_bound=-1/np.sqrt(prior_action_shape[0]),
+                    upper_bound=1/np.sqrt(prior_action_shape[0])
+                    ),
+                nn.ReLU(),
+                uniform_init(
+                    nn.Linear(
+                        64,
+                        int(np.prod(visual_output_shape[1:]))
+                        ),
+                    lower_bound=-1/np.sqrt(64),
+                    upper_bound=1/np.sqrt(64)
+                    ),
+            )
+
+        
+        elif action_projection_type == "pad":
+
+            # Pad action vector with zeros, then dap the action with replicate to match the visual output size
+            self.prior_action_encoder = nn.Sequential(
+                ZeroPad1dToLength(target_length=visual_output_channels),
+                RepeatVector(visual_output_shape[-2], visual_output_shape[-1])
+            )
+            self.next_action_encoder = nn.Sequential(
+                ZeroPad1dToLength(target_length=visual_output_channels),
+                RepeatVector(visual_output_shape[-2], visual_output_shape[-1])
+            )
+
+
+        # Create a merge convolutional block with three layers
+        self.merge_conv = nn.Sequential(
+            conv_init(
+                nn.Conv2d(
+                    3 * visual_output_channels,
+                    16,
+                    kernel_size=7,
+                    stride=2)
+                ),
+            nn.ReLU(),
+            conv_init(
+                nn.Conv2d(
+                    16,
+                    16,
+                    kernel_size=5,
+                    stride=2)
+                ),
+            nn.ReLU(),
+            conv_init(
+                nn.Conv2d(
+                    16,
+                    8,
+                    kernel_size=3,
+                    stride=1)
+                ),
+            nn.ReLU(),
+            conv_init(
+                nn.Conv2d(
+                    8,
+                    4,
+                    kernel_size=3,
+                    stride=1)
+                ),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+
+        # Get the output size of the merge convolutions
+        with torch.inference_mode():
+            x = torch.zeros(1, 3 * visual_output_channels, visual_output_shape[-2], visual_output_shape[-1])
+            if self.channels_last:
+                x = x.permute(0, 3, 1, 2)
+            merge_conv_output_shape = self.merge_conv(x).shape
+        merge_mlp_output_size = 64
+
+        self.merge_mlp = nn.Sequential(
+            uniform_init(
+                nn.Linear(
+                    int(np.prod(merge_conv_output_shape[1:])),
+                    64),
+                lower_bound=-1/np.sqrt(np.prod(merge_conv_output_shape[1:])),
+                upper_bound=1/np.sqrt(np.prod(merge_conv_output_shape[1:]))
+            ),
+            nn.ReLU(),
+            uniform_init(
+                nn.Linear(
+                    64,
+                    merge_mlp_output_size,
+                ),
+                lower_bound=-1/np.sqrt(64),
+                upper_bound=1/np.sqrt(64)
+            )
+        )
+
+        self.use_lstm = True
+        if self.use_lstm:
+
+            self.use_conv_lstm = False
+            if self.use_conv_lstm:
+
+                # Define the convolutional LSTM cell
+                self.conv_lstm = ConvLSTMCell(
+                    input_dim=8,
+                    hidden_dim=8,
+                    kernel_size=(3, 3),
+                    bias=True
+                )
+
+                # Get the output shape of the convolutional LSTM
+                with torch.inference_mode():
+                        
+                        # Handle channels-last environments.
+                        x = torch.zeros(1, 8, 16, 16)
+                        if self.channels_last:
+                            x = x.permute(0, 3, 1, 2)
+                        pre_head_output_shape = self.conv_lstm(x, self.conv_lstm.init_hidden(1, (16, 16)))[0].shape
+            
+            else:
+            
+                # Define the LSTM
+                self.lstm = nn.LSTM(
+                    input_size=merge_mlp_output_size,
+                    hidden_size=self.lstm_hidden_dim,
+                    num_layers=self.lstm_num_layers,
+                    batch_first=True
+                )
+
+                # Get the output shape of the LSTM
+                with torch.inference_mode():
+                    x = torch.zeros(1, merge_mlp_output_size)
+                    pre_head_output_shape = self.lstm(x)[0].shape
+
+
+        else: 
+
+            # compute merge conve output shape
+            with torch.inference_mode():
+                # Input size is the visual encoder output size, but double the channels
+                x = torch.zeros(1, 3 * visual_output_channels, visual_output_shape[-2], visual_output_shape[-1])
+                if self.channels_last:
+                    x = x.permute(0, 3, 1, 2)
+                pre_head_output_shape = self.merge_conv(x).shape
+
+
+
+        # Build the q head following the convolutional LSTM
+        self.q_head = nn.Sequential(
+            uniform_init(
+                nn.Linear(
+                    int(np.prod(pre_head_output_shape[1:])),
+                    64),
+                lower_bound=-1/np.sqrt(np.prod(pre_head_output_shape[1:])),
+                upper_bound=1/np.sqrt(np.prod(pre_head_output_shape[1:]))
+            ),
+            nn.ReLU(),
+            uniform_init(
+                nn.Linear(
+                    64,
+                    1
+                ),
+                lower_bound=-1/np.sqrt(64),
+                upper_bound=1/np.sqrt(64)
+            )
+        )
+
+        # Important: Set the hidden state to None initially.
+        self.hidden = self.init_hidden()
+
+    def init_hidden(self):
+        """
+        Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
+        Shapes:
+          h, c: [num_layers=1, batch_size, hidden_dim]
+        """
+        # TODO: Consider requires_grad_() here
+        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
+        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device) 
+        return (h, c)
+
+    def reset_hidden(self):
+        """
+        Reset the agent's internal hidden state to zeros.
+        """
+        self.hidden = self.init_hidden()
+
+
+    def forward(self, o, a_prior, a_next):
+    
+
+        # Handle channels-last environments.
+        if self.channels_last:
+            o = o.permute(0, 3, 1, 2)
+
+        # Extract visual feature maps
+        x_o = self.visual_encoder(o)
+
+        # Extract action features maps by deconvolution
+        x_a_prior = self.prior_action_encoder(a_prior)
+        x_a_next = self.next_action_encoder(a_next)
+
+        # Reshape the action features to match the visual features
+        # x_a_prior = x_a_prior.view(-1, *x_o.shape[1:])
+        # x_a_next = x_a_next.view(-1, *x_o.shape[1:])
+
+        # Concatinate vision and action features
+        x = torch.cat([x_o, x_a_prior, x_a_next], 1)
+
+        # Merge the vision and action feature maps
+        x = self.merge_conv(x)
+
+        # Apply the merge MLP
+        x = self.merge_mlp(x)
+
+        # Apply convolulational LSTM
+        # Apply LSTM
+        if self.use_lstm:
+
+            # If hidden is None, we initialize to zeros automatically:
+            # if self.hidden is None:
+            #     # We'll get batch_size from x.shape[1]
+            #     self.hidden = self.init_hidden()
+
+            x, new_hidden = self.lstm(x, self.hidden)
+            # new_hidden is a tuple (h, c) after processing x
+            detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
+            self.hidden = detached_hidden
+
+        # Apply attention
+
+        # Apply action prediciton head and activation function
+        q = self.q_head(x)
+        return q
     
 def uniform_init(layer, lower_bound=-1e-4, upper_bound=1e-4):
 
@@ -940,9 +1722,7 @@ if __name__ == "__main__":
         )
     
 
-    actor_type = "vanilla"
-
-    if actor_type == "vanilla":
+    if args.actor_type == "vanilla":
     
         # actor = Actor(envs).to(device)
         actor = VanillaActor(envs,
@@ -956,17 +1736,15 @@ if __name__ == "__main__":
                             fc_scale=args.actor_fc_scale,
                             low_dim=args.low_dim_actor).to(device)
         
-    elif actor_type == "custom":
-        actor = CustomActor(envs).to(device)
-        target_actor = CustomActor(envs).to(device)
+    elif args.actor_type == "custom":
+        actor = CustomActor(envs, device).to(device)
+        target_actor = CustomActor(envs, device).to(device)
     else:
 
         raise ValueError("Invalid actor type specified.")
     
 
-
-    critic_type = "vanilla"
-    if critic_type == "vanilla":
+    if args.critic_type == "vanilla":
         # qf1 = QNetwork(envs).to(device)
         qf1 = VanillaCritic(envs,
                     channel_scale=args.qnetwork_channel_scale,
@@ -978,16 +1756,14 @@ if __name__ == "__main__":
                             channel_scale=args.qnetwork_channel_scale,
                             fc_scale=args.qnetwork_fc_scale,
                             low_dim=args.low_dim_qnetwork).to(device)
-    elif critic_type == "custom":
+    elif args.critic_type == "custom":
 
-        qf1 = CustomCritic(envs).to(device)
-        qf1_target = CustomCritic(envs).to(device)
+        qf1 = CustomCritic(envs, device).to(device)
+        qf1_target = CustomCritic(envs, device).to(device)
 
     else:
         raise ValueError("Invalid critic type specified.")
     
-
-
 
     # if torch.cuda.device_count() > 1:
     #     print(f"Using {torch.cuda.device_count()} GPUs!")
@@ -998,20 +1774,29 @@ if __name__ == "__main__":
     print(sum(p.numel() for p in actor.parameters() if p.requires_grad))
     print(sum(p.numel() for p in qf1.parameters() if p.requires_grad))
 
+    summary(actor, )
+    summary(qf1,)
+
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
     q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.critic_learning_rate)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.actor_learning_rate)
 
     envs.single_observation_space.dtype = np.float32
+
+    # TODO: Issue. ReplayBuffer does not support Dict Envs.
+    print(envs.single_observation_space)
     rb = ReplayBuffer(
         args.buffer_size,
-        envs.single_observation_space,
+        envs.single_observation_space['image'],
         envs.single_action_space,
         device,
         handle_timeout_termination=False,
         n_envs=args.num_envs
     )
+
+    replay_buffer = TensorDictReplayBuffer(storage=LazyTensorStorage(
+        args.buffer_size), batch_size=args.batch_size)
 
 
     # TODO: Add a dud check here.
@@ -1019,14 +1804,17 @@ if __name__ == "__main__":
     start_time = time.time()
     # TRY NOT TO MODIFY: start the game
     print("Resetting Environments.")
-    obs, _ = envs.reset(seed=args.seed)
+    obs, info = envs.reset(seed=args.seed)
+
+    # obs['image'] = obs['image'][0]
+    # obs['prior_action'] = obs['prior_action'][0]
+
     print("Environments Reset.")
     global_step = 0
     for iteration in range(args.total_timesteps):
-
         print("Iteration: ", iteration)
         print("global_step: ", global_step)
-
+        
         if args.save_model:
 
             if iteration % args.model_save_interval == 0:
@@ -1085,6 +1873,7 @@ if __name__ == "__main__":
                 #     repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
                 #     push_to_hub(args, episodic_returns, repo_id, "DDPG", f"runs/{run_name}", f"videos/{run_name}-eval")
         
+
         step_time = time.time()
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
@@ -1121,8 +1910,14 @@ if __name__ == "__main__":
                 else:
                     decay = 1.0
 
-                
-                actions = actor(torch.Tensor(obs).to(device))
+                image = torch.Tensor(obs['image']).to(device)
+                # print("Image shape: ")
+                # print(image.shape)
+                prior_action = torch.Tensor(obs['prior_action']).to(device)
+                # print("Prior action shape: ")
+                # print(prior_action.shape)
+                actions = actor(image, prior_action)
+                # actions = actor(torch.Tensor(obs).to(device))
                 # actions += torch.normal(0, actor.action_scale * args.exploration_noise)
                 noise = torch.normal(
                     0.0,
@@ -1135,41 +1930,121 @@ if __name__ == "__main__":
                 # actions += torch.normal(0, actor.action_scale * args.exploration_noise)
                 # actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
 
-
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+
+
+        # TODO: Temporary fix while I rebuild vector environments.
+        # next_obs['image'] = next_obs['image'][0]
+        # next_obs['prior_action'] = next_obs['prior_action'][0]
         
          # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            print(infos)
-            for info in infos["final_info"]:
+        # if "final_info" in infos:
+        #     for info in infos["final_info"]:
 
-                print(info)
-                print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+        #         print(info)
+        #         print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
+        #         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+        #         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+        #         break
+
+         # TRY NOT TO MODIFY: record rewards for plotting purposes
+        if infos:
+            for info in infos:
+
+                print(infos)
+                print(f"\n\nglobal_step={global_step}, episodic_return={infos['episode']['r']}")
+                writer.add_scalar("charts/episodic_return", infos["episode"]["r"], global_step)
+                writer.add_scalar("charts/episodic_length", infos["episode"]["l"], global_step)
+                print("")
+                print("Episode %d has ended with %d steps." % (global_step, infos["episode"]["l"]))
+                print("Episode %d has ended with %d reward." % (global_step, infos["episode"]["r"]))
+                print("Resetting Actor Hidden State")
+                actor.reset_hidden()
+                print("Resetting Critic Hidden State")
+                qf1.reset_hidden()
+                print("Resetting Target Actor Hidden State")
+                target_actor.reset_hidden()
+                print("Resetting Target Critic Hidden State")
+                qf1_target.reset_hidden()
+                print("Agent Reset.")
                 break
 
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+        # print(infos)
+        # for idx, trunc in enumerate(truncations):
+        #     if trunc:
+        #         real_next_obs[idx] = infos["final_observation"][idx]
+        # rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+        replay_buffer.add(
+            TensorDict(
+                {
+                    "observations": obs,
+                    "next_observations": real_next_obs,
+                    "actions": actions,
+                    "rewards": torch.tensor(rewards, dtype=torch.float32),
+                    "dones": terminations,
+                    "infos": infos,
+                }
+            )
+        )
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
-            data = rb.sample(args.batch_size)
-            with torch.no_grad():
-                next_state_actions = target_actor(data.next_observations)
-                qf1_next_target = qf1_target(data.next_observations, next_state_actions)
-                next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (qf1_next_target).view(-1)
+            # data = rb.sample(args.batch_size)
+            data = replay_buffer.sample(args.batch_size)    
 
-            qf1_a_values = qf1(data.observations, data.actions).view(-1)
+
+            # torch.squeeze(x, 1).to(device)
+            print("====Data shape: ")
+            next_obs_image = torch.squeeze(data['next_observations']['image'], 1).to(device)
+            # print(next_obs_image.shape)
+            next_obs_prior_action = torch.squeeze(data['next_observations']['prior_action'], 1).to(device)
+            # print(next_obs_prior_action.shape)
+            obs_image = torch.squeeze(data['observations']['image'], 1).to(device)
+            # print(obs_image.shape)
+            obs_prior_action = torch.squeeze(data['observations']['prior_action'], 1).to(device)
+            # print(obs_prior_action.shape)
+            action = torch.squeeze(data['actions'], 1).to(device)
+            # print(action.shape)
+            reward = torch.squeeze(data['rewards'], 1).to(device)
+            # print(reward.shape) 
+            done = torch.squeeze(data['dones'], 1).to(device)
+            # print(done.shape)
+            # print("Data shape====")
+  
+
+            # print("====Data shape: ")
+            # print(data['observations']['image'].shape)
+            # print(data['observations']['prior_action'].shape)
+            # print(data['actions'].shape)
+            # print(data['rewards'].shape)
+            # print(data['dones'].shape)
+            # print("Data shape====")
+            
+            with torch.no_grad():
+                next_state_actions = target_actor(
+                    next_obs_image,
+                    next_obs_prior_action,
+                )
+                qf1_next_target = qf1_target(
+                    next_obs_image,
+                    next_obs_prior_action,
+                    next_state_actions)
+                
+                # next_q_value = data['rewards'][0].flatten() + (1 - data['dones'][0].flatten()) * args.gamma * (qf1_next_target).view(-1)
+                current_rewards = data['rewards'].flatten().to(device)
+                discounted_future_rewards = args.gamma * (qf1_next_target).view(-1)
+                # TODO: Validate this line.
+                masked_discounted_future_rewards = ((~data['dones'].flatten().to(device)) * discounted_future_rewards)
+                next_q_value = current_rewards + masked_discounted_future_rewards
+
+            qf1_a_values = qf1(obs_image, obs_prior_action, action).view(-1)
             qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
 
 
@@ -1178,14 +2053,15 @@ if __name__ == "__main__":
 
             # optimize the model
             q_optimizer.zero_grad()
-            qf1_loss.backward()
+            # TODO: Experimental. May need to see (https://stackoverflow.com/questions/48274929/pytorch-runtimeerror-trying-to-backward-through-the-graph-a-second-time-but)
+            qf1_loss.backward(retain_graph=True)
             q_optimizer.step()
 
             if iteration % args.policy_frequency == 0:
 
                 action_reg = 0.001
-                actor_loss = -qf1(data.observations, actor(data.observations)
-                    ).mean() + (action_reg * (actor(data.observations)**2)
+                actor_loss = -qf1(obs_image, obs_prior_action, action
+                    ).mean() + (action_reg * (actor(obs_image, obs_prior_action)**2)
                         ).mean()
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -1208,13 +2084,8 @@ if __name__ == "__main__":
                     writer.add_scalar("decay/", decay, global_step)
                     writer.add_scalar("reward_std/", rewards.std().item(), global_step)
 
-            gradient_log_interval = 256
-            if iteration % gradient_log_interval == 0:
-
-                log_gradients_in_model(actor, writer, global_step)
-                log_gradients_in_model(qf1, writer, global_step)
-                log_weights_in_model(actor, writer, global_step)
-                log_weights_in_model(qf1, writer, global_step)
+            gradient_log_interval = 2
+            
 
 
         print("Step time:", (time.time() - step_time) / args.num_envs)
@@ -1226,3 +2097,4 @@ if __name__ == "__main__":
 
     envs.close()
     writer.close()
+    print("Done.")
