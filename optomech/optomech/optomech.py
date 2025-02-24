@@ -673,7 +673,7 @@ class OpticalSystem(object):
     def command_dm(self, dm_command):
 
         # meters_opd_per_actuator_bit = self.microns_opd_per_actuator_bit * 1e-6
-        # command_vector = command_grid.flatten().astype(np.float64)
+        # command_vector = command_grid.flatten().astype(np.float32)
 
         # Compute the stroke limit of the DM.
         dm_stroke_meters = self.stroke_count_limit * self.microns_opd_per_actuator_bit * 1e-6
@@ -1549,6 +1549,9 @@ class OptomechEnv(gym.Env):
         self.command_secondaries = kwargs['command_secondaries']
         self.command_dm = kwargs['command_dm']
 
+
+        self.observation_mode = kwargs['observation_mode']
+
         if self.command_dm or self.ao_loop_active:
             kwargs['model_ao'] = True
         else:
@@ -1827,16 +1830,33 @@ class OptomechEnv(gym.Env):
                             kwargs['focal_plane_image_size_pixels'])
 
         # Define a 3D observation space.
-        observation_shape = (self.frames_per_decision,
-                             self.image_shape[0],
-                             self.image_shape[1],)
-        print("Observation shape: %s" % str(observation_shape))
-
+        image_stack_shape = (self.frames_per_decision,
+                            self.image_shape[0],
+                            self.image_shape[1],)
+        
         # TODO: Refactor to be int16.
-        self.observation_space = spaces.Box(low=0.0,
-                                            high=1.0,
-                                            shape=observation_shape,
-                                            dtype=np.float64)
+        self.image_space = spaces.Box(low=0.0,
+                                        high=1.0,
+                                        shape=image_stack_shape,
+                                        dtype=np.float32)
+            
+        if self.observation_mode == "image_only":
+
+            self.observation_space = self.image_space 
+            
+        elif self.observation_mode == "image_action":
+            
+            self.observation_space = spaces.Dict(
+                {"image": self.image_space,
+                 "prior_action": self.action_space},
+                seed=42
+            )
+
+        
+
+        else:
+
+            raise ValueError("Invalid observation mode. Must be 'image_only' or 'image_action'.")
         
         # TODO: Replace with environment-level state storage.
         self.state_content["wavelength"] = self.optical_system.wavelength
@@ -2048,7 +2068,8 @@ class OptomechEnv(gym.Env):
         self.steps_beyond_done = None
 
         print("=== End: Reset Environment ===")
-        return (np.array(self.state), info)
+        # return (np.array(self.state), info)
+        return self.state, info
     
     def save_state(self):
 
@@ -2171,7 +2192,7 @@ class OptomechEnv(gym.Env):
         for frame_num in range(self.frames_per_decision):
 
             # Create a blank frame for manual integration.
-            frame = np.zeros(self.image_shape, dtype=np.float64)
+            frame = np.zeros(self.image_shape, dtype=np.float32)
 
             # Iterate over each command, applying it and integrating the frame.
             for command_num in range(self.commands_per_frame):
@@ -2274,8 +2295,21 @@ class OptomechEnv(gym.Env):
 
         # Encode the frames as 256 ** 2
 
-        # Set the state to focal plane image.
-        self.state = self.focal_plane_images
+        if self.observation_mode == "image_only":
+
+            # Set the state to focal plane image.
+            self.state = np.array(self.focal_plane_images)
+            
+        elif self.observation_mode == "image_action":
+  
+            # Set the state to focal plane images and action.
+            self.state = {'image': np.array(self.focal_plane_images),
+                          'prior_action': action}
+
+        else:
+
+            raise ValueError("Invalid observation mode. Must be 'image_only' or 'image_action'.")
+
 
         if self.reward_function == "strehl":
 
@@ -2289,8 +2323,8 @@ class OptomechEnv(gym.Env):
                     self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
                 ))
 
-            reward = np.mean(strehls)
-            
+            reward = np.mean(strehls, dtype=np.float32)
+
         elif self.reward_function == "negastrehl":
 
             strehls = list()
@@ -2393,18 +2427,6 @@ class OptomechEnv(gym.Env):
 
                 reward = 0.0
 
-        elif self.reward_function == "negative_intensity":
-
-            print(np.sum(self.state))
-
-            reward = -1* np.sum(self.state)
-
-        elif self.reward_function == "inverse_intensity":
-
-            print(np.sum(self.state))
-
-            reward = 1 / np.sum(self.state)
-
         else:
 
             raise ValueError("reward_function must be specified.")
@@ -2421,26 +2443,40 @@ class OptomechEnv(gym.Env):
         if self.record_env_state_info:
 
             info["state_content"] = self.state_content
-            info["state"] = np.array(self.state)
+            # info["state"] = np.array(self.state)
+            info["state"] = self.state
 
         if self.report_time:
             print("Step time: %.6f" % (time.time() - step_time))
 
         # TODO: Externalize
-        normalize_state = True
+        # normalize_state = False
 
-        if normalize_state:
+        # if normalize_state:
 
-            raw_state = self.state
+        #     if len(self.state) > 1:
 
-            raw_state_min = np.min(raw_state)
-            zero_min_state = raw_state - raw_state_min
-            zero_min_state_max = np.max(zero_min_state)
-            normalized_state = zero_min_state / zero_min_state_max
+        #         raw_state = self.state[0]
+            
+        #     else:
 
-            self.state = normalized_state
+        #         raw_state = self.state
 
-        return np.array(self.state), reward, terminated, truncated, info
+        #     raw_state_min = np.min(raw_state)
+        #     zero_min_state = raw_state - raw_state_min
+        #     zero_min_state_max = np.max(zero_min_state)
+        #     normalized_state = zero_min_state / zero_min_state_max
+
+        #     if len(self.state) > 1:
+
+        #         self.state = (normalized_state, self.state[1])
+
+        #     else:
+
+        #         self.state = normalized_state
+
+        reward = np.float32(reward)
+        return self.state, reward, terminated, truncated, info
 
     def close(self):
         if self.viewer:
