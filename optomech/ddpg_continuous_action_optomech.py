@@ -1961,7 +1961,7 @@ if __name__ == "__main__":
 
                 decay_noise = True
                 if decay_noise:
-                    decay = 1.0 / (1.0 + (args.decay_rate * (global_step - args.learning_starts)))
+                    decay = 0.1 + (1.0 / (1.0 + (args.decay_rate * (global_step - args.learning_starts))))
                 else:
                     decay = 1.0
 
