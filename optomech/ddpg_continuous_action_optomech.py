@@ -44,6 +44,8 @@ class Args:
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
+    """if using cuda, set the gpu"""
+    gpu_list: int = 0
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
@@ -1739,6 +1741,7 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         print("Running with CUDA")
         device = torch.device("cuda")
+        torch.cuda.set_device(args.gpu_list)
     elif torch.backends.mps.is_available():
         print("Running with MSP")
         device = torch.device("mps")
