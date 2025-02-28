@@ -21,6 +21,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --exp_name=baseline \
 --env-id optomech-v1 \
 --seed=88887 \
+--gpu_list=0 \
 --object_type=single \
 --ao_interval_ms=1.0 \
 --control_interval_ms=1.0 \
@@ -64,6 +65,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --exp_name=later_start \
 --env-id optomech-v1 \
 --seed=88887 \
+--gpu_list=1 \
 --object_type=single \
 --ao_interval_ms=1.0 \
 --control_interval_ms=1.0 \
@@ -108,6 +110,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --exp_name=smaller_model \
 --env-id optomech-v1 \
 --seed=88887 \
+--gpu_list=2 \
 --object_type=single \
 --ao_interval_ms=1.0 \
 --control_interval_ms=1.0 \
@@ -151,6 +154,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --exp_name=bigger_model \
 --env-id optomech-v1 \
 --seed=88887 \
+--gpu_list=3 \
 --object_type=single \
 --ao_interval_ms=1.0 \
 --control_interval_ms=1.0 \
@@ -196,6 +200,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --exp_name=baseline \
 --env-id optomech-v1 \
 --seed=88887 \
+--gpu_list=4 \
 --object_type=single \
 --ao_interval_ms=1.0 \
 --control_interval_ms=1.0 \
@@ -240,6 +245,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --exp_name=slower_decay \
 --env-id optomech-v1 \
 --seed=88887 \
+--gpu_list=5 \
 --object_type=single \
 --ao_interval_ms=1.0 \
 --control_interval_ms=1.0 \
@@ -283,6 +289,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --exp_name=faster_training \
 --env-id optomech-v1 \
 --seed=88887 \
+--gpu_list=6 \
 --object_type=single \
 --ao_interval_ms=1.0 \
 --control_interval_ms=1.0 \
@@ -327,6 +334,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --exp_name=reduced_policy_frequency \
 --env-id optomech-v1 \
 --seed=88887 \
+--gpu_list=7 \
 --object_type=single \
 --ao_interval_ms=1.0 \
 --control_interval_ms=1.0 \
