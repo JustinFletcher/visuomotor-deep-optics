@@ -55,6 +55,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --actor_channel_scale=64 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
+&
 
 
 # 2: Later Start
@@ -97,6 +98,8 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --actor_channel_scale=64 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
+&
+
 
 
 # 3: Smaller model.
@@ -139,6 +142,8 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
+&
+
 
 # 4: Bigger model.
 cd ./visuomoto_deep_optics/
@@ -180,6 +185,8 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --actor_channel_scale=64 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
+&
+
 
 
 
@@ -223,6 +230,8 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --actor_channel_scale=64 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
+&
+
 
 
 # Slower decay.
@@ -265,6 +274,8 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --actor_channel_scale=64 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
+&
+
 
 # Faster training
 cd ./visuomoto_deep_optics/
@@ -306,6 +317,8 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --actor_channel_scale=64 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
+&
+
 
 
 # Reduced policy frequency
@@ -348,6 +361,8 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --actor_channel_scale=64 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
+&
+
 
 #Optionally, you can include cleanup commands here (e.g., after the job finishes)
 #For example:
