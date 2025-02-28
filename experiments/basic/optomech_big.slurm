@@ -361,7 +361,6 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --actor_channel_scale=64 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
-&
 
 
 #Optionally, you can include cleanup commands here (e.g., after the job finishes)
