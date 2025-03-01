@@ -111,7 +111,7 @@ def make_env(env_id, flags):
 gym.envs.registration.register(
     id='optomech-v1',
     entry_point='optomech.optomech:OptomechEnv',
-    # max_episode_steps=4,
+    max_episode_steps=4,
     # reward_threshold=flags.reward_threshold,
 )
 
@@ -244,11 +244,11 @@ def rollout_optomech_policy(model_path=None,
             with torch.no_grad():
 
                 image = torch.Tensor(obs['image']).to(device)
-                print("rollout image shape")
-                print(image.shape)
+                # print("rollout image shape")
+                # print(image.shape)
                 prior_action = torch.Tensor(obs['prior_action']).to(device)
-                print("rollout prior action shape")
-                print(prior_action.shape)
+                # print("rollout prior action shape")
+                # print(prior_action.shape)
                 actions = actor(image, prior_action)
                 actions += torch.normal(0,
                                         actor.action_scale * exploration_noise)
@@ -296,7 +296,6 @@ def rollout_optomech_policy(model_path=None,
         # Handle special saving for optomech environments.
         if (args.env_id == "optomech-v1") and args.write_env_state_info:
 
-
             # zip over each environment and save the state information.
             for i, (action,
                     next_ob,
@@ -331,30 +330,34 @@ def rollout_optomech_policy(model_path=None,
                     pickle.dump(info, f)
 
         # Record the episodic returns.
-        print(infos)
+    
 
         # if "final_info" in infos:
         if infos:
-        # for info in infos["final_info"]:
-            if "episode" not in infos:
-                continue
-            print(f"eval_episode={len(episodic_returns)}, episodic_return={infos['episode']['r']}")
+            # print(infos)
 
-            # Create or open the dataset json.
-            dataset_path = os.path.join(
-                episode_save_path,
-                dataset_name + "_" + str(len(episodic_returns)) + ".json")
-            Path(eval_save_path).mkdir(parents=True, exist_ok=True)
+            for info in infos["final_info"]:
+                # if "final_info" not in info:
+                #     continue
+                print(f"eval_episode={len(episodic_returns)}, episodic_return={info['episode']['r']}")
 
-            # Save the dataset back to the file.
-            with open(dataset_path, "w") as f:
-                json.dump(episode_data, f)
+                # Create or open the dataset json.
+                dataset_path = os.path.join(
+                    episode_save_path,
+                    dataset_name + "_" + str(len(episodic_returns)) + ".json")
+                Path(eval_save_path).mkdir(parents=True, exist_ok=True)
 
-            episodic_returns += [infos["episode"]["r"]]
+                # Save the dataset back to the file.
+                with open(dataset_path, "w") as f:
+                    json.dump(episode_data, f)
+                # print("/n/n/n/n")
+                # print(info)
+                episodic_returns += [info["episode"]["r"]]
 
-            episode_data = list()
-            # Generate new UUIDs for the next environments.
-            env_uuids = [str(uuid.uuid4()) for _ in range(args.num_envs)]
+                episode_data = list()
+                # Generate new UUIDs for the next environments.
+                env_uuids = [str(uuid.uuid4()) for _ in range(args.num_envs)]
+
 
         # Update the observations for the next step.
         obs = next_obs

@@ -2008,15 +2008,16 @@ if __name__ == "__main__":
 
          # TRY NOT TO MODIFY: record rewards for plotting purposes
         if infos:
-            for info in infos:
+
+            for info in infos["final_info"]:
 
                 print(infos)
-                print(f"\n\nglobal_step={global_step}, episodic_return={infos['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", infos["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", infos["episode"]["l"], global_step)
+                print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
+                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                 print("")
-                print("Episode %d has ended with %d steps." % (global_step, infos["episode"]["l"]))
-                print("Episode %d has ended with %d reward." % (global_step, infos["episode"]["r"]))
+                print("Episode %d has ended with %d steps." % (global_step, info["episode"]["l"]))
+                print("Episode %d has ended with %d reward." % (global_step, info["episode"]["r"]))
                 print("Resetting Actor Hidden State")
                 actor.reset_hidden()
                 print("Resetting Critic Hidden State")
@@ -2055,7 +2056,7 @@ if __name__ == "__main__":
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             # data = rb.sample(args.batch_size)
-            data = replay_buffer.sample(args.batch_size)    
+            data = replay_buffer.sample(args.batch_size)
 
 
             # torch.squeeze(x, 1).to(device)
