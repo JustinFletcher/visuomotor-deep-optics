@@ -18,9 +18,11 @@ gym = "0.23.1"
 torch = ">=2.0.0"
 torchrl = ">=0.7.0"
 torchinfo = ">=1.8.0"
+torchvision = ">=0.21.0"
 stable-baselines3 = "2.5.0"
 
-gymnasium = ">=0.28.1"
+gymnasium = ">=0.28.1, <1.0"
+
 hcipy = ">=0.6.0"
 moviepy = "^1.0.3"
 pygame = "2.1.0"
@@ -72,7 +74,7 @@ atari = ["ale-py", "AutoROM", "opencv-python", "shimmy"]
 procgen = ["procgen"]
 plot = ["pandas", "seaborn"]
 pytest = ["pytest"]
-mujoco = ["mujoco", "imageio"]
+mujoco = ["mujoco", "imageio", "glfw"]
 jax = ["jax", "jaxlib", "flax"]
 docs = ["mkdocs-material", "markdown-include", "openrlbenchmark"]
 envpool = ["envpool"]
