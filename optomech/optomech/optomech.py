@@ -397,6 +397,10 @@ class OpticalSystem(object):
         self.simulate_differential_motion = kwargs['simulate_differential_motion']
         self.init_differential_motion = kwargs['init_differential_motion']
 
+        self.discrete_control = kwargs['discrete_control']
+
+        self.discrete_control_steps = kwargs['discrete_control_steps']
+
         # Parameters for the structual wind response model.
         # TODO: Externalize.
         initial_ground_wind_speed_mps = 3.0
@@ -1398,6 +1402,8 @@ class OpticalSystem(object):
         # TODO: Refactor to extract tuples to np array and use _apply_ptt_displacements.
         for segment_id in range(self.num_apertures):
 
+            print("Segment ID: %s" % segment_id)
+
             # TODO: the following three lines need be generalized to nested lists.
             segment_piston_command = segments_ptt_commands[segment_id][0]
 
@@ -1409,31 +1415,75 @@ class OpticalSystem(object):
                 segment_tip_command = 0.0
                 segment_tilt_command = 0.0
 
-            # segment_piston_command = ((segment_piston_command - (0.5)) * 2)
-            # segment_tip_command = ((segment_tip_command - (0.5)) * 2)
-            # segment_tilt_command = ((segment_tilt_command - (0.5)) * 2)
 
-            segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
-            segment_tip_command_radians = segment_tip_command * max_tip_correction_radians
-            segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
-
-
-            if not(self.incremental_control):
-
-                piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
-                tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
-                tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + segment_tilt_command_radians
-
-            else:
+            if self.discrete_control:
 
                 # First, get the ptt displacements in meters of of this segement...
                 (segment_piston,
                  segment_tip,
                  segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+                
+
+                increase_segment_piston = segment_piston_command[0]
+                decrease_segment_piston = segment_piston_command[1]
+
+                increase_segment_tip = segment_tip_command[0]
+                decrease_segment_tip = segment_tip_command[1]
+
+                increase_segment_tilt = segment_tilt_command[0]
+                decrease_segment_tilt = segment_tilt_command[1]
+
+
+                piston_state = segment_piston + (increase_segment_piston * (max_piston_correction_meters / self.discrete_control_steps))
+                tip_state = segment_tip + (increase_segment_tip * (max_tip_correction_radians / self.discrete_control_steps))
+                tilt_state = segment_tilt + (increase_segment_tilt * (max_tilt_correction_radians / self.discrete_control_steps))
+
+                piston_state = segment_piston - (decrease_segment_piston * (max_piston_correction_meters / self.discrete_control_steps))
+                tip_state = segment_tip - (decrease_segment_tip * (max_tip_correction_radians / self.discrete_control_steps))
+                tilt_state = segment_tilt - (decrease_segment_tilt * (max_tilt_correction_radians / self.discrete_control_steps))
+
+                # Enforce limits on incremental commmands with clip.
+                piston_state = np.clip(
+                    piston_state,
+                    -max_piston_correction_meters + self.segment_baseline_dict[segment_id]["piston"],
+                    max_piston_correction_meters + self.segment_baseline_dict[segment_id]["piston"])
+                tip_state = np.clip(
+                    tip_state,
+                    -max_tip_correction_radians + self.segment_baseline_dict[segment_id]["tip"],
+                    max_tip_correction_radians + self.segment_baseline_dict[segment_id]["tip"])
+                tilt_state = np.clip(
+                    tilt_state,
+                    -max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"],
+                    max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"])
+
+            elif self.incremental_control:
+
+                segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
+                segment_tip_command_radians = segment_tip_command * max_tip_correction_radians
+                segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
+
+
+                # First, get the ptt displacements in meters of of this segement...
+                (segment_piston,
+                 segment_tip,
+                 segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+                print("Before values")
+                print(self.segmented_mirror.get_segment_actuators(segment_id))
 
                 piston_state = segment_piston + segment_piston_command_meters
                 tip_state = segment_tip + segment_tip_command_radians
                 tilt_state = segment_tilt + segment_tilt_command_radians
+
+                print("commands")
+                print(segment_piston_command,
+                      segment_tip_command,
+                      segment_tilt_command)
+                print("command_units")
+                print(segment_piston_command_meters,
+                      segment_tip_command_radians,
+                      segment_tilt_command_radians)
+                print("baseline_dict")
+                print(self.segment_baseline_dict[segment_id]["piston"])
 
                 # Enforce limits on incremental commmands with clip.
                 piston_state = np.clip(
@@ -1449,6 +1499,15 @@ class OpticalSystem(object):
                     -max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"],
                     max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"])
                 
+            else:
+
+                segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
+                segment_tip_command_radians = segment_tip_command * max_tip_correction_radians
+                segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
+
+                piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
+                tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
+                tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + segment_tilt_command_radians
 
 
             # Set the actuators in meter and radians.
@@ -1458,6 +1517,14 @@ class OpticalSystem(object):
                 tip_state,
                 tilt_state
             )
+
+
+            print("After values")
+            print(self.segmented_mirror.get_segment_actuators(segment_id))
+
+            print("Done")
+
+
 
 
     
@@ -1550,6 +1617,10 @@ class OptomechEnv(gym.Env):
         self.command_dm = kwargs['command_dm']
 
 
+        self.discrete_control = kwargs['discrete_control']
+        self.discrete_control_steps = kwargs['discrete_control_steps']
+
+
         self.observation_mode = kwargs['observation_mode']
 
         if self.command_dm or self.ao_loop_active:
@@ -1634,40 +1705,66 @@ class OptomechEnv(gym.Env):
         # Build the secondaries command space.
         if self.command_secondaries:
 
-            # Secondaries can be piston-only, so we build a list for subspaces.
-            ptt_space_list = list()
-            
-            # Build a piston space. We assume [-1., 1.] spaces for commands.
-            # The physical units for command must be handled post-interface.
-            self.secondary_max_displacement_micron = 1.0
-            piston_space = spaces.Box(
-                low=-self.secondary_max_displacement_micron,
-                high=self.secondary_max_displacement_micron,
-                shape=(1,),
-                dtype=np.float32
-            )
-            ptt_space_list.append(piston_space)
 
-            # If tip and tilt controls are modeled, add thier spaces.
-            if self.command_tip_tilt:
-            
-                self.secondary_max_deflection_arcsec = 1.0
-                tip_space = spaces.Box(
-                    low=-self.secondary_max_deflection_arcsec,
-                    high=self.secondary_max_deflection_arcsec,
+            if self.discrete_control:
+                
+                # Secondaries can be piston-only, so we build a list for subspaces.
+                ptt_space_list = list()
+                
+                # Build a piston space. We assume [-1., 1.] spaces for commands.
+                # The physical units for command must be handled post-interface.
+                self.secondary_max_displacement_micron = 1.0
+                piston_space = spaces.Tuple((spaces.Discrete(1), spaces.Discrete(1)))
+                ptt_space_list.append(piston_space)
+
+                # If tip and tilt controls are modeled, add thier spaces.
+                if self.command_tip_tilt:
+                
+                    self.secondary_max_deflection_arcsec = 1.0
+                    tip_space = spaces.Tuple((spaces.Discrete(1), spaces.Discrete(1)))
+
+                    ptt_space_list.append(tip_space)
+                    tilt_space = spaces.Tuple((spaces.Discrete(1), spaces.Discrete(1)))
+
+                    ptt_space_list.append(tilt_space)   
+                
+
+            else:
+
+                # Secondaries can be piston-only, so we build a list for subspaces.
+                ptt_space_list = list()
+                
+                # Build a piston space. We assume [-1., 1.] spaces for commands.
+                # The physical units for command must be handled post-interface.
+                self.secondary_max_displacement_micron = 1.0
+                piston_space = spaces.Box(
+                    low=-self.secondary_max_displacement_micron,
+                    high=self.secondary_max_displacement_micron,
                     shape=(1,),
                     dtype=np.float32
                 )
+                ptt_space_list.append(piston_space)
 
-                ptt_space_list.append(tip_space)
-                tilt_space = spaces.Box(
-                    low=-self.secondary_max_deflection_arcsec,
-                    high=self.secondary_max_deflection_arcsec,
-                    shape=(1,),
-                    dtype=np.float32
-                )
+                # If tip and tilt controls are modeled, add thier spaces.
+                if self.command_tip_tilt:
+                
+                    self.secondary_max_deflection_arcsec = 1.0
+                    tip_space = spaces.Box(
+                        low=-self.secondary_max_deflection_arcsec,
+                        high=self.secondary_max_deflection_arcsec,
+                        shape=(1,),
+                        dtype=np.float32
+                    )
 
-                ptt_space_list.append(tilt_space)   
+                    ptt_space_list.append(tip_space)
+                    tilt_space = spaces.Box(
+                        low=-self.secondary_max_deflection_arcsec,
+                        high=self.secondary_max_deflection_arcsec,
+                        shape=(1,),
+                        dtype=np.float32
+                    )
+
+                    ptt_space_list.append(tilt_space)   
 
             # Convert the list to a tuple and the tuple to a Tuple space.
             ptt_space = spaces.Tuple((tuple(ptt_space_list))) 
@@ -1737,7 +1834,16 @@ class OptomechEnv(gym.Env):
 
         # Build a tree from the action space to enable translation.
         self.action_tree = self.build_tree_from_action_space(self.dict_action_space)
-        self.action_space = self.flatten(self.dict_action_space,
+
+        if self.discrete_control:
+
+            flat_space = spaces.MultiDiscrete([1] * self.get_vector_action_size(self.dict_action_space))
+
+
+            self.action_space = flat_space
+        else:
+        
+            self.action_space = self.flatten(self.dict_action_space,
                                          flat_space_low=-1.0,
                                          flat_space_high=1.0)
         
@@ -1746,35 +1852,55 @@ class OptomechEnv(gym.Env):
         
         if self.command_secondaries:
 
-            zero_ptt_space_list = list()
-            zero_piston_space = spaces.Box(
-                low=0.0,
-                high=0.0,
-                shape=(1,),
-                dtype=np.float32
-            )
+            if self.discrete_control:
 
-            zero_ptt_space_list.append(zero_piston_space)
+                zero_ptt_space_list = list()
+                self.secondary_max_displacement_micron = 1.0
+                zero_piston_space = spaces.Tuple((spaces.Discrete(1), spaces.Discrete(1)))
+                zero_ptt_space_list.append(zero_piston_space)
 
-            if self.command_tip_tilt:
-            
-                zero_tip_space = spaces.Box(
+                # If tip and tilt controls are modeled, add thier spaces.
+                if self.command_tip_tilt:
+                
+                    self.secondary_max_deflection_arcsec = 1.0
+                    zero_tip_space = spaces.Tuple((spaces.Discrete(1), spaces.Discrete(1)))
+
+                    zero_ptt_space_list.append(zero_tip_space)
+                    zero_tilt_space = spaces.Tuple((spaces.Discrete(1), spaces.Discrete(1)))
+
+                    zero_ptt_space_list.append(zero_tilt_space)   
+
+            else:
+
+                zero_ptt_space_list = list()
+                zero_piston_space = spaces.Box(
                     low=0.0,
                     high=0.0,
                     shape=(1,),
                     dtype=np.float32
                 )
 
-                zero_ptt_space_list.append(zero_tip_space)
+                zero_ptt_space_list.append(zero_piston_space)
 
-                zero_tilt_space = spaces.Box(
-                    low=0.0,
-                    high=0.0,
-                    shape=(1,),
-                    dtype=np.float32
-                )
+                if self.command_tip_tilt:
+                
+                    zero_tip_space = spaces.Box(
+                        low=0.0,
+                        high=0.0,
+                        shape=(1,),
+                        dtype=np.float32
+                    )
 
-                zero_ptt_space_list.append(zero_tilt_space)
+                    zero_ptt_space_list.append(zero_tip_space)
+
+                    zero_tilt_space = spaces.Box(
+                        low=0.0,
+                        high=0.0,
+                        shape=(1,),
+                        dtype=np.float32
+                    )
+
+                    zero_ptt_space_list.append(zero_tilt_space)
 
             zero_ptt_space = spaces.Tuple((tuple(zero_ptt_space_list))) 
 
@@ -1935,18 +2061,41 @@ class OptomechEnv(gym.Env):
 
 
 
-                            action_space_address= f"{step_num}_{stage_num}_{component_num}_{command_num}"
-                            
+                            if hasattr(command, '__iter__'):
 
-                            command_node = Node(f"command_{command_num}",
-                                                parent=component_node,
-                                                content=command,
-                                                action_space_address=action_space_address,
-                                                linear_address=linear_address)
+                                # Iterate over elements of the command (add, subtract, etc.) for discrete spaces only.
+                                for element_num, element in enumerate(command):
 
-                            linear_to_tree_dict[linear_address] = action_space_address
+                                    action_space_address= f"{step_num}_{stage_num}_{component_num}_{command_num}_{element_num}"
+                                    
 
-                            linear_address += 1
+
+                                    linear_to_tree_dict[linear_address] = action_space_address
+
+                                    linear_address += 1
+                                    element_node = Node(f"element_{element_num}",
+                                                        parent=component_node,
+                                                        content=element,
+                                                        action_space_address=action_space_address,
+                                                        linear_address=linear_address)
+
+
+                            else:
+
+                                action_space_address= f"{step_num}_{stage_num}_{component_num}_{command_num}"
+                                linear_to_tree_dict[linear_address] = action_space_address
+                                
+
+                                command_node = Node(f"command_{command_num}",
+                                                    parent=component_node,
+                                                    content=command,
+                                                    action_space_address=action_space_address,
+                                                    linear_address=linear_address)
+                                
+                                linear_address += 1
+
+
+                    
 
                     else:
 
@@ -1983,6 +2132,7 @@ class OptomechEnv(gym.Env):
         action_space_list = self.tuple_to_list(action_space.sample())
 
         for n, action_value in enumerate(action_vector):
+
 
             tree_address = action_tree.linear_to_tree_dict[n]
 
@@ -2059,7 +2209,8 @@ class OptomechEnv(gym.Env):
         for _ in range(self.frames_per_decision):
 
             (initial_state, _, _, _, info) = self.step(
-                action=self.zero_action_space.sample(),
+                # action=self.zero_action_space.sample(),
+                action=self.action_space.sample(),
                 noisy_command=False,
                 reset=True
             )
@@ -2182,6 +2333,7 @@ class OptomechEnv(gym.Env):
         # Update the current action to be the provided action.
 
         # TODO: Convert vector action to tree action here.
+
         self.action = self.flat_to_dict(action, self.dict_action_space)
         
         # TODO: Replace this with a static property.
@@ -2448,32 +2600,6 @@ class OptomechEnv(gym.Env):
 
         if self.report_time:
             print("Step time: %.6f" % (time.time() - step_time))
-
-        # TODO: Externalize
-        # normalize_state = False
-
-        # if normalize_state:
-
-        #     if len(self.state) > 1:
-
-        #         raw_state = self.state[0]
-            
-        #     else:
-
-        #         raw_state = self.state
-
-        #     raw_state_min = np.min(raw_state)
-        #     zero_min_state = raw_state - raw_state_min
-        #     zero_min_state_max = np.max(zero_min_state)
-        #     normalized_state = zero_min_state / zero_min_state_max
-
-        #     if len(self.state) > 1:
-
-        #         self.state = (normalized_state, self.state[1])
-
-        #     else:
-
-        #         self.state = normalized_state
 
         reward = np.float32(reward)
         return self.state, reward, terminated, truncated, info

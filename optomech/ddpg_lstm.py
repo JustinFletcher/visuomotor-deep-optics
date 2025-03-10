@@ -94,6 +94,8 @@ class Args:
     """noise clip parameter of the Target Policy Smoothing Regularization"""
     decay_rate: float = 0.00001
     """Decay rate for noise decay"""
+    action_scale: float = 1.0
+    """The scale of the actors actions"""
 
     save_model: bool = False
     """whether to save model into the `runs/{run_name}` folder"""
@@ -696,7 +698,7 @@ class ConvLSTM(nn.Module):
 
 class VanillaCritic(nn.Module):
 
-    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
+    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True, action_scale=1.0):
         super().__init__()
 
 
@@ -800,7 +802,7 @@ class VanillaCritic(nn.Module):
 
 class VanillaActor(nn.Module):
 
-    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
+    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True, action_scale=1.0):
         super().__init__()
 
         self.use_lstm = False
@@ -876,7 +878,7 @@ class VanillaActor(nn.Module):
         # action rescaling
         self.register_buffer(
             # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_scale", torch.tensor(1.0, dtype=torch.float32)
+            "action_scale", torch.tensor(action_scale, dtype=torch.float32)
         )
         self.register_buffer(
             # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
@@ -1067,7 +1069,7 @@ class CBAMActor(nn.Module):
         # action rescaling
         self.register_buffer(
             # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_scale", torch.tensor(1.0, dtype=torch.float32)
+            "action_scale", torch.tensor(action_scale, dtype=torch.float32)
         )
         self.register_buffer(
             # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
@@ -1144,7 +1146,7 @@ class ZeroPad1dToLength(nn.Module):
 
 class CustomActor(nn.Module):
 
-    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False):
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
         
         super().__init__()
         # Initialize the shape parameters
@@ -1250,7 +1252,7 @@ class CustomActor(nn.Module):
         self.register_buffer(
             # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
             # "action_scale", torch.tensor(0.01, dtype=torch.float32)
-            "action_scale", torch.tensor(1.0, dtype=torch.float32)
+            "action_scale", torch.tensor(action_scale, dtype=torch.float32)
         )
         self.register_buffer(
             # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
@@ -1437,7 +1439,7 @@ class CustomCritic(nn.Module):
 
 class ImpalaActor(nn.Module):
 
-    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False):
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
         
         super().__init__()
         # Initialize the shape parameters
@@ -1531,7 +1533,7 @@ class ImpalaActor(nn.Module):
         # action rescaling
         self.register_buffer(
             # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_scale", torch.tensor(1.0, dtype=torch.float32)
+            "action_scale", torch.tensor(action_scale, dtype=torch.float32)
         )
         self.register_buffer(
             # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
@@ -1592,7 +1594,7 @@ class ImpalaActor(nn.Module):
 
 class ImpalaCritic(nn.Module):
     
-    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False):
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
         
         super().__init__()
         # Initialize the shape parameters
@@ -1948,36 +1950,42 @@ if __name__ == "__main__":
         actor = VanillaActor(envs,
                     channel_scale=args.actor_channel_scale,
                     fc_scale=args.actor_fc_scale,
-                    low_dim=args.low_dim_actor).to(device)
+                    low_dim=args.low_dim_actor,
+                           action_scale=args.action_scale).to(device)
         
         # target_actor = Actor(envs).to(device)
         target_actor = VanillaActor(envs,
                             channel_scale=args.actor_channel_scale,
                             fc_scale=args.actor_fc_scale,
-                            low_dim=args.low_dim_actor).to(device)
+                            low_dim=args.low_dim_actor,
+                           action_scale=args.action_scale).to(device)
         
     elif args.actor_type == "custom":
         actor = CustomActor(envs,
                             device,
                             channel_scale=args.actor_channel_scale,
                             fc_scale=args.actor_fc_scale,
-                            bptt=bptt).to(device)
+                            bptt=bptt,
+                           action_scale=args.action_scale).to(device)
         target_actor = CustomActor(envs,
                                    device,
                                    channel_scale=args.actor_channel_scale,
                                    fc_scale=args.actor_fc_scale,
-                                   bptt=bptt).to(device)
+                                   bptt=bptt,
+                           action_scale=args.action_scale).to(device)
 
     elif args.actor_type == "impala":
 
         actor = ImpalaActor(envs,
                             device,
                             channel_scale=args.actor_channel_scale,
-                            fc_scale=args.actor_fc_scale,).to(device)
+                            fc_scale=args.actor_fc_scale,
+                           action_scale=args.action_scale,).to(device)
         target_actor = ImpalaActor(envs,
                                    device,
                                    channel_scale=args.actor_channel_scale,
-                                   fc_scale=args.actor_fc_scale,).to(device)
+                                   fc_scale=args.actor_fc_scale,
+                           action_scale=args.action_scale).to(device)
 
 
     else:
@@ -1990,13 +1998,15 @@ if __name__ == "__main__":
         qf1 = VanillaCritic(envs,
                     channel_scale=args.qnetwork_channel_scale,
                     fc_scale=args.qnetwork_fc_scale,
-                    low_dim=args.low_dim_qnetwork).to(device)
+                    low_dim=args.low_dim_qnetwork,
+                           action_scale=args.action_scale).to(device)
         
         # qf1_target = QNetwork(envs).to(device)
         qf1_target = VanillaCritic(envs,
                             channel_scale=args.qnetwork_channel_scale,
                             fc_scale=args.qnetwork_fc_scale,
-                            low_dim=args.low_dim_qnetwork).to(device)
+                            low_dim=args.low_dim_qnetwork,
+                           action_scale=args.action_scale).to(device)
 
     elif args.critic_type == "custom":
 
@@ -2009,17 +2019,20 @@ if __name__ == "__main__":
                                   device,
                                   channel_scale=args.actor_channel_scale,
                                   fc_scale=args.actor_fc_scale,
-                                   bptt=bptt).to(device)
+                                   bptt=bptt,
+                           action_scale=args.action_scale).to(device)
 
     elif args.critic_type == "impala":
         qf1 = ImpalaCritic(envs,
                            device,
                            channel_scale=args.actor_channel_scale,
-                           fc_scale=args.actor_fc_scale,).to(device)
+                           fc_scale=args.actor_fc_scale,
+                           action_scale=args.action_scale).to(device)
         qf1_target = ImpalaCritic(envs,
                                   device,
                                   channel_scale=args.actor_channel_scale,
-                                  fc_scale=args.actor_fc_scale,).to(device)
+                                  fc_scale=args.actor_fc_scale,
+                           action_scale=args.action_scale).to(device)
 
     else:
         raise ValueError("Invalid critic type specified.")
