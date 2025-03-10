@@ -15,10 +15,10 @@
 #For example:
 #python my_script.py
 
-# 1: Baseline
 cd ./visuomoto_deep_optics/
-poetry run python ./optomech/ddpg_continuous_action_optomech.py \
---exp_name=baseline \
+
+# 1: Baseline
+poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
 --gpu_list=0 \
@@ -29,40 +29,40 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --decision_interval_ms=1.0 \
 --num_atmosphere_layers=0 \
 --aperture_type=nanoelf \
---focal_plane_image_size_pixels=256 \
---observation_mode=image_action \
+--focal_plane_image_size_pixels=64 \
+--observation_mode=image_only \
 --command_secondaries \
+--incremental_control \
 --model_wind_diff_motion \
 --init_differential_motion \
---incremental_control \
---command_tip_tilt \
 --save_model \
---model_save_interval=1000 \
+--model_save_interval=10000 \
 --num_envs=1 \
---tau=0.001 \
---exploration_noise=0.3 \
---decay_rate=0.005 \
+--tau=0.0001 \
+--exploration_noise=1.0 \
+--decay_rate=0.001 \
 --reward_function=negastrehl \
+--action_scale=0.01 \
+--reward_scale=10.0 \
 --buffer_size=1_000_000 \
---learning_starts=10_000 \
+--learning_starts=100_000 \
+--prelearning_sample=scales \
 --policy_frequency=1 \
---batch_size=128 \
---max_episode_steps=100 \
---actor_type=custom \
---critic_type=custom \
---actor_fc_scale=512 \
---qnetwork_fc_scale=512 \
---qnetwork_channel_scale=64 \
---actor_channel_scale=64 \
+--batch_size=32 \
+--max_episode_steps=200 \
+--actor_type=impala \
+--critic_type=impala \
+--actor_fc_scale=256 \
+--qnetwork_fc_scale=256 \
+--qnetwork_channel_scale=16 \
+--actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
 &
 
 
 # 2: Later Start
-cd ./visuomoto_deep_optics/
-poetry run python ./optomech/ddpg_continuous_action_optomech.py \
---exp_name=later_start \
+poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
 --gpu_list=1 \
@@ -73,31 +73,33 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --decision_interval_ms=1.0 \
 --num_atmosphere_layers=0 \
 --aperture_type=nanoelf \
---focal_plane_image_size_pixels=256 \
---observation_mode=image_action \
+--focal_plane_image_size_pixels=64 \
+--observation_mode=image_only \
 --command_secondaries \
+--incremental_control \
 --model_wind_diff_motion \
 --init_differential_motion \
---incremental_control \
---command_tip_tilt \
 --save_model \
---model_save_interval=1000 \
+--model_save_interval=10000 \
 --num_envs=1 \
---tau=0.001 \
---exploration_noise=0.3 \
---decay_rate=0.005 \
+--tau=0.0001 \
+--exploration_noise=1.0 \
+--decay_rate=0.001 \
 --reward_function=negastrehl \
+--action_scale=0.001 \
+--reward_scale=10.0 \
 --buffer_size=1_000_000 \
---learning_starts=1_000_000 \
+--learning_starts=100_000 \
+--prelearning_sample=scales \
 --policy_frequency=1 \
---batch_size=128 \
---max_episode_steps=100 \
---actor_type=custom \
---critic_type=custom \
---actor_fc_scale=512 \
---qnetwork_fc_scale=512 \
---qnetwork_channel_scale=64 \
---actor_channel_scale=64 \
+--batch_size=32 \
+--max_episode_steps=200 \
+--actor_type=impala \
+--critic_type=impala \
+--actor_fc_scale=256 \
+--qnetwork_fc_scale=256 \
+--qnetwork_channel_scale=16 \
+--actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
 &
@@ -105,9 +107,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 
 
 # 3: Smaller model.
-cd ./visuomoto_deep_optics/
-poetry run python ./optomech/ddpg_continuous_action_optomech.py \
---exp_name=smaller_model \
+poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
 --gpu_list=2 \
@@ -118,29 +118,31 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --decision_interval_ms=1.0 \
 --num_atmosphere_layers=0 \
 --aperture_type=nanoelf \
---focal_plane_image_size_pixels=256 \
---observation_mode=image_action \
+--focal_plane_image_size_pixels=64 \
+--observation_mode=image_only \
 --command_secondaries \
+--incremental_control \
 --model_wind_diff_motion \
 --init_differential_motion \
---incremental_control \
---command_tip_tilt \
 --save_model \
---model_save_interval=1000 \
+--model_save_interval=10000 \
 --num_envs=1 \
---tau=0.001 \
---exploration_noise=0.3 \
---decay_rate=0.005 \
+--tau=0.0001 \
+--exploration_noise=1.0 \
+--decay_rate=0.001 \
 --reward_function=negastrehl \
+--action_scale=0.0001 \
+--reward_scale=10.0 \
 --buffer_size=1_000_000 \
---learning_starts=10_000 \
+--learning_starts=100_000 \
+--prelearning_sample=scales \
 --policy_frequency=1 \
---batch_size=128 \
---max_episode_steps=100 \
---actor_type=custom \
---critic_type=custom \
---actor_fc_scale=128 \
---qnetwork_fc_scale=128 \
+--batch_size=32 \
+--max_episode_steps=200 \
+--actor_type=impala \
+--critic_type=impala \
+--actor_fc_scale=256 \
+--qnetwork_fc_scale=256 \
 --qnetwork_channel_scale=16 \
 --actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
@@ -149,9 +151,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 
 
 # 4: Bigger model.
-cd ./visuomoto_deep_optics/
-poetry run python ./optomech/ddpg_continuous_action_optomech.py \
---exp_name=bigger_model \
+poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
 --gpu_list=3 \
@@ -162,31 +162,33 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --decision_interval_ms=1.0 \
 --num_atmosphere_layers=0 \
 --aperture_type=nanoelf \
---focal_plane_image_size_pixels=256 \
---observation_mode=image_action \
+--focal_plane_image_size_pixels=64 \
+--observation_mode=image_only \
 --command_secondaries \
+--incremental_control \
 --model_wind_diff_motion \
 --init_differential_motion \
---incremental_control \
---command_tip_tilt \
 --save_model \
---model_save_interval=1000 \
+--model_save_interval=10000 \
 --num_envs=1 \
---tau=0.001 \
---exploration_noise=0.3 \
---decay_rate=0.005 \
+--tau=0.0001 \
+--exploration_noise=1.0 \
+--decay_rate=0.001 \
 --reward_function=negastrehl \
+--action_scale=0.00001 \
+--reward_scale=10.0 \
 --buffer_size=1_000_000 \
---learning_starts=10_000 \
+--learning_starts=100_000 \
+--prelearning_sample=scales \
 --policy_frequency=1 \
---batch_size=128 \
---max_episode_steps=100 \
---actor_type=custom \
---critic_type=custom \
---actor_fc_scale=1024 \
---qnetwork_fc_scale=1024 \
---qnetwork_channel_scale=64 \
---actor_channel_scale=64 \
+--batch_size=32 \
+--max_episode_steps=200 \
+--actor_type=impala \
+--critic_type=impala \
+--actor_fc_scale=256 \
+--qnetwork_fc_scale=256 \
+--qnetwork_channel_scale=16 \
+--actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
 &
@@ -195,9 +197,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 
 
 # 4: Bigger model.
-cd ./visuomoto_deep_optics/
-poetry run python ./optomech/ddpg_continuous_action_optomech.py \
---exp_name=baseline \
+poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
 --gpu_list=4 \
@@ -208,31 +208,33 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --decision_interval_ms=1.0 \
 --num_atmosphere_layers=0 \
 --aperture_type=nanoelf \
---focal_plane_image_size_pixels=256 \
---observation_mode=image_action \
+--focal_plane_image_size_pixels=64 \
+--observation_mode=image_only \
 --command_secondaries \
+--incremental_control \
 --model_wind_diff_motion \
 --init_differential_motion \
---incremental_control \
---command_tip_tilt \
 --save_model \
---model_save_interval=1000 \
+--model_save_interval=10000 \
 --num_envs=1 \
---tau=0.001 \
---exploration_noise=0.3 \
---decay_rate=0.005 \
+--tau=0.0001 \
+--exploration_noise=1.0 \
+--decay_rate=0.001 \
 --reward_function=negastrehl \
+--action_scale=0.000001 \
+--reward_scale=10.0 \
 --buffer_size=1_000_000 \
---learning_starts=10_000 \
+--learning_starts=100_000 \
+--prelearning_sample=scales \
 --policy_frequency=1 \
---batch_size=128 \
---max_episode_steps=100 \
---actor_type=custom \
---critic_type=custom \
---actor_fc_scale=512 \
---qnetwork_fc_scale=512 \
---qnetwork_channel_scale=64 \
---actor_channel_scale=64 \
+--batch_size=32 \
+--max_episode_steps=200 \
+--actor_type=impala \
+--critic_type=impala \
+--actor_fc_scale=256 \
+--qnetwork_fc_scale=256 \
+--qnetwork_channel_scale=16 \
+--actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
 &
@@ -240,9 +242,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 
 
 # Slower decay.
-cd ./visuomoto_deep_optics/
-poetry run python ./optomech/ddpg_continuous_action_optomech.py \
---exp_name=slower_decay \
+poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
 --gpu_list=5 \
@@ -253,40 +253,40 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --decision_interval_ms=1.0 \
 --num_atmosphere_layers=0 \
 --aperture_type=nanoelf \
---focal_plane_image_size_pixels=256 \
---observation_mode=image_action \
+--focal_plane_image_size_pixels=64 \
+--observation_mode=image_only \
 --command_secondaries \
+--incremental_control \
 --model_wind_diff_motion \
 --init_differential_motion \
---incremental_control \
---command_tip_tilt \
 --save_model \
---model_save_interval=1000 \
+--model_save_interval=10000 \
 --num_envs=1 \
---tau=0.001 \
---exploration_noise=0.5 \
---decay_rate=0.00005 \
+--tau=0.0001 \
+--exploration_noise=1.0 \
+--decay_rate=0.001 \
 --reward_function=negastrehl \
+--action_scale=0.0000001 \
+--reward_scale=10.0 \
 --buffer_size=1_000_000 \
---learning_starts=10_000 \
+--learning_starts=100_000 \
+--prelearning_sample=scales \
 --policy_frequency=1 \
---batch_size=128 \
---max_episode_steps=100 \
---actor_type=custom \
---critic_type=custom \
---actor_fc_scale=512 \
---qnetwork_fc_scale=512 \
---qnetwork_channel_scale=64 \
---actor_channel_scale=64 \
+--batch_size=32 \
+--max_episode_steps=200 \
+--actor_type=impala \
+--critic_type=impala \
+--actor_fc_scale=256 \
+--qnetwork_fc_scale=256 \
+--qnetwork_channel_scale=16 \
+--actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
 &
 
 
 # Faster training
-cd ./visuomoto_deep_optics/
-poetry run python ./optomech/ddpg_continuous_action_optomech.py \
---exp_name=faster_training \
+poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
 --gpu_list=6 \
@@ -297,31 +297,33 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --decision_interval_ms=1.0 \
 --num_atmosphere_layers=0 \
 --aperture_type=nanoelf \
---focal_plane_image_size_pixels=256 \
---observation_mode=image_action \
+--focal_plane_image_size_pixels=64 \
+--observation_mode=image_only \
 --command_secondaries \
+--incremental_control \
 --model_wind_diff_motion \
 --init_differential_motion \
---incremental_control \
---command_tip_tilt \
 --save_model \
---model_save_interval=1000 \
+--model_save_interval=10000 \
 --num_envs=1 \
---tau=0.01 \
---exploration_noise=0.3 \
---decay_rate=0.005 \
+--tau=0.0001 \
+--exploration_noise=1.0 \
+--decay_rate=0.001 \
 --reward_function=negastrehl \
+--action_scale=0.00000001 \
+--reward_scale=10.0 \
 --buffer_size=1_000_000 \
---learning_starts=10_000 \
+--learning_starts=100_000 \
+--prelearning_sample=scales \
 --policy_frequency=1 \
---batch_size=256 \
---max_episode_steps=100 \
---actor_type=custom \
---critic_type=custom \
+--batch_size=32 \
+--max_episode_steps=200 \
+--actor_type=impala \
+--critic_type=impala \
 --actor_fc_scale=256 \
 --qnetwork_fc_scale=256 \
---qnetwork_channel_scale=64 \
---actor_channel_scale=64 \
+--qnetwork_channel_scale=16 \
+--actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
 &
@@ -329,9 +331,7 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 
 
 # Reduced policy frequency
-cd ./visuomoto_deep_optics/
-poetry run python ./optomech/ddpg_continuous_action_optomech.py \
---exp_name=reduced_policy_frequency \
+poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
 --gpu_list=7 \
@@ -342,34 +342,36 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --decision_interval_ms=1.0 \
 --num_atmosphere_layers=0 \
 --aperture_type=nanoelf \
---focal_plane_image_size_pixels=256 \
---observation_mode=image_action \
+--focal_plane_image_size_pixels=64 \
+--observation_mode=image_only \
 --command_secondaries \
+--incremental_control \
 --model_wind_diff_motion \
 --init_differential_motion \
---incremental_control \
---command_tip_tilt \
 --save_model \
---model_save_interval=1000 \
+--model_save_interval=10000 \
 --num_envs=1 \
---tau=0.001 \
---exploration_noise=0.3 \
---decay_rate=0.005 \
+--tau=0.0001 \
+--exploration_noise=1.0 \
+--decay_rate=0.00000001 \
 --reward_function=negastrehl \
+--action_scale=0.0001 \
+--reward_scale=10.0 \
 --buffer_size=1_000_000 \
---learning_starts=10_000 \
---policy_frequency=4 \
---batch_size=128 \
---max_episode_steps=100 \
---actor_type=custom \
---critic_type=custom \
---actor_fc_scale=512 \
---qnetwork_fc_scale=512 \
---qnetwork_channel_scale=64 \
---actor_channel_scale=64 \
+--learning_starts=100_000 \
+--prelearning_sample=scales \
+--policy_frequency=1 \
+--batch_size=32 \
+--max_episode_steps=200 \
+--actor_type=impala \
+--critic_type=impala \
+--actor_fc_scale=256 \
+--qnetwork_fc_scale=256 \
+--qnetwork_channel_scale=16 \
+--actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
 --critic_learning_rate=3e-4 \
-
+&
 
 #Optionally, you can include cleanup commands here (e.g., after the job finishes)
 #For example:
