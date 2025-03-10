@@ -9,7 +9,6 @@
 #SBATCH --time=96:00:00                # Maximum runtime (D-HH:MM:SS)
 
 
-# 1: Baseline
 cd visuomotor-deep-optics/
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
@@ -53,8 +52,6 @@ poetry run python ./optomech/ddpg_lstm.py \
 --critic_learning_rate=3e-4 \
 &
 
-
-# 2: Later Start
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
@@ -97,9 +94,6 @@ poetry run python ./optomech/ddpg_lstm.py \
 --critic_learning_rate=3e-4 \
 &
 
-
-
-# 3: Smaller model.
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
@@ -142,8 +136,6 @@ poetry run python ./optomech/ddpg_lstm.py \
 --critic_learning_rate=3e-4 \
 &
 
-
-# 4: Bigger model.
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
@@ -186,10 +178,6 @@ poetry run python ./optomech/ddpg_lstm.py \
 --critic_learning_rate=3e-4 \
 &
 
-
-
-
-# 4: Bigger model.
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
@@ -232,9 +220,6 @@ poetry run python ./optomech/ddpg_lstm.py \
 --critic_learning_rate=3e-4 \
 &
 
-
-
-# Slower decay.
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
@@ -277,8 +262,6 @@ poetry run python ./optomech/ddpg_lstm.py \
 --critic_learning_rate=3e-4 \
 &
 
-
-# Faster training
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
@@ -321,7 +304,6 @@ poetry run python ./optomech/ddpg_lstm.py \
 --critic_learning_rate=3e-4 \
 &
 
-# Reduced policy frequency
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
@@ -361,8 +343,7 @@ poetry run python ./optomech/ddpg_lstm.py \
 --qnetwork_channel_scale=16 \
 --actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
---critic_learning_rate=3e-4 \ 
+--critic_learning_rate=3e-4 \
 &
-
 
 wait
