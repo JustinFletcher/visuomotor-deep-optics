@@ -321,8 +321,6 @@ poetry run python ./optomech/ddpg_lstm.py \
 --critic_learning_rate=3e-4 \
 &
 
-
-
 # Reduced policy frequency
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
@@ -346,9 +344,9 @@ poetry run python ./optomech/ddpg_lstm.py \
 --num_envs=1 \
 --tau=0.0001 \
 --exploration_noise=1.0 \
---decay_rate=0.00000001 \
+--decay_rate=0.0001 \
 --reward_function=negastrehl \
---action_scale=0.0001 \
+--action_scale=0.000000001 \
 --reward_scale=10.0 \
 --buffer_size=1_000_000 \
 --learning_starts=100_000 \
@@ -363,8 +361,8 @@ poetry run python ./optomech/ddpg_lstm.py \
 --qnetwork_channel_scale=16 \
 --actor_channel_scale=16 \
 --actor_learning_rate=1e-4 \
---critic_learning_rate=3e-4 \
+--critic_learning_rate=3e-4 \ 
+&
 
-#Optionally, you can include cleanup commands here (e.g., after the job finishes)
-#For example:
-#rm some_temp_file.txt
+
+wait
