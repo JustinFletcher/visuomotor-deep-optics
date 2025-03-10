@@ -96,6 +96,8 @@ class Args:
     """Decay rate for noise decay"""
     action_scale: float = 1.0
     """The scale of the actors actions"""
+    reward_scale: float = 1.0
+    """The scale of the reward"""
 
     save_model: bool = False
     """whether to save model into the `runs/{run_name}` folder"""
@@ -2240,6 +2242,7 @@ if __name__ == "__main__":
         # prior_rewards = rewards.copy()
         prior_rewards = rewards
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+        rewards = args.reward_scale * rewards
 
         writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
         writer.add_scalar("online/action_std", actions.std().item(), global_step)
