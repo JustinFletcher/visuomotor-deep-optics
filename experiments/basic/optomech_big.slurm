@@ -9,14 +9,14 @@
 #SBATCH --time=96:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
-    "--seed=88887 --gpu_list=0 --action_scale=1e-1  --exp_name="optomech-action-scale-1e-1""
-    "--seed=88887 --gpu_list=1 --action_scale=1e-2  --exp_name="optomech-action-scale-1e-2""
-    "--seed=88887 --gpu_list=2 --action_scale=1e-3  --exp_name="optomech-action-scale-1e-3""
-    "--seed=88887 --gpu_list=3 --action_scale=1e-4  --exp_name="optomech-action-scale-1e-4""
-    "--seed=88887 --gpu_list=4 --action_scale=1e-5  --exp_name="optomech-action-scale-1e-5""
-    "--seed=88887 --gpu_list=5 --action_scale=1e-6  --exp_name="optomech-action-scale-1e-6""
-    "--seed=88887 --gpu_list=6 --action_scale=1e-7  --exp_name="optomech-action-scale-1e-7""
-    "--seed=88887 --gpu_list=7 --action_scale=1e-8  --exp_name="optomech-action-scale-1e-8""
+    "--seed=88887 --gpu_list=0 --action_scale=1e-1  --exp_name="optomech-1000-action-scale-1e-1""
+    "--seed=88887 --gpu_list=1 --action_scale=1e-2  --exp_name="optomech-1000-action-scale-1e-2""
+    "--seed=88887 --gpu_list=2 --action_scale=1e-3  --exp_name="optomech-1000-action-scale-1e-3""
+    "--seed=88887 --gpu_list=3 --action_scale=1e-4  --exp_name="optomech-1000-action-scale-1e-4""
+    "--seed=88887 --gpu_list=4 --action_scale=1e-5  --exp_name="optomech-1000-action-scale-1e-5""
+    "--seed=88887 --gpu_list=5 --action_scale=1e-6  --exp_name="optomech-1000-action-scale-1e-6""
+    "--seed=88887 --gpu_list=6 --action_scale=1e-7  --exp_name="optomech-1000-action-scale-1e-7""
+    "--seed=88887 --gpu_list=7 --action_scale=1e-8  --exp_name="optomech-1000-action-scale-1e-8""
 
 )
 
@@ -50,8 +50,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --learning_starts=100_000 \
         --prelearning_sample=scales \
         --policy_frequency=1 \
-        --batch_size=32 \
-        --max_episode_steps=200 \
+        --batch_size=512 \
+        --max_episode_steps=1000 \
         --actor_type=impala \
         --critic_type=impala \
         --actor_fc_scale=256 \
