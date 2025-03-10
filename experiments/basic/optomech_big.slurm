@@ -6,18 +6,11 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=96:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=7-96:00:00                # Maximum runtime (D-HH:MM:SS)
 
-#Load necessary modules (if needed)
-#module load module_name
-
-#Your job commands go here
-#For example:
-#python my_script.py
-
-cd ./visuomoto_deep_optics/
 
 # 1: Baseline
+cd visuomotor-deep-optics/
 poetry run python ./optomech/ddpg_lstm.py \
 --env-id optomech-v1 \
 --seed=88887 \
