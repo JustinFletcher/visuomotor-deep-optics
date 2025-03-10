@@ -107,13 +107,6 @@ def make_env(env_id, flags):
 
         return thunk
 
-# Register our custom optomech environment.
-gym.envs.registration.register(
-    id='optomech-v1',
-    entry_point='optomech.optomech:OptomechEnv',
-    max_episode_steps=4,
-    # reward_threshold=flags.reward_threshold,
-)
 
 
 # TRY NOT TO MODIFY: seeding
@@ -168,6 +161,21 @@ def rollout_optomech_policy(model_path=None,
         else:
             eval_save_path = "./tmp"
 
+    # Register our custom optomech environment.
+    gym.envs.registration.register(
+        id='optomech-v1',
+        entry_point='optomech.optomech:OptomechEnv',
+        max_episode_steps=args.max_episode_steps,
+        # reward_threshold=flags.reward_threshold,
+    )
+
+    gym.envs.registration.register(
+        id='VisualPendulum-v1',
+        entry_point='visual_pendulum:VisualPendulumEnv',
+        max_episode_steps=args.max_episode_steps,
+    )
+
+
     # Check if MPS is available
     if torch.cuda.is_available():
         print("Running with CUDA")
@@ -212,6 +220,11 @@ def rollout_optomech_policy(model_path=None,
     env_uuid_attrs = envs.get_attr("uuid")
     env_uuids = [str(env_uuid_attr) for env_uuid_attr in env_uuid_attrs]
     episode_data = list()
+    
+
+    prior_actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
+    _, rewards, _, _, _ = envs.step(prior_actions)
+    prior_rewards = rewards
 
     # Evaluate the policy for the specified number of episodes.
     while len(episodic_returns) < rollout_episodes:
@@ -243,13 +256,19 @@ def rollout_optomech_policy(model_path=None,
             # Get the actions from the actor model, adding noise if requested.
             with torch.no_grad():
 
-                image = torch.Tensor(obs['image']).to(device)
-                # print("rollout image shape")
-                # print(image.shape)
-                prior_action = torch.Tensor(obs['prior_action']).to(device)
+                # image = torch.Tensor(obs['image']).to(device)
+                # # print("rollout image shape")
+                # # print(image.shape)
+                # prior_action = torch.Tensor(obs['prior_action']).to(device)
                 # print("rollout prior action shape")
                 # print(prior_action.shape)
-                actions = actor(image, prior_action)
+                if args.actor_type == "impala":
+            
+                    actions = actor(torch.Tensor(obs).to(device),
+                                    torch.Tensor(prior_actions).to(device),
+                                    torch.Tensor(prior_rewards).unsqueeze(0).to(device))
+                else:
+                    actions = actor(torch.Tensor(obs).to(device))
                 actions += torch.normal(0,
                                         actor.action_scale * exploration_noise)
                 actions = actions.cpu().numpy().clip(
@@ -286,6 +305,8 @@ def rollout_optomech_policy(model_path=None,
 
         # Step the environment forward.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+        prior_actions = actions
+        prior_rewards = rewards
 
         # If saving dataset, add the actions and rewards to the dataset file.
         if dataset:
@@ -332,8 +353,8 @@ def rollout_optomech_policy(model_path=None,
         # Record the episodic returns.
     
 
-        # if "final_info" in infos:
-        if infos:
+        if "final_info" in infos:
+            # if infos:
             # print(infos)
 
             for info in infos["final_info"]:

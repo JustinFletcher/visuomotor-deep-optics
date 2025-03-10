@@ -1578,7 +1578,10 @@ class ImpalaActor(nn.Module):
 
 
         # new_hidden is a tuple (h, c) after processing x
-        detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
+        if self.bptt:
+            detached_hidden = new_hidden[0], new_hidden[1]
+        else:
+            detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
         self.hidden = detached_hidden
 
         # Apply action prediciton head and activation function
@@ -1710,10 +1713,12 @@ class ImpalaCritic(nn.Module):
         x_o = self.visual_encoder(o)
         x = self.mlp(x_o)
 
-        # TODO: add a_prior, r_prior here
         x, new_hidden = self.lstm(torch.cat([x, a, a_prior, r_prior], 1), self.hidden)
         # new_hidden is a tuple (h, c) after processing x
-        detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
+        if self.bptt:
+            detached_hidden = new_hidden[0], new_hidden[1]
+        else:
+            detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
         self.hidden = detached_hidden
 
         # Apply action prediciton head and activation function
@@ -2201,7 +2206,6 @@ if __name__ == "__main__":
 
                         obs = np.array((obs / 255.0).astype(np.float32))
                     
-
                     actions = actor(torch.tensor(obs).to(device),
                                     torch.tensor(prior_actions).to(device), 
                                     torch.tensor(prior_rewards).unsqueeze(0).to(torch.float32).to(device))
@@ -2435,12 +2439,14 @@ if __name__ == "__main__":
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device)
                     )
-                    next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
+                    # next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
                 
                 else:
+
                     next_state_actions_batch = target_actor(next_observations_batch)
                     qf1_next_target_batch = qf1_target(next_observations_batch, next_state_actions_batch)
-                    next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
+                
+                next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
 
 
 
@@ -2459,11 +2465,14 @@ if __name__ == "__main__":
 
             qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
 
-
+            clip_gradients = True
+            max_grad_norm = 1.0
             # optimize the model
             q_optimizer.zero_grad()
             qf1_loss.backward(retain_graph=bptt)
             # qf1_loss.backward(retain_graph=True)
+            if clip_gradients:
+                torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=max_grad_norm)
             q_optimizer.step()
 
             if global_step % args.policy_frequency == 0:
@@ -2492,6 +2501,8 @@ if __name__ == "__main__":
                 actor_optimizer.zero_grad()
                 actor_loss.backward(retain_graph=bptt)
                 # actor_loss.backward(retain_graph=True)
+                if clip_gradients:
+                    torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=max_grad_norm)
                 actor_optimizer.step()
 
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
