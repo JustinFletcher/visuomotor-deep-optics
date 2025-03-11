@@ -2509,7 +2509,9 @@ if __name__ == "__main__":
                         ),
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device)
-                    ).mean() + args.l2_reg * torch.linalg.vector_norm(actor(observations_batch.to(device)), 2)
+                    ).mean() + args.l2_reg * torch.linalg.vector_norm(actor(observations_batch.to(device),
+                            prior_actions_batch.to(device),
+                            prior_rewards_batch.to(device)), 2)
                 
                 else:
                     actor_loss = -qf1(
