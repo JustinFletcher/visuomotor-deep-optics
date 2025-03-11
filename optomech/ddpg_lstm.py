@@ -2491,7 +2491,7 @@ if __name__ == "__main__":
             qf1_loss.backward(retain_graph=bptt)
             # qf1_loss.backward(retain_graph=True)
             if clip_gradients:
-                torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=args.max_grad_norm)
             q_optimizer.step()
 
             if global_step % args.policy_frequency == 0:
@@ -2521,7 +2521,7 @@ if __name__ == "__main__":
                 actor_loss.backward(retain_graph=bptt)
                 # actor_loss.backward(retain_graph=True)
                 if clip_gradients:
-                    torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.max_grad_norm)
                 actor_optimizer.step()
 
                 if iteration % 10 == 0:
