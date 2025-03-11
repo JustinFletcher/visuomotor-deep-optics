@@ -98,6 +98,12 @@ class Args:
     """The scale of the actors actions"""
     reward_scale: float = 1.0
     """The scale of the reward"""
+    l2_reg: float = 0.0
+    """The scale of the L2 regularization"""
+    l1_reg: float = 0.0
+    """The scale of the L1 regularization"""
+    max_grad_norm: float = 1.0
+    """The maximum gradient norm"""
 
     save_model: bool = False
     """whether to save model into the `runs/{run_name}` folder"""
@@ -2244,11 +2250,12 @@ if __name__ == "__main__":
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
         rewards = args.reward_scale * rewards
 
-        writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
-        writer.add_scalar("online/action_std", actions.std().item(), global_step)
-        # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
-        writer.add_scalar("online/reward_mean/", np.mean(rewards), global_step)
-        writer.add_scalar("online/reward_std/", np.std(rewards), global_step)
+        if iteration % 10 == 0:
+            writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
+            writer.add_scalar("online/action_std", actions.std().item(), global_step)
+            # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
+            writer.add_scalar("online/reward_mean/", np.mean(rewards), global_step)
+            writer.add_scalar("online/reward_std/", np.std(rewards), global_step)
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
@@ -2455,16 +2462,13 @@ if __name__ == "__main__":
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device)
                     )
-                    # next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
-                
+
                 else:
 
                     next_state_actions_batch = target_actor(next_observations_batch)
                     qf1_next_target_batch = qf1_target(next_observations_batch, next_state_actions_batch)
                 
                 next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
-
-
 
             if prior_state_models:
                 qf1_a_values_batch = qf1(
@@ -2482,7 +2486,6 @@ if __name__ == "__main__":
             qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
 
             clip_gradients = True
-            max_grad_norm = 1.0
             # optimize the model
             q_optimizer.zero_grad()
             qf1_loss.backward(retain_graph=bptt)
@@ -2493,8 +2496,8 @@ if __name__ == "__main__":
 
             if global_step % args.policy_frequency == 0:
 
-                l1_reg = 0.00000
-                # l1_reg = 0.001
+                # l1_reg = 0.00000
+                # l1_reg = 0.00000
 
                 if prior_state_models:
                     actor_loss = -qf1(
@@ -2506,13 +2509,13 @@ if __name__ == "__main__":
                         ),
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device)
-                    ).mean()
+                    ).mean() + args.l2_reg * torch.linalg.vector_norm(actor(observations_batch.to(device)), 2)
                 
                 else:
                     actor_loss = -qf1(
                         observations_batch.to(device),
                         actor(observations_batch.to(device))
-                    ).mean() + l1_reg * torch.linalg.vector_norm(actor(observations_batch.to(device)), 1)
+                    ).mean() + args.l2_reg * torch.linalg.vector_norm(actor(observations_batch.to(device)), 2)
 
                 actor_optimizer.zero_grad()
                 actor_loss.backward(retain_graph=bptt)
@@ -2521,7 +2524,8 @@ if __name__ == "__main__":
                     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=max_grad_norm)
                 actor_optimizer.step()
 
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
+                if iteration % 10 == 0:
+                    writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 # update the target network
                 for param, target_param in zip(actor.parameters(), target_actor.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
@@ -2531,7 +2535,7 @@ if __name__ == "__main__":
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
 
-            if iteration % 1 == 0:
+            if iteration % 10 == 0:
                 writer.add_scalar("losses/qf1_values", qf1_a_values_batch.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 for i, action in enumerate(actions):
