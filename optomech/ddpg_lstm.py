@@ -65,6 +65,8 @@ class Args:
     """Whether to use a SubprocVectorEnv"""
     model_save_interval: int = 100
     """The interval between saving model weights"""
+    writer_interval: int = 1000
+    """The interval between recording to tensorboard"""
 
     # Algorithm specific arguments
     env_id: str = "Hopper-v4"
@@ -2250,7 +2252,7 @@ if __name__ == "__main__":
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
         rewards = args.reward_scale * rewards
 
-        if iteration % 10 == 0:
+        if iteration % args.writer_interval == 0:
             writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
             writer.add_scalar("online/action_std", actions.std().item(), global_step)
             # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
@@ -2526,7 +2528,7 @@ if __name__ == "__main__":
                     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.max_grad_norm)
                 actor_optimizer.step()
 
-                if iteration % 10 == 0:
+                if iteration % args.writer_interval == 0:
                     writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 # update the target network
                 for param, target_param in zip(actor.parameters(), target_actor.parameters()):
@@ -2537,7 +2539,7 @@ if __name__ == "__main__":
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
 
-            if iteration % 10 == 0:
+            if iteration % args.writer_interval == 0:
                 writer.add_scalar("losses/qf1_values", qf1_a_values_batch.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 for i, action in enumerate(actions):
@@ -2550,10 +2552,11 @@ if __name__ == "__main__":
 
 
 
-        print("Step time:", (time.time() - step_time) / args.num_envs)
-        writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-        writer.add_scalar("charts/step_SPS", (args.num_envs / (time.time() - step_time)), global_step)
+        if iteration % args.writer_interval == 0:
+            print("Step time:", (time.time() - step_time) / args.num_envs)
+            writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
+            writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+            writer.add_scalar("charts/step_SPS", (args.num_envs / (time.time() - step_time)), global_step)
 
         global_step += args.num_envs
 
