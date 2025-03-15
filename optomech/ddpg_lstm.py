@@ -5,6 +5,7 @@ import json
 import random
 import time
 import pickle
+import shutil
 from dataclasses import dataclass
 
 import math
@@ -2107,6 +2108,9 @@ if __name__ == "__main__":
     episode_done = list()
 
     global_step = 0
+    best_train_episode_return = -np.inf
+    train_episodic_return_list = list()
+    best_eval_episode_return = -np.inf
     ini_hidden_in = None
     ini_hidden_out = None
 
@@ -2121,6 +2125,69 @@ if __name__ == "__main__":
 
      
         if args.save_model:
+
+            # Check that we've complete at least one post-learning episode.
+            if global_step > (args.learning_starts + args.max_episode_steps):
+
+                # If mean reward of recent episodes improved, save the model.
+                if np.mean(train_episodic_return_list) > best_train_episode_return:
+
+                    # Update the best mean reward and save the model.
+                    best_train_episode_return = np.mean(train_episodic_return_list)
+
+                    # First, delete the prior best model if it exists...
+                    best_models_save_path = f"./runs/{run_name}/best_models"
+                    model_path = f"{best_models_save_path}/best_train_policy.pt"
+                    if os.path.exists(model_path):
+                        os.remove(model_path)
+
+
+                    # ...then save the best train model.
+                    scripted_actor = torch.jit.script(actor)
+                    # Check if the directory exists, if not, create it.
+                    Path(best_models_save_path).mkdir(parents=True, exist_ok=True)
+                    scripted_actor.save(model_path)
+                    print(f"Torchscript model saved to {model_path}.")
+
+                    # Now, load the model you just saved to roll it out, ...
+                    model = torch.load(model_path, weights_only=False)
+                    model.eval()
+                    from rollout import rollout_optomech_policy
+
+                    # ...delete any prior rollouts...
+                    rollouts_path = f"{best_models_save_path}/rollouts"
+                    if os.path.exists(rollouts_path):
+                        shutil.rmtree(rollouts_path)
+
+                    # ...and create a new directory for the rollouts...
+                    Path(rollouts_path).mkdir(parents=True, exist_ok=True)
+
+                    # ...then roll out the model, accumulating returns.
+                    num_rollout_episodes = 10
+                    episodic_returns_list = list()
+                    for i in range(num_rollout_episodes):
+                        print(f"Rollout episode: {i}")
+                        seed = np.random.randint(0, 999999)
+                        eval_save_path = f"{rollouts_path}/"
+                        env_kwargs = {"write_env_state_info": True,
+                                      "record_env_state_info": True,
+                                      "seed": seed}
+                        
+                        episodic_returns = rollout_optomech_policy(
+                            model_path,
+                            env_vars_path=args_store_path,
+                            rollout_episodes=1,
+                            exploration_noise=0.0,
+                            eval_save_path=eval_save_path,
+                            env_kwargs=env_kwargs,
+                        )
+
+                        episodic_returns_list.append(episodic_returns)
+                    mean_eval_episode_return = np.mean(episodic_returns_list)
+                    print(f"Mean eval episodic return: {mean_eval_episode_return}")
+
+                    writer.add_scalar("eval/best_policy_mean_returns", mean_eval_episode_return, iteration)
+
 
             if iteration % args.model_save_interval == 0:
 
@@ -2162,14 +2229,19 @@ if __name__ == "__main__":
                     model_path,
                     env_vars_path=args_store_path,
                     rollout_episodes=1,
-                    exploration_noise=args.exploration_noise,
+                    exploration_noise=0.0,
                     eval_save_path=eval_save_path,
                 )
+
+                # if episodic_returns > best_eval_episode_return:
+                #     best_eval_episode_return = episodic_returns
+                #     print(f"New best eval episodic return: {best_eval_episode_return}")
 
                 # for idx, episodic_return in enumerate(episodic_returns):
                     # print(f"Episodic return: {episodic_return}")
 
                 writer.add_scalar("eval/episodic_return", np.mean(episodic_returns), iteration)
+                
                 print("Model evaluated.")
                 
                 # if args.upload_model:
@@ -2318,6 +2390,13 @@ if __name__ == "__main__":
                 writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                 print("Episode %d has ended with %d steps." % (global_step, info["episode"]["l"]))
                 print("Episode %d has ended with %d reward." % (global_step, info["episode"]["r"]))
+
+                # Add this episodes return to the list...
+                train_episodic_return_list.append(info["episode"]["r"])
+
+                # ...and if the list is now too long, pop the first element.
+                if len(train_episodic_return_list) > 100:
+                    train_episodic_return_list.pop(0)
 
                 if bptt:
 
