@@ -9,14 +9,14 @@
 #SBATCH --time=96:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
-    "--seed=88887 --gpu_list=0 --exp_name="optomech-88887""
-    "--seed=88888 --gpu_list=1 --exp_name="optomech-88888""
-    "--seed=88889 --gpu_list=2 --exp_name="optomech-88889""
-    "--seed=88890 --gpu_list=3 --exp_name="optomech-88890""
-    "--seed=88891 --gpu_list=4 --exp_name="optomech-88891""
-    "--seed=88892 --gpu_list=5 --exp_name="optomech-88892""
-    "--seed=88893 --gpu_list=6 --exp_name="optomech-88893""
-    "--seed=88894 --gpu_list=7 --exp_name="optomech-88894""
+    "--seed=88887 --gpu_list=0 --max_grad_norm=0.01 --exp_name="optomech-ctrl""
+    "--seed=88887 --gpu_list=1 --max_grad_norm=0.001 --exp_name="optomech-smaller""
+    "--seed=88888 --gpu_list=2 --max_grad_norm=0.01 --exp_name="optomech-ctrl""
+    "--seed=88888 --gpu_list=3 --max_grad_norm=0.001 --exp_name="optomech-smaller""
+    "--seed=88889 --gpu_list=4 --max_grad_norm=0.01 --exp_name="optomech-ctrl""
+    "--seed=88889 --gpu_list=5 --max_grad_norm=0.001 --exp_name="optomech-smaller""
+    "--seed=88886 --gpu_list=6 --max_grad_norm=0.01 --exp_name="optomech-ctrl""
+    "--seed=88886 --gpu_list=7 --max_grad_norm=0.001 --exp_name="optomech-smaller""
 
 )
 
