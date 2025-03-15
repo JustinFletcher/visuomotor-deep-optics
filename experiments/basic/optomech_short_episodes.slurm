@@ -45,7 +45,6 @@ for VARIANT in "${VARIANTS[@]}"; do
         --exploration_noise=1.0 \
         --decay_rate=0.0001 \
         --l2_reg=0.0 \
-        --max_grad_norm=0.01 \
         --reward_function=negastrehl \
         --reward_scale=10.0 \
         --buffer_size=1_000_000 \
