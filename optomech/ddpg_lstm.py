@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 88
+    seed: int = np.random.randint(0, 10000)
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
@@ -2281,7 +2281,7 @@ if __name__ == "__main__":
             
             else:
                 
-                actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
+                actions = np.array([(actor.action_scale.cpu() * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
 
         else:
             with torch.no_grad():
