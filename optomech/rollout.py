@@ -147,7 +147,6 @@ def rollout_optomech_policy(model_path=None,
         # Make only the non-default kwargs overwrite args loaded from disk.
         if env_kwargs:
 
-
             for key, value in env_kwargs.items():
 
 
@@ -180,9 +179,9 @@ def rollout_optomech_policy(model_path=None,
     if torch.cuda.is_available():
         print("Running with CUDA")
         device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        print("Running with MSP")
-        device = torch.device("mps")
+    # elif torch.backends.mps.is_available():
+    #     print("Running with MSP")
+    #     device = torch.device("mps")
     else:
         print("Running with CPU")
         device = torch.device("cpu")
@@ -418,7 +417,7 @@ class Args:
     
     # TODO: Replace with an import and manually set each to None.
     # Environment arguments.
-    seed: int = -- 88
+    seed: int = 88
     """the name of this experiment"""
     report_time: bool = False
     """Whether to report time statistics."""
@@ -482,9 +481,9 @@ class Args:
     """Toggle to enable agent control of tensioners."""
     command_secondaries: bool = None
     """Toggle to enable agent control of tensioners."""
-    command_tip_tilt: bool = False
+    command_tip_tilt: bool = None
     """Toggle to enable agent control of tip/tilt for large mirrors."""
-    incremental_control: bool = False
+    incremental_control: bool = None
     """Toggle to enable incremental control."""
     command_dm: bool = None
     """ The type of observation to model 'image_only' or 'image_action'."""
