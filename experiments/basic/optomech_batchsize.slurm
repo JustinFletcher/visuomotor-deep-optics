@@ -1,7 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=optomech           # Job name
-#SBATCH --output=output.txt           # Standard output file
-#SBATCH --error=error.txt             # Standard error file
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --account=MHPCC96650DAS       # 
