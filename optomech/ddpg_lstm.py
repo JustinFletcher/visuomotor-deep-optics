@@ -2169,9 +2169,10 @@ if __name__ == "__main__":
                         print(f"Rollout episode: {i}")
                         seed = np.random.randint(0, 999999)
                         eval_save_path = f"{rollouts_path}/"
-                        env_kwargs = {"write_env_state_info": True,
-                                      "record_env_state_info": True,
-                                      "seed": seed}
+                        # env_kwargs = {"write_env_state_info": True,
+                        #               "record_env_state_info": True,
+                        #               "seed": seed}
+                        env_kwargs = {"seed": seed}
                         
                         episodic_returns = rollout_optomech_policy(
                             model_path,
