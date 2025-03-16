@@ -53,7 +53,6 @@ for VARIANT in "${VARIANTS[@]}"; do
         --buffer_size=1_000_000 \
         --learning_starts=100_000 \
         --prelearning_sample=scales \
-        --batch_size=32 \
         --max_episode_steps=200 \
         --actor_type=impala \
         --critic_type=impala \
