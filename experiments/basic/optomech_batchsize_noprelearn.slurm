@@ -8,14 +8,14 @@
 
 VARIANTS=(
 
-    "--seed=123456 --gpu_list=0 --batch_size=64  --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=1e-3 --exp_name="optomech-batch64-clr1e-3""
-    "--seed=123456 --gpu_list=1 --batch_size=128 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=1e-3 --exp_name="optomech-batch128-clr1e-3""
-    "--seed=123456 --gpu_list=2 --batch_size=256 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=1e-3 --exp_name="optomech-batch256-clr1e-3""
-    "--seed=123456 --gpu_list=3 --batch_size=512 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=1e-3 --exp_name="optomech-batch512-clr1e-3""
-    "--seed=123456 --gpu_list=4 --batch_size=64  --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=3e-3 --exp_name="optomech-batch64-clr3e-3""
-    "--seed=123456 --gpu_list=5 --batch_size=128 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=3e-3 --exp_name="optomech-batch128-clr3e-3""
-    "--seed=123456 --gpu_list=6 --batch_size=256 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=3e-3 --exp_name="optomech-batch256-clr3e-3""
-    "--seed=123456 --gpu_list=7 --batch_size=512 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=3e-3 --exp_name="optomech-batch512-clr3e-3""
+    "--seed=123456 --gpu_list=0 --batch_size=64  --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=1e-3 --exp_name="optomech-nopre-batch64-clr1e-3""
+    "--seed=123456 --gpu_list=1 --batch_size=128 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=1e-3 --exp_name="optomech-nopre-batch128-clr1e-3""
+    "--seed=123456 --gpu_list=2 --batch_size=256 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=1e-3 --exp_name="optomech-nopre-batch256-clr1e-3""
+    "--seed=123456 --gpu_list=3 --batch_size=512 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=1e-3 --exp_name="optomech-nopre-batch512-clr1e-3""
+    "--seed=123456 --gpu_list=4 --batch_size=64  --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=3e-3 --exp_name="optomech-nopre-batch64-clr3e-3""
+    "--seed=123456 --gpu_list=5 --batch_size=128 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=3e-3 --exp_name="optomech-nopre-batch128-clr3e-3""
+    "--seed=123456 --gpu_list=6 --batch_size=256 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=3e-3 --exp_name="optomech-nopre-batch256-clr3e-3""
+    "--seed=123456 --gpu_list=7 --batch_size=512 --policy_frequency=4 --actor_learning_rate=1e-3 --critic_learning_rate=3e-3 --exp_name="optomech-nopre-batch512-clr3e-3""
 
 
 )
