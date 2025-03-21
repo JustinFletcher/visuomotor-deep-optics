@@ -12,10 +12,10 @@ VARIANTS=(
     "--seed=222222 --actor_fc_scale=256 --qnetwork_fc_scale=256 --gpu_list=1 --exp_name="optomech-multi-256""
     "--seed=333333 --actor_fc_scale=256 --qnetwork_fc_scale=256 --gpu_list=2 --exp_name="optomech-multi-256""
     "--seed=444444 --actor_fc_scale=256 --qnetwork_fc_scale=256 --gpu_list=3 --exp_name="optomech-multi-256""
-    "--seed=111111 --actor_fc_scale==1024 --qnetwork_fc_scale=1024 --gpu_list=1 --exp_name="optomech-multi-1024""
-    "--seed=222222 --actor_fc_scale==1024 --qnetwork_fc_scale=1024 --gpu_list=2 --exp_name="optomech-multi-1024""
-    "--seed=333333 --actor_fc_scale==1024 --qnetwork_fc_scale=1024 --gpu_list=3 --exp_name="optomech-multi-1024""
-    "--seed=444444 --actor_fc_scale==1024 --qnetwork_fc_scale=1024 --gpu_list=4 --exp_name="optomech-multi-1024""
+    "--seed=111111 --actor_fc_scale=1024 --qnetwork_fc_scale=1024 --gpu_list=1 --exp_name="optomech-multi-1024""
+    "--seed=222222 --actor_fc_scale=1024 --qnetwork_fc_scale=1024 --gpu_list=2 --exp_name="optomech-multi-1024""
+    "--seed=333333 --actor_fc_scale=1024 --qnetwork_fc_scale=1024 --gpu_list=3 --exp_name="optomech-multi-1024""
+    "--seed=444444 --actor_fc_scale=1024 --qnetwork_fc_scale=1024 --gpu_list=4 --exp_name="optomech-multi-1024""
 
 )
 
