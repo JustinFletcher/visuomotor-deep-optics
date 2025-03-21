@@ -42,9 +42,9 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_envs=1 \
         --batch_size=32 \
         --tau=0.0001 \
-        --exploration_noise=0.5 \
+        --exploration_noise=0.01 \
         --policy_frequency=2 \
-        --decay_rate=0.00001 \
+        --decay_rate=0.995 \
         --l2_reg=0.0 \
         --reward_function=negastrehl \
         --reward_scale=10.0 \

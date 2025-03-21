@@ -1960,7 +1960,45 @@ def make_env(env_id, idx, capture_video, run_name, flags):
             return env
 
         return thunk
+    
+class OUNoiseTorch:
+    def __init__(self, 
+                 action_dim, 
+                 mu=0.0, 
+                 theta=0.15, 
+                 sigma_initial=0.2, 
+                 min_sigma=0.05, 
+                 decay_rate=0.995,
+                 auto_decay=True,
+                 device='cpu'):
+        self.mu = mu
+        self.theta = theta
+        self.sigma_initial = sigma_initial
+        self.sigma = sigma_initial
+        self.min_sigma = min_sigma
+        self.decay_rate = decay_rate
+        self.auto_decay = auto_decay
+        self.device = device
+        self.action_dim = action_dim
+        self.mu_tensor = torch.full((action_dim,), mu, dtype=torch.float32, device=device)
+        self.state = self.mu_tensor.clone()
 
+    def reset(self):
+        """Reset the internal state to mean `mu`."""
+        self.state = self.mu_tensor.clone()
+
+    def sample(self):
+        """Generate a noise sample and decay sigma if auto_decay is enabled."""
+        noise = self.theta * (self.mu_tensor - self.state) + \
+                self.sigma * torch.randn(self.action_dim, device=self.device)
+        self.state += noise
+        if self.auto_decay:
+            self.decay()
+        return self.state
+
+    def decay(self):
+        """Apply exponential decay to sigma."""
+        self.sigma = max(self.min_sigma, self.sigma * self.decay_rate)
 
 if __name__ == "__main__":
 
@@ -2226,6 +2264,16 @@ if __name__ == "__main__":
 
     actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
 
+    noise_generator = OUNoiseTorch(
+                 action_dim=envs.single_action_space.shape[0], 
+                 mu=0.0, 
+                 theta=args.exploration_noise * 0.15, 
+                 sigma_initial=args.exploration_noise, 
+                 min_sigma=args.exploration_noise * 0.01, 
+                 decay_rate=args.decay_rate,
+                 auto_decay=True,
+                 device='cpu')
+
     print(actions)
     _, rewards, _, _, _ = envs.step(actions)
 
@@ -2379,12 +2427,12 @@ if __name__ == "__main__":
                 # if global_step % args.max_episode_steps == 0:
                     print("Resetting scales.")
 
-                    scales = [0.0001, 0.001, 0.01, 0.1, 1.0]
+                    scales = [0.000001, 0.00001,0.0001, 0.001, 0.01, 0.1, 1.0]
                     action_scale = np.random.choice(scales)
 
                 # actions = np.array([(sample_normal_action(envs.single_action_space, std_dev=action_std)) for _ in range(envs.num_envs)])
             
-                actions = np.array([(action_scale * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
+                actions = np.array([(actor.action_scale.cpu() * action_scale * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
                 
             elif args.prelearning_sample == "normal":
                 
@@ -2399,9 +2447,23 @@ if __name__ == "__main__":
 
                 decay_noise = True
                 if decay_noise:
-                    decay = (1.0 / (1.0 + (args.decay_rate * (global_step - args.learning_starts))))
+                    
+                    # decay = (1.0 / (1.0 + (args.decay_rate * (global_step - args.learning_starts))))
+                    # noise = torch.normal(
+                    #     torch.zeros(envs.single_action_space.shape),
+                    #     actor.action_scale.cpu() * args.exploration_noise * decay,
+                    #     ).to(device)
+                    
+                    noise = noise_generator.sample().to(device)
+                    
+                    
+                    
                 else:
                     decay = 1.0
+                    noise = torch.normal(
+                        torch.zeros(envs.single_action_space.shape),
+                        actor.action_scale.cpu() * args.exploration_noise * decay,
+                        ).to(device)
 
                 if args.actor_type == "impala":
 
@@ -2411,19 +2473,17 @@ if __name__ == "__main__":
                     if torch.tensor(obs).dtype != torch.float32:
 
                         obs = np.array((obs / 255.0).astype(np.float32))
-                    
+
                     actions = actor(torch.tensor(obs).to(device),
                                     torch.tensor(prior_actions).to(device), 
                                     torch.tensor(prior_rewards).unsqueeze(0).to(torch.float32).to(device))
                 else:
                     actions = actor(torch.Tensor(obs).to(device))
 
-                noise = torch.normal(
-                    torch.zeros(envs.single_action_space.shape),
-                    actor.action_scale.cpu() * args.exploration_noise * decay,
-                    ).to(device)
                 actions += noise
-                actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
+                actions = actions.cpu().numpy().clip(
+                    actor.action_scale.cpu().numpy() * envs.single_action_space.low,
+                    actor.action_scale.cpu().numpy() * envs.single_action_space.high)
 
         if ini_hidden_in is None:
             ini_hidden_in = actor.hidden
@@ -2450,6 +2510,7 @@ if __name__ == "__main__":
             writer.add_scalar("online/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
             writer.add_scalar("online/first_step_reward/", np.mean(first_step_reward), global_step)
             writer.add_scalar("online/reward_std/", np.std(rewards), global_step)
+            writer.add_scalar("online/noise_l2/", torch.norm(noise, p=2), global_step)
             for i, action in enumerate(actions):
                 for j, action_element in enumerate(action):
                     action_label = f"online/action_{i}_{j}"
@@ -2559,7 +2620,7 @@ if __name__ == "__main__":
                     episode_next_state = list()
                     episode_done = list()
 
-
+                noise_generator.reset()
                 if actor.use_lstm:
                     print("Resetting Actor Hidden State")
                     actor.reset_hidden()
@@ -2717,7 +2778,6 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/qf1_values", qf1_a_values_batch.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
 
-                writer.add_scalar("decay/", decay, global_step)
 
                 
 
