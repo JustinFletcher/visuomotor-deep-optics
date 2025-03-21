@@ -3,7 +3,7 @@
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --account=MHPCC96650DAS       # 
-#SBATCH --gres=gpu:A100-SXM4:8
+#SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=48:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
@@ -12,11 +12,10 @@ VARIANTS=(
     "--seed=222222 --actor_fc_scale=256 --qnetwork_fc_scale=256 --gpu_list=1 --exp_name="optomech-std-256""
     "--seed=333333 --actor_fc_scale=256 --qnetwork_fc_scale=256 --gpu_list=2 --exp_name="optomech-std-256""
     "--seed=444444 --actor_fc_scale=256 --qnetwork_fc_scale=256 --gpu_list=3 --exp_name="optomech-std-256""
-    "--seed=111111 --actor_fc_scale==1024 --qnetwork_fc_scale=1024 --gpu_list=1 --exp_name="optomech-std-1024""
-    "--seed=222222 --actor_fc_scale==1024 --qnetwork_fc_scale=1024 --gpu_list=2 --exp_name="optomech-std-1024""
-    "--seed=333333 --actor_fc_scale==1024 --qnetwork_fc_scale=1024 --gpu_list=3 --exp_name="optomech-std-1024""
-    "--seed=444444 --actor_fc_scale==1024 --qnetwork_fc_scale=1024 --gpu_list=4 --exp_name="optomech-std-1024""
-
+    "--seed=111111 --actor_fc_scale=1024 --qnetwork_fc_scale=1024 --gpu_list=1 --exp_name="optomech-std-1024""
+    "--seed=222222 --actor_fc_scale=1024 --qnetwork_fc_scale=1024 --gpu_list=2 --exp_name="optomech-std-1024""
+    "--seed=333333 --actor_fc_scale=1024 --qnetwork_fc_scale=1024 --gpu_list=3 --exp_name="optomech-std-1024""
+    "--seed=444444 --actor_fc_scale=1024 --qnetwork_fc_scale=1024 --gpu_list=4 --exp_name="optomech-std-1024""
 )
 
 cd visuomotor-deep-optics/
