@@ -59,7 +59,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_learning_rate=3e-4 \
         --qnetwork_channel_scale=16 \
         --actor_channel_scale=16 \
-        --action_scale=1.0 \
+        --action_scale=1e-2 \
         $VARIANT &  # Run in background
 done
 
