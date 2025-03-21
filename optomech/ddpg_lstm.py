@@ -19,6 +19,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 # from torchrl.data import ReplayBuffer
 from tensordict import TensorDict
+
+import torch.distributions as dist
 from torchrl.envs import GymWrapper, TransformedEnv
 # from torchrl.envs.transforms import ToTensor
 from torchrl.data import LazyTensorStorage, TensorDictReplayBuffer
@@ -120,6 +122,8 @@ class Args:
     """The scale of the actor model fully connected layers."""
     low_dim_actor: bool = False
     """Whether the actor model is visual."""
+    use_multiscale_head: bool = False
+    """If toggled and using impala, it will have a multi-scale head"""
 
     # QNetwork model parameters
     critic_type: str = "vanilla"
@@ -1447,10 +1451,107 @@ class CustomCritic(nn.Module):
         return q
     
 
+class MultiscaleActionModule(nn.Module):
+    def __init__(self, in_size, out_size):
+        super(MultiscaleActionModule, self).__init__()
+
+        self.head0 = nn.Sequential(
+            uniform_init(nn.Linear(in_size, out_size),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+            nn.Tanh()
+        )
+        self.head0_logits = nn.Sequential(
+            uniform_init(nn.Linear(in_size, 1),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+        )
+
+
+        self.head1 = nn.Sequential(
+            uniform_init(nn.Linear(in_size, out_size),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+            nn.Tanh()
+        )
+        self.head1_logits = nn.Sequential(
+            uniform_init(nn.Linear(in_size, 1),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+        )
+
+        self.head2 = nn.Sequential(
+            uniform_init(nn.Linear(in_size, out_size),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+            nn.Tanh()
+        )
+        self.head2_logits = nn.Sequential(
+            uniform_init(nn.Linear(in_size, 1),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+        )
+
+        self.head3 = nn.Sequential(
+            uniform_init(nn.Linear(in_size, out_size),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+            nn.Tanh()
+        )
+        self.head3_logits = nn.Sequential(
+            uniform_init(nn.Linear(in_size, 1),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+        )
+
+        self.head4 = nn.Sequential(
+            uniform_init(nn.Linear(in_size, out_size),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+            nn.Tanh()
+        )
+        self.head4_logits = nn.Sequential(
+            uniform_init(nn.Linear(in_size, 1),
+                lower_bound=-1/np.sqrt(in_size),
+                upper_bound=1/np.sqrt(in_size)
+            ),
+        )
+
+
+    def forward(self, x):
+
+        # Process input through each path
+        out0 = (1 / (10 ** 0)) * self.head0(x)
+        active0 = (torch.sigmoid(self.head0_logits(x)) > 0.5).float()
+
+        out1 = (1 / (10 ** 1)) * self.head1(x)
+        active1 = (torch.sigmoid(self.head1_logits(x)) > 0.5).float()
+
+        out2 = (1 / (10 ** 2)) * self.head2(x)
+        active2 = (torch.sigmoid(self.head2_logits(x)) > 0.5).float()
+
+        out3 = (1 / (10 ** 3)) * self.head3(x)
+        active3 = (torch.sigmoid(self.head2_logits(x)) > 0.5).float()
+
+        out4 = (1 / (10 ** 4)) * self.head4(x)
+        active4 = (torch.sigmoid(self.head4_logits(x)) > 0.5).float()
+
+        # Concatenate along the channel dimension
+        out = (out0 * active0) + (out1 * active1) + (out2 * active2) + (out3 * active3) + (out4 * active4)
+        return out
 
 class ImpalaActor(nn.Module):
 
-    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, use_multiscale_head=False, action_scale=1.0):
         
         super().__init__()
         # Initialize the shape parameters
@@ -1458,8 +1559,9 @@ class ImpalaActor(nn.Module):
         self.device = device
         self.use_lstm = True
         self.bptt = bptt
-        self.lstm_hidden_dim = lstm_hidden_dim
+        self.lstm_hidden_dim = fc_scale
         self.lstm_num_layers = lstm_num_layers
+        self.use_multiscale_head = use_multiscale_head
 
         vector_action_size = envs.single_action_space.shape[0]
         # Seperate out the prior action and the image
@@ -1500,15 +1602,14 @@ class ImpalaActor(nn.Module):
                 x = x.permute(0, 3, 1, 2)
             visual_output_shape = self.visual_encoder(x).shape
     
-        mlp_output_size = 256
+        mlp_output_size = fc_scale
         self.mlp = nn.Sequential(
             nn.Flatten(),
-            uniform_init(
+            layer_init(
                 nn.Linear(
                     int(np.prod(visual_output_shape[1:])),
                     mlp_output_size),
-                lower_bound=-1/np.sqrt(np.prod(visual_output_shape[1:])),
-                upper_bound=1/np.sqrt(np.prod(visual_output_shape[1:]))
+                std=1.0
             ),
             nn.ReLU(),
         )
@@ -1528,18 +1629,26 @@ class ImpalaActor(nn.Module):
 
             pre_head_output_shape = self.lstm(x)[0].shape
 
-        # Build the action head following the convolutional LSTM
-        self.action_head = nn.Sequential(
-            uniform_init(
-                nn.Linear(
-                    int(np.prod(pre_head_output_shape[1:])),
-                    int(np.prod(envs.single_action_space.shape))
-                        ),
-                lower_bound=-1/np.sqrt(np.prod(pre_head_output_shape[1:])),
-                upper_bound=1/np.sqrt(np.prod(pre_head_output_shape[1:]))
-            ),
-            nn.Tanh()
-        )
+        if self.use_multiscale_head:
+
+            self.action_head = nn.Sequential(
+                MultiscaleActionModule(
+                        int(np.prod(pre_head_output_shape[1:])),
+                        int(np.prod(envs.single_action_space.shape)))
+                        )
+
+        else:
+            # Build the action head following the convolutional LSTM
+            self.action_head = nn.Sequential(
+                layer_init(
+                    nn.Linear(
+                        int(np.prod(pre_head_output_shape[1:])),
+                        int(np.prod(envs.single_action_space.shape))
+                            ),
+                    std=1.0
+                ),
+                nn.Tanh()
+            )
                                 
         # action rescaling
         self.register_buffer(
@@ -1614,7 +1723,7 @@ class ImpalaCritic(nn.Module):
         self.device = device
         self.bptt = bptt
 
-        self.lstm_hidden_dim = lstm_hidden_dim
+        self.lstm_hidden_dim = fc_scale
         self.lstm_num_layers = lstm_num_layers
 
 
@@ -1660,15 +1769,14 @@ class ImpalaCritic(nn.Module):
             visual_output_shape = self.visual_encoder(x).shape
 
 
-        mlp_output_size = 256
+        mlp_output_size = fc_scale
         self.mlp = nn.Sequential(
             nn.Flatten(),
-            uniform_init(
+            layer_init(
                 nn.Linear(
                     int(np.prod(visual_output_shape[1:])),
                     mlp_output_size),
-                lower_bound=-1/np.sqrt(np.prod(visual_output_shape[1:])),
-                upper_bound=1/np.sqrt(np.prod(visual_output_shape[1:]))
+                std=np.sqrt(2)
             ),
             nn.ReLU(),
         )
@@ -1687,10 +1795,9 @@ class ImpalaCritic(nn.Module):
 
         # Build the q head following the convolutional LSTM
         self.q_head = nn.Sequential(
-            uniform_init(
+            layer_init(
                 nn.Linear(int(np.prod(pre_head_output_shape[1:])), 1),
-                lower_bound=-1/np.sqrt(np.prod(pre_head_output_shape[1:])),
-                upper_bound=1/np.sqrt(np.prod(pre_head_output_shape[1:]))
+                std=1.0
             ),
         )
 
@@ -1991,11 +2098,13 @@ if __name__ == "__main__":
                             device,
                             channel_scale=args.actor_channel_scale,
                             fc_scale=args.actor_fc_scale,
-                           action_scale=args.action_scale,).to(device)
+                           action_scale=args.action_scale,
+                           use_multiscale_head=args.use_multiscale_head).to(device)
         target_actor = ImpalaActor(envs,
                                    device,
                                    channel_scale=args.actor_channel_scale,
                                    fc_scale=args.actor_fc_scale,
+                           use_multiscale_head=args.use_multiscale_head,
                            action_scale=args.action_scale).to(device)
 
 
@@ -2113,6 +2222,7 @@ if __name__ == "__main__":
     best_eval_episode_return = -np.inf
     ini_hidden_in = None
     ini_hidden_out = None
+    first_step_reward = None
 
     actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
 
@@ -2309,7 +2419,7 @@ if __name__ == "__main__":
                     actions = actor(torch.Tensor(obs).to(device))
 
                 noise = torch.normal(
-                    0.0,
+                    torch.zeros(envs.single_action_space.shape),
                     actor.action_scale.cpu() * args.exploration_noise * decay,
                     ).to(device)
                 actions += noise
@@ -2319,18 +2429,44 @@ if __name__ == "__main__":
             ini_hidden_in = actor.hidden
             ini_hidden_out = ini_hidden_in
                 
+        prior_rewards = rewards
         # TRY NOT TO MODIFY: execute the game and log data.
         # prior_rewards = rewards.copy()
-        prior_rewards = rewards
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+
+        
+        # Rescaling
         rewards = args.reward_scale * rewards
 
-        if iteration % args.writer_interval == 0:
+
+        if first_step_reward is None:
+            first_step_reward = rewards
+
+        if iteration % args.writer_interval == 0 and global_step > args.learning_starts:
             writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
             writer.add_scalar("online/action_std", actions.std().item(), global_step)
             # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
             writer.add_scalar("online/reward_mean/", np.mean(rewards), global_step)
+            writer.add_scalar("online/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
+            writer.add_scalar("online/first_step_reward/", np.mean(first_step_reward), global_step)
             writer.add_scalar("online/reward_std/", np.std(rewards), global_step)
+            for i, action in enumerate(actions):
+                for j, action_element in enumerate(action):
+                    action_label = f"online/action_{i}_{j}"
+                    writer.add_scalar(action_label, action_element, global_step)
+
+        if iteration % args.writer_interval == 0 and global_step < args.learning_starts:
+            writer.add_scalar("prelearning/action_mean", actions.mean().item(), global_step)
+            writer.add_scalar("prelearning/action_std", actions.std().item(), global_step)
+            # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
+            writer.add_scalar("prelearning/reward_mean/", np.mean(rewards), global_step)
+            writer.add_scalar("prelearning/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
+            writer.add_scalar("prelearning/first_step_reward/", np.mean(first_step_reward), global_step)
+            writer.add_scalar("prelearning/reward_std/", np.std(rewards), global_step)
+            for i, action in enumerate(actions):
+                for j, action_element in enumerate(action):
+                    action_label = f"prelearning/action_{i}_{j}"
+                    writer.add_scalar(action_label, action_element, global_step)
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
@@ -2367,8 +2503,7 @@ if __name__ == "__main__":
 
             rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
-        
-        # rewards = rewards * 20
+    
         
          # TRY NOT TO MODIFY: record rewards for plotting purposes
         # if "final_info" in infos:
@@ -2385,13 +2520,16 @@ if __name__ == "__main__":
 
             for info in infos["final_info"]:
 
-                # print(infos)
+
                 print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                writer.add_scalar("episode/episodic_return", info["episode"]["r"], global_step)
+
+                writer.add_scalar("episode/episodic_return_gain/", info["episode"]["r"] - (args.max_episode_steps * np.mean(first_step_reward) / args.reward_scale), global_step)
+                writer.add_scalar("episode/episodic_length", info["episode"]["l"], global_step)
                 print("Episode %d has ended with %d steps." % (global_step, info["episode"]["l"]))
                 print("Episode %d has ended with %d reward." % (global_step, info["episode"]["r"]))
 
+                first_step_reward = None
                 # Add this episodes return to the list...
                 train_episodic_return_list.append(info["episode"]["r"])
 
@@ -2435,27 +2573,6 @@ if __name__ == "__main__":
                 break
 
 
-
-        # print(infos)
-        # if isinstance(infos, list):
-        #     for i, (info,
-        #             prior_action,
-        #             prior_reward) in enumerate(zip(infos,
-        #                                            prior_actions,
-        #                                            prior_rewards)):
-
-        #         info["prior_action"] = prior_action
-        #         info["prior_reward"] = prior_reward
-        #         infos[i] = infos
-        # else:
-
-        #     infos["prior_action"] = prior_actions
-        #     infos["prior_reward"] = prior_rewards
- 
-
-
-
-
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
@@ -2489,7 +2606,6 @@ if __name__ == "__main__":
                  next_observations_batch,
                  dones_batch) = rb.sample(args.batch_size)
                 
-
                 hidden_ins_batch = hidden_ins_batch
                 hidden_outs_batch = hidden_outs_batch
                 observations_batch = torch.tensor(np.array(observations_batch), dtype=torch.float32).squeeze(1)
@@ -2499,24 +2615,6 @@ if __name__ == "__main__":
                 prior_rewards_batch = torch.tensor(np.array(prior_rewards_batch), dtype=torch.float32)
                 next_observations_batch = torch.tensor(np.array(next_observations_batch), dtype=torch.float32).squeeze(1)
                 dones_batch = torch.tensor(np.array(dones_batch), dtype=torch.float32).to(device)
-
-                # print shapes
-                # print("Shapes:")
-                # print("observations.shape")
-                # print(observations.shape)
-                # print("actions_batch.shape")
-                # print(actions_batch.shape)
-                # print("prior_actions.shape")
-                # print(prior_actions.shape)
-                # print("rewards.shape")
-                # print(rewards.shape)
-                # print("prior_rewards.shape")
-                # print(prior_rewards.shape)
-                # print("next_observations.shape")
-                # print(next_observations.shape)
-                # print("dones")
-                # print(dones)
-                # die
                 
             else:
                 
@@ -2527,7 +2625,6 @@ if __name__ == "__main__":
                 rewards_batch = data.rewards
                 next_observations_batch = data.next_observations
                 dones_batch = data.dones
-
 
             with torch.no_grad():
 
@@ -2578,8 +2675,6 @@ if __name__ == "__main__":
 
             if global_step % args.policy_frequency == 0:
 
-                # l1_reg = 0.00000
-                # l1_reg = 0.00000
 
                 if prior_state_models:
                     actor_loss = -qf1(
@@ -2603,7 +2698,6 @@ if __name__ == "__main__":
 
                 actor_optimizer.zero_grad()
                 actor_loss.backward(retain_graph=bptt)
-                # actor_loss.backward(retain_graph=True)
                 if clip_gradients:
                     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.max_grad_norm)
                 actor_optimizer.step()
@@ -2622,10 +2716,7 @@ if __name__ == "__main__":
             if iteration % args.writer_interval == 0:
                 writer.add_scalar("losses/qf1_values", qf1_a_values_batch.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                for i, action in enumerate(actions):
-                    for j, action_element in enumerate(action):
-                        action_label = f"action_{i}_{j}"
-                        writer.add_scalar(action_label, action_element, global_step)
+
                 writer.add_scalar("decay/", decay, global_step)
 
                 
