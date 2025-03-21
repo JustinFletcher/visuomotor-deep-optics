@@ -4,7 +4,7 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-SXM4:8
-#SBATCH --time=96:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=48:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
 
