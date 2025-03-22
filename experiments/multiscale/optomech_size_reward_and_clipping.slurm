@@ -8,14 +8,14 @@
 
 VARIANTS=(
 
-    "--seed=111111 --reward_function=negastrehl  --gpu_list=0 --exp_name="optomech-reward-std""
-    "--seed=222222 --reward_function=negastrehl  --gpu_list=1 --exp_name="optomech-reward-std""
-    "--seed=333333 --reward_function=negastrehl  --gpu_list=2 --exp_name="optomech-reward-std""
-    "--seed=444444 --reward_function=negastrehl  --gpu_list=3 --exp_name="optomech-reward-std""
-    "--seed=111111 --reward_function=negaexpstrehl  --gpu_list=4 --exp_name="optomech-reward-exp""
-    "--seed=222222 --reward_function=negaexpstrehl  --gpu_list=5 --exp_name="optomech-reward-exp""
-    "--seed=333333 --reward_function=negaexpstrehl  --gpu_list=6 --exp_name="optomech-reward-exp""
-    "--seed=444444 --reward_function=negaexpstrehl  --gpu_list=7 --exp_name="optomech-reward-exp""
+    "--seed=111111 --reward_function=negastrehl  --gpu_list=0 --exp_name="optomech-reward-std-tau""
+    "--seed=222222 --reward_function=negastrehl  --gpu_list=1 --exp_name="optomech-reward-std-tau""
+    "--seed=333333 --reward_function=negastrehl  --gpu_list=2 --exp_name="optomech-reward-std-tau""
+    "--seed=444444 --reward_function=negastrehl  --gpu_list=3 --exp_name="optomech-reward-std-tau""
+    "--seed=111111 --reward_function=negaexpstrehl  --gpu_list=4 --exp_name="optomech-reward-exp-tau""
+    "--seed=222222 --reward_function=negaexpstrehl  --gpu_list=5 --exp_name="optomech-reward-exp-tau""
+    "--seed=333333 --reward_function=negaexpstrehl  --gpu_list=6 --exp_name="optomech-reward-exp-tau""
+    "--seed=444444 --reward_function=negaexpstrehl  --gpu_list=7 --exp_name="optomech-reward-exp-tau""
 
 )
 
@@ -41,7 +41,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_save_interval=100000 \
         --num_envs=1 \
         --batch_size=32 \
-        --tau=0.0005 \
+        --tau=0.0001 \
         --exploration_noise=0.01 \
         --policy_frequency=1 \
         --decay_rate=0.995 \
