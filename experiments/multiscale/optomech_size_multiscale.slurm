@@ -41,13 +41,13 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_save_interval=100000 \
         --num_envs=1 \
         --batch_size=32 \
-        --tau=0.0001 \
+        --tau=0.0005 \
         --exploration_noise=0.01 \
-        --policy_frequency=2 \
+        --policy_frequency=1 \
         --decay_rate=0.995 \
         --l2_reg=0.0 \
         --reward_function=negastrehl \
-        --reward_scale=10.0 \
+        --reward_scale=1.0 \
         --max_grad_norm=1.0 \
         --buffer_size=1_000_000 \
         --learning_starts=100_000 \

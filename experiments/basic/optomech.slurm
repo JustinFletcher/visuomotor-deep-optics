@@ -6,7 +6,7 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=72:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=96:00:00                # Maximum runtime (D-HH:MM:SS)
 
 #Load necessary modules (if needed)
 #module load module_name
@@ -15,7 +15,6 @@
 #For example:
 #python my_script.py
 
-cd ./visuomoto_deep_optics/
 poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --env-id optomech-v1 \
 --seed=88887 \
@@ -41,9 +40,9 @@ poetry run python ./optomech/ddpg_continuous_action_optomech.py \
 --decay_rate=0.005 \
 --reward_function=negastrehl \
 --buffer_size=1_000_000 \
---learning_starts=10_000 \
+--learning_starts=100 \
 --policy_frequency=1 \
---batch_size=128 \
+--batch_size=32 \
 --max_episode_steps=100 \
 --actor_type=custom \
 --critic_type=custom \

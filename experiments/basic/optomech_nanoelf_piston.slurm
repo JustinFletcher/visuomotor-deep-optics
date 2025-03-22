@@ -10,14 +10,14 @@
 
 VARIANTS=(
 
-    "--seed=111222 --gpu_list=0 --exp_name="optomech_nanoelf_piston""
-    "--seed=636637 --gpu_list=1 --exp_name="optomech_nanoelf_piston""
-    "--seed=636638 --gpu_list=2 --exp_name="optomech_nanoelf_piston""
-    "--seed=636639 --gpu_list=3 --exp_name="optomech_nanoelf_piston""
-    "--seed=636640 --gpu_list=4 --exp_name="optomech_nanoelf_piston""
-    "--seed=636641 --gpu_list=5 --exp_name="optomech_nanoelf_piston""
-    "--seed=636642 --gpu_list=6 --exp_name="optomech_nanoelf_piston""
-    "--seed=636643 --gpu_list=7 --exp_name="optomech_nanoelf_piston""
+    "--gpu_list=0 --exp_name="optomech""
+    "--gpu_list=1 --exp_name="optomech""
+    "--gpu_list=2 --exp_name="optomech""
+    "--gpu_list=3 --exp_name="optomech""
+    "--gpu_list=4 --exp_name="optomech""
+    "--gpu_list=5 --exp_name="optomech""
+    "--gpu_list=6 --exp_name="optomech""
+    "--gpu_list=7 --exp_name="optomech""
 
 )
 

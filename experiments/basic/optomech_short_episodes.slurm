@@ -9,14 +9,8 @@
 #SBATCH --time=96:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
-    "--seed=88887 --gpu_list=0 --max_grad_norm=0.01 --exp_name="optomech-ctrl""
-    "--seed=88887 --gpu_list=1 --max_grad_norm=0.001 --exp_name="optomech-smaller""
-    "--seed=88888 --gpu_list=2 --max_grad_norm=0.01 --exp_name="optomech-ctrl""
-    "--seed=88888 --gpu_list=3 --max_grad_norm=0.001 --exp_name="optomech-smaller""
-    "--seed=88889 --gpu_list=4 --max_grad_norm=0.01 --exp_name="optomech-ctrl""
-    "--seed=88889 --gpu_list=5 --max_grad_norm=0.001 --exp_name="optomech-smaller""
-    "--seed=88886 --gpu_list=6 --max_grad_norm=0.01 --exp_name="optomech-ctrl""
-    "--seed=88886 --gpu_list=7 --max_grad_norm=0.001 --exp_name="optomech-smaller""
+
+    "--seed=111222 --gpu_list=0 --exp_name="optomech""
 
 )
 
@@ -47,6 +41,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --l2_reg=0.0 \
         --reward_function=negastrehl \
         --reward_scale=10.0 \
+        --max_grad_norm=0.01 \
         --buffer_size=1_000_000 \
         --learning_starts=100_000 \
         --prelearning_sample=scales \
