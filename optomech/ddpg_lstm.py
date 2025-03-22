@@ -1576,19 +1576,20 @@ class ImpalaActor(nn.Module):
             self.channels_last = False
             input_channels = obs_shape[0]
 
+        # TODO: I havled the stride!
         # Define the visual encoder, so that we know the output shape.
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
                           16,
                           kernel_size=8,
-                          stride=4)),
+                          stride=2)),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(16,
                           32,
                           kernel_size=4,
-                          stride=2)),
+                          stride=1)),
             nn.ReLU(),
             nn.Flatten()
         )
@@ -1741,19 +1742,20 @@ class ImpalaCritic(nn.Module):
             input_channels = obs_shape[0]
 
         # Define the visual encoder, so that we know the output shape.
+        # TODO: I havled the stride!
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
                           16,
                           kernel_size=8,
-                          stride=4)
+                          stride=2)
                           ),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(16,
                           32,
                           kernel_size=4,
-                          stride=2)
+                          stride=1)
                           ),
             nn.ReLU(),
             nn.Flatten()
