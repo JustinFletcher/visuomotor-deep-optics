@@ -179,9 +179,9 @@ def rollout_optomech_policy(model_path=None,
     if torch.cuda.is_available():
         print("Running with CUDA")
         device = torch.device("cuda")
-    # elif torch.backends.mps.is_available():
-    #     print("Running with MSP")
-    #     device = torch.device("mps")
+    elif torch.backends.mps.is_available():
+        print("Running with MSP")
+        device = torch.device("mps")
     else:
         print("Running with CPU")
         device = torch.device("cpu")
@@ -417,7 +417,7 @@ class Args:
     
     # TODO: Replace with an import and manually set each to None.
     # Environment arguments.
-    seed: int = 88
+    seed: int = None
     """the name of this experiment"""
     report_time: bool = False
     """Whether to report time statistics."""
