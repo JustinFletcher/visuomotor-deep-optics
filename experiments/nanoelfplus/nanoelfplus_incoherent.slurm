@@ -9,6 +9,14 @@
 VARIANTS=(
 
     "--seed=111111 --gpu_list=0 --exp_name="optomech-nanoelfplus-incoherent""
+    "--seed=222222 --gpu_list=1 --exp_name="optomech-nanoelfplus-incoherent""
+    "--seed=333333 --gpu_list=2 --exp_name="optomech-nanoelfplus-incoherent""
+    "--seed=444444 --gpu_list=3 --exp_name="optomech-nanoelfplus-incoherent""
+    "--seed=555555 --gpu_list=4 --exp_name="optomech-nanoelfplus-incoherent""
+    "--seed=666666 --gpu_list=5 --exp_name="optomech-nanoelfplus-incoherent""
+    "--seed=777777 --gpu_list=6 --exp_name="optomech-nanoelfplus-incoherent""
+    "--seed=888888 --gpu_list=7 --exp_name="optomech-nanoelfplus-incoherent""
+    
 
 )
 
