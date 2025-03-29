@@ -1,10 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null 
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=48:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
 
@@ -12,10 +14,10 @@ VARIANTS=(
     "--seed=111111 --exploration_noise=0.1 --decay_rate=0.995 --gpu_list=1 --exp_name="nanoelfplus-noise0.1-decay0.995""
     "--seed=111111 --exploration_noise=1.0 --decay_rate=0.995 --gpu_list=2 --exp_name="nanoelfplus-noise1.0-decay0.995""
     "--seed=111111 --exploration_noise=10.0 --decay_rate=0.995 --gpu_list=3 --exp_name="nanoelfplus-noise10.0-decay0.995""
-    "--seed=232323 --exploration_noise=0.01 --decay_rate=0.98 --gpu_list=4 --exp_name="nanoelfplus-noise0.01-decay0.98""
-    "--seed=232323 --exploration_noise=0.1 --decay_rate=0.98 --gpu_list=5 --exp_name="nanoelfplus-noise0.1-decay0.98""
-    "--seed=232323 --exploration_noise=1.0 --decay_rate=0.98 --gpu_list=6 --exp_name="nanoelfplus-noise1.0-decay0.98""
-    "--seed=232323 --exploration_noise=10.0 --decay_rate=0.98 --gpu_list=7 --exp_name="nanoelfplus-noise10.0-decay0.98""
+    "--seed=232323 --exploration_noise=0.01 --decay_rate=0.998 --gpu_list=4 --exp_name="nanoelfplus-noise0.01-decay0.98""
+    "--seed=232323 --exploration_noise=0.1 --decay_rate=0.998 --gpu_list=5 --exp_name="nanoelfplus-noise0.1-decay0.98""
+    "--seed=232323 --exploration_noise=1.0 --decay_rate=0.998 --gpu_list=6 --exp_name="nanoelfplus-noise1.0-decay0.98""
+    "--seed=232323 --exploration_noise=10.0 --decay_rate=0.998 --gpu_list=7 --exp_name="nanoelfplus-noise10.0-decay0.98""
 
 )
 
