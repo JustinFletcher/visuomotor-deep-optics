@@ -2269,11 +2269,11 @@ if __name__ == "__main__":
     noise_generator = OUNoiseTorch(
                  action_dim=envs.single_action_space.shape[0], 
                  mu=0.0, 
-                 theta=args.exploration_noise * 0.15, 
+                 theta=0.15, 
                  sigma_initial=args.exploration_noise, 
-                 min_sigma=args.exploration_noise * 0.01, 
+                 min_sigma=args.exploration_noise * 0.001, 
                  decay_rate=args.decay_rate,
-                 auto_decay=True,
+                 auto_decay=False,
                  device='cpu')
 
     print(actions)
@@ -2623,6 +2623,7 @@ if __name__ == "__main__":
                     episode_done = list()
 
                 noise_generator.reset()
+                noise_generator.decay()
                 if actor.use_lstm:
                     print("Resetting Actor Hidden State")
                     actor.reset_hidden()
