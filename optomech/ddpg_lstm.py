@@ -36,6 +36,10 @@ import matplotlib.pyplot as plt
 
 
 
+from rollout import rollout_optomech_policy
+
+
+
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -1452,77 +1456,106 @@ class CustomCritic(nn.Module):
     
 
 class MultiscaleActionModule(nn.Module):
-    def __init__(self, in_size, out_size):
+    def __init__(self, in_size, out_size, hidden_size=128):
         super(MultiscaleActionModule, self).__init__()
 
         self.head0 = nn.Sequential(
-            uniform_init(nn.Linear(in_size, out_size),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, out_size),
+                std=1.0
             ),
             nn.Tanh()
         )
         self.head0_logits = nn.Sequential(
-            uniform_init(nn.Linear(in_size, 1),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, 1),
+                std=1.0
             ),
         )
 
-
         self.head1 = nn.Sequential(
-            uniform_init(nn.Linear(in_size, out_size),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, out_size),
+                std=1.0
             ),
             nn.Tanh()
         )
         self.head1_logits = nn.Sequential(
-            uniform_init(nn.Linear(in_size, 1),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, 1),
+                std=1.0
             ),
         )
 
         self.head2 = nn.Sequential(
-            uniform_init(nn.Linear(in_size, out_size),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, out_size),
+                std=1.0
             ),
             nn.Tanh()
         )
         self.head2_logits = nn.Sequential(
-            uniform_init(nn.Linear(in_size, 1),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, 1),
+                std=1.0
             ),
         )
 
         self.head3 = nn.Sequential(
-            uniform_init(nn.Linear(in_size, out_size),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, out_size),
+                std=1.0
             ),
             nn.Tanh()
         )
         self.head3_logits = nn.Sequential(
-            uniform_init(nn.Linear(in_size, 1),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, 1),
+                std=1.0
             ),
         )
 
         self.head4 = nn.Sequential(
-            uniform_init(nn.Linear(in_size, out_size),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, out_size),
+                std=1.0
             ),
             nn.Tanh()
         )
         self.head4_logits = nn.Sequential(
-            uniform_init(nn.Linear(in_size, 1),
-                lower_bound=-1/np.sqrt(in_size),
-                upper_bound=1/np.sqrt(in_size)
+            layer_init(nn.Linear(in_size, hidden_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, 1),
+                std=1.0
             ),
         )
 
@@ -1531,19 +1564,19 @@ class MultiscaleActionModule(nn.Module):
 
         # Process input through each path
         out0 = (1 / (10 ** 0)) * self.head0(x)
-        active0 = (torch.sigmoid(self.head0_logits(x)) > 0.5).float()
+        active0 = (self.head0_logits(x) > 0.5).float()
 
         out1 = (1 / (10 ** 1)) * self.head1(x)
-        active1 = (torch.sigmoid(self.head1_logits(x)) > 0.5).float()
+        active1 = (self.head1_logits(x) > 0.5).float()
 
         out2 = (1 / (10 ** 2)) * self.head2(x)
-        active2 = (torch.sigmoid(self.head2_logits(x)) > 0.5).float()
+        active2 = (self.head2_logits(x) > 0.5).float()
 
         out3 = (1 / (10 ** 3)) * self.head3(x)
-        active3 = (torch.sigmoid(self.head2_logits(x)) > 0.5).float()
+        active3 = (self.head3_logits(x) > 0.5).float()
 
         out4 = (1 / (10 ** 4)) * self.head4(x)
-        active4 = (torch.sigmoid(self.head4_logits(x)) > 0.5).float()
+        active4 = (self.head4_logits(x) > 0.5).float()
 
         # Concatenate along the channel dimension
         out = (out0 * active0) + (out1 * active1) + (out2 * active2) + (out3 * active3) + (out4 * active4)
@@ -1610,7 +1643,7 @@ class ImpalaActor(nn.Module):
                 nn.Linear(
                     int(np.prod(visual_output_shape[1:])),
                     mlp_output_size),
-                std=1.0
+                std=np.sqrt(2.0)
             ),
             nn.ReLU(),
         )
@@ -1848,6 +1881,397 @@ class ImpalaCritic(nn.Module):
         return q
     
 
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += residual
+        out = self.relu(out)
+        return out
+    
+
+class ImpalaLargeActor(nn.Module):
+
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, use_multiscale_head=False, action_scale=1.0):
+        
+        super().__init__()
+        # Initialize the shape parameters
+
+        self.device = device
+        self.use_lstm = True
+        self.bptt = bptt
+        self.lstm_hidden_dim = fc_scale
+        self.lstm_num_layers = lstm_num_layers
+        self.use_multiscale_head = use_multiscale_head
+
+        vector_action_size = envs.single_action_space.shape[0]
+        # Seperate out the prior action and the image
+
+        obs_shape = envs.single_observation_space.shape
+
+        # Check if this is a channels-last environment
+        if obs_shape[-1] < obs_shape[0]:
+            self.channels_last = True
+            input_channels = obs_shape[-1]
+        else:
+            self.channels_last = False
+            input_channels = obs_shape[0]
+
+        # Build a visual encoder comprising two standard convs followed by two residual blocks.
+
+        encoder_block_1 = nn.Sequential(
+            conv_init(
+                nn.Conv2d(input_channels, 
+                          16,
+                          kernel_size=3,
+                          stride=1)),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.ReLU(),
+            ResidualBlock(16, 16),
+            nn.ReLU(),
+            ResidualBlock(16, 16),
+        )
+
+        encoder_block_2 = nn.Sequential(
+            conv_init(
+                nn.Conv2d(16, 
+                          32,
+                          kernel_size=3,
+                          stride=1)),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.ReLU(),
+            ResidualBlock(32, 32),
+            nn.ReLU(),
+            ResidualBlock(32, 32),
+        )
+
+
+        encoder_block_3 = nn.Sequential(
+            conv_init(
+                nn.Conv2d(32, 
+                          32,
+                          kernel_size=3,
+                          stride=1)),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.ReLU(),
+            ResidualBlock(32, 32),
+            nn.ReLU(),
+            ResidualBlock(32, 32),
+        )
+
+
+        self.visual_encoder = nn.Sequential(
+            encoder_block_1,
+            encoder_block_2,
+            encoder_block_3,
+            nn.ReLU(),
+            nn.Flatten()
+        )
+    
+
+        # Get the output shape of the visual encoder
+        with torch.inference_mode():
+
+            # Handle channels-last environments.
+            x = torch.zeros(1, *obs_shape)
+            if self.channels_last:
+                x = x.permute(0, 3, 1, 2)
+            visual_output_shape = self.visual_encoder(x).shape
+    
+        mlp_output_size = fc_scale
+        self.mlp = nn.Sequential(
+            nn.Flatten(),
+            layer_init(
+                nn.Linear(
+                    int(np.prod(visual_output_shape[1:])),
+                    mlp_output_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+        )
+
+
+        self.lstm = init_lstm_weights(nn.LSTM(
+            input_size=mlp_output_size + vector_action_size + 1,
+            hidden_size=self.lstm_hidden_dim,
+            num_layers=self.lstm_num_layers,
+            batch_first=True
+        ))
+
+        # Get the output shape of the LSTM
+        with torch.inference_mode():            
+        
+            x = torch.zeros(1, mlp_output_size + vector_action_size + 1)
+
+            pre_head_output_shape = self.lstm(x)[0].shape
+
+        if self.use_multiscale_head:
+
+            self.action_head = nn.Sequential(
+                MultiscaleActionModule(
+                        int(np.prod(pre_head_output_shape[1:])),
+                        int(np.prod(envs.single_action_space.shape)))
+                        )
+
+        else:
+            # Build the action head following the convolutional LSTM
+            self.action_head = nn.Sequential(
+                layer_init(
+                    nn.Linear(
+                        int(np.prod(pre_head_output_shape[1:])),
+                        int(np.prod(envs.single_action_space.shape))
+                        ),
+                    std=1.0
+                ),
+                nn.Tanh()
+            )
+                                
+        # action rescaling
+        self.register_buffer(
+            # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
+            "action_scale", torch.tensor(action_scale, dtype=torch.float32)
+        )
+        self.register_buffer(
+            # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
+            "action_bias", torch.tensor(0.0, dtype=torch.float32)
+        )
+
+        # Important: Set the hidden state to None initially.
+        self.hidden = self.init_hidden()
+
+    def init_hidden(self):
+        """
+        Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
+        Shapes:
+          h, c: [num_layers=1, batch_size, hidden_dim]
+        """
+        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
+        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
+        return (h, c)
+
+    def reset_hidden(self, ):
+        """
+        Reset the agent's internal hidden state to zeros.
+        """
+        self.hidden = self.init_hidden()
+
+    def forward(self, o, a_prior, r_prior):
+
+
+        # batch_size, seq_len, channels, height, width = o.shape
+
+        # Handle channels-last environments.
+        if self.channels_last:
+            o = o.permute(0, 3, 1, 2)
+
+
+        # TODO: here, reshape the input to allow the visual encoder to apply to all images.
+        # x_reshaped = x.view(batch_size * seq_len, channels, height, width) 
+        x_o = self.visual_encoder(o)
+
+        # TODO: here, reshape is back to get a sequence again before the LSTM
+        # conv_out = conv_out.view(batch_size, seq_len, 16, height, width)
+        x = self.mlp(x_o)
+        x, new_hidden = self.lstm(torch.cat([x, a_prior, r_prior], 1), self.hidden)
+
+
+        # new_hidden is a tuple (h, c) after processing x
+        if self.bptt:
+            detached_hidden = new_hidden[0], new_hidden[1]
+        else:
+            detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
+        self.hidden = detached_hidden
+
+        # Apply action prediciton head and activation function
+        a = self.action_head(x)
+
+        a = (a * self.action_scale + self.action_bias)
+        return a
+
+class ImpalaLargeCritic(nn.Module):
+    
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
+        
+        super().__init__()
+        # Initialize the shape parameters
+
+        self.use_lstm = True
+        self.device = device
+        self.bptt = bptt
+
+        self.lstm_hidden_dim = fc_scale
+        self.lstm_num_layers = lstm_num_layers
+
+
+        vector_action_size = envs.single_action_space.shape[0]
+        # Seperate out the prior action and the image
+
+        obs_shape = envs.single_observation_space.shape
+
+        # Check if this is a channels-last environment
+        if obs_shape[-1] < obs_shape[0]:
+            self.channels_last = True
+            input_channels = obs_shape[-1]
+        else:
+            self.channels_last = False
+            input_channels = obs_shape[0]
+
+        # Define the visual encoder, so that we know the output shape.
+        encoder_block_1 = nn.Sequential(
+            conv_init(
+                nn.Conv2d(input_channels, 
+                          16,
+                          kernel_size=3,
+                          stride=1)),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.ReLU(),
+            ResidualBlock(16, 16),
+            nn.ReLU(),
+            ResidualBlock(16, 16),
+        )
+
+        encoder_block_2 = nn.Sequential(
+            conv_init(
+                nn.Conv2d(16, 
+                          32,
+                          kernel_size=3,
+                          stride=1)),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.ReLU(),
+            ResidualBlock(32, 32),
+            nn.ReLU(),
+            ResidualBlock(32, 32),
+        )
+
+
+        encoder_block_3 = nn.Sequential(
+            conv_init(
+                nn.Conv2d(32, 
+                          32,
+                          kernel_size=3,
+                          stride=1)),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.ReLU(),
+            ResidualBlock(32, 32),
+            nn.ReLU(),
+            ResidualBlock(32, 32),
+        )
+
+
+        self.visual_encoder = nn.Sequential(
+            encoder_block_1,
+            encoder_block_2,
+            encoder_block_3,
+            nn.ReLU(),
+            nn.Flatten()
+        )
+    
+    
+        # Get the output shape of the visual encoder
+        with torch.inference_mode():
+
+            # Handle channels-last environments.
+            x = torch.zeros(1, *obs_shape)
+            if self.channels_last:
+                x = x.permute(0, 3, 1, 2)
+            visual_output_shape = self.visual_encoder(x).shape
+
+
+        mlp_output_size = fc_scale
+        self.mlp = nn.Sequential(
+            nn.Flatten(),
+            layer_init(
+                nn.Linear(
+                    int(np.prod(visual_output_shape[1:])),
+                    mlp_output_size),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+        )
+
+        self.lstm = init_lstm_weights(nn.LSTM(
+            input_size=mlp_output_size + vector_action_size + vector_action_size + 1,
+            hidden_size=self.lstm_hidden_dim,
+            num_layers=self.lstm_num_layers,
+            batch_first=True
+        ))
+
+        # Get the output shape of the LSTM
+        with torch.inference_mode():
+            x = torch.zeros(1, mlp_output_size + vector_action_size + vector_action_size + 1)
+            pre_head_output_shape = self.lstm(x)[0].shape
+
+        # Build the q head following the convolutional LSTM
+        self.q_head = nn.Sequential(
+            layer_init(
+                nn.Linear(int(np.prod(pre_head_output_shape[1:])), fc_scale),
+                std=np.sqrt(2)
+            ),
+            nn.ReLU(),
+            layer_init(
+                nn.Linear(fc_scale, 1),
+                std=1.0
+            ),
+        )
+
+        # Important: Set the hidden state to None initially.
+        self.hidden = self.init_hidden()
+
+    def init_hidden(self):
+        """
+        Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
+        Shapes:
+          h, c: [num_layers=1, batch_size, hidden_dim]
+        """
+        # TODO: Consider requires_grad_() here
+        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
+        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device) 
+        return (h, c)
+
+    def reset_hidden(self):
+        """
+        Reset the agent's internal hidden state to zeros.
+        """
+        self.hidden = self.init_hidden()
+
+
+    def forward(self, o, a, a_prior, r_prior):
+    
+
+        # Handle channels-last environments.
+        if self.channels_last:
+            o = o.permute(0, 3, 1, 2)
+
+        # Extract visual feature maps
+        x_o = self.visual_encoder(o)
+        x = self.mlp(x_o)
+
+        x, new_hidden = self.lstm(torch.cat([x, a, a_prior, r_prior], 1), self.hidden)
+        # new_hidden is a tuple (h, c) after processing x
+        if self.bptt:
+            detached_hidden = new_hidden[0], new_hidden[1]
+        else:
+            detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
+        self.hidden = detached_hidden
+
+        # Apply action prediciton head and activation function
+        q = self.q_head(x)
+        return q
+    
+
+
 def uniform_init(layer, lower_bound=-1e-4, upper_bound=1e-4):
 
     # init this layer to have weights and biases drawn uniformly from bounds.
@@ -1856,7 +2280,7 @@ def uniform_init(layer, lower_bound=-1e-4, upper_bound=1e-4):
     return layer
 
 def conv_init(layer, bias_const=0.0):
-    nn.init.kaiming_normal_(layer.weight)
+    nn.init.kaiming_normal_(layer.weight, mode='fan_in', nonlinearity='relu')
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
@@ -1865,40 +2289,21 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-def display_observation_action(observation, action, num_frames=4):
-    """
-    Displays the observation frames side by side and prints the action values.
-    
-    Parameters:
-        observation (np.array or torch.Tensor): The current observation, assumed to be shaped as (channels, height, width).
-        action (np.array or torch.Tensor): The action taken by the agent.
-        num_frames (int): The number of stacked frames in the observation.
-    """
-    # Move tensors to CPU if needed and convert to numpy
-    if isinstance(observation, torch.Tensor):
-        observation = observation.cpu().numpy()
-    if isinstance(action, torch.Tensor):
-        action = action.cpu().numpy()
+def init_lstm_weights(lstm):
+    for name, param in lstm.named_parameters():
+        if 'weight_ih' in name:
+            nn.init.xavier_uniform_(param.data)
+        elif 'weight_hh' in name:
+            nn.init.orthogonal_(param.data)
+        elif 'bias' in name:
+            param.data.fill_(0)
+            # Set forget gate bias to 1.0
+            n = param.size(0)
+            param.data[n//4:n//2] = 1.0  # forget gate bias
+    return lstm
 
-    # Ensure observation is in the correct format for visualization (channels-last)
-    # if observation.shape[0] == 3:  # Assuming (C, H, W) format
-    #     observation = observation.transpose(1, 2, 0)
 
-    # Set up the figure with subplots for each frame in the observation
-    fig, axes = plt.subplots(1, num_frames, figsize=(num_frames * 2, 2))
-    
-    # Ensure axes is always iterable, even if there's only one frame
-    if num_frames == 1:
-        axes = [axes]
-    
-    # Show each frame
-    for i, ax in enumerate(axes):
-        ax.imshow(observation[:, :, i], cmap='gray')
-        ax.axis("off")
-    
-    # Set a title with action values for the first frame
-    axes[0].set_title(f"Action: {action}")
-    plt.show()
+
 
 def log_gradients_in_model(model, logger, step):
     for tag, value in model.named_parameters():
@@ -2097,7 +2502,7 @@ if __name__ == "__main__":
     
     bptt = False
 
-    if args.actor_type == "impala":
+    if args.actor_type == "impala" or args.actor_type == "impalalarge":
         prior_state_models = True
     else:
         prior_state_models = False
@@ -2141,6 +2546,22 @@ if __name__ == "__main__":
                            action_scale=args.action_scale,
                            use_multiscale_head=args.use_multiscale_head).to(device)
         target_actor = ImpalaActor(envs,
+                                   device,
+                                   channel_scale=args.actor_channel_scale,
+                                   fc_scale=args.actor_fc_scale,
+                           use_multiscale_head=args.use_multiscale_head,
+                           action_scale=args.action_scale).to(device)
+        
+
+    elif args.actor_type == "impalalarge":
+        
+        actor = ImpalaLargeActor(envs,
+                            device,
+                            channel_scale=args.actor_channel_scale,
+                            fc_scale=args.actor_fc_scale,
+                           action_scale=args.action_scale,
+                           use_multiscale_head=args.use_multiscale_head).to(device)
+        target_actor = ImpalaLargeActor(envs,
                                    device,
                                    channel_scale=args.actor_channel_scale,
                                    fc_scale=args.actor_fc_scale,
@@ -2193,6 +2614,19 @@ if __name__ == "__main__":
                                   channel_scale=args.actor_channel_scale,
                                   fc_scale=args.actor_fc_scale,
                            action_scale=args.action_scale).to(device)
+        
+    elif args.critic_type == "impalalarge":
+
+        qf1 = ImpalaLargeCritic(envs,
+                           device,
+                           channel_scale=args.actor_channel_scale,
+                           fc_scale=args.actor_fc_scale,
+                           action_scale=args.action_scale).to(device)
+        qf1_target = ImpalaLargeCritic(envs,
+                                  device,
+                                  channel_scale=args.actor_channel_scale,
+                                  fc_scale=args.actor_fc_scale,
+                           action_scale=args.action_scale).to(device)
 
     else:
         raise ValueError("Invalid critic type specified.")
@@ -2222,6 +2656,7 @@ if __name__ == "__main__":
         rb = ReplayBufferLSTM2(args.buffer_size)
 
     else:
+
         rb = ReplayBuffer(
             args.buffer_size,
             envs.single_observation_space,
@@ -2231,12 +2666,32 @@ if __name__ == "__main__":
             n_envs=args.num_envs
         )
 
-    # replay_buffer = ReplayBuffer()
-    
-    # TensorDictReplayBuffer(
-    #     storage=LazyTensorStorage(args.buffer_size),
-    #     batch_size=args.batch_size
-    #     )
+    num_eval_rollouts = 16
+
+    eval_dict = dict()
+    for eval_rollout in range(num_eval_rollouts):
+
+        eval_dict[eval_rollout] = dict()
+        rollout_seed = np.random.randint(0, 999999)
+        eval_dict[eval_rollout]["seed"] = rollout_seed
+        env_kwargs = {"seed": rollout_seed}
+        zero_policy_returns = rollout_optomech_policy(
+                            env_vars_path=args_store_path,
+                            rollout_episodes=1,
+                            exploration_noise=0.0,
+                            env_kwargs=env_kwargs,
+                            prelearning_sample="zeros"
+                        )
+        eval_dict[eval_rollout]["zero_policy_returns"] = zero_policy_returns
+        random_policy_returns = rollout_optomech_policy(
+                            env_vars_path=args_store_path,
+                            rollout_episodes=1,
+                            exploration_noise=0.0,
+                            env_kwargs=env_kwargs,
+                        )
+        eval_dict[eval_rollout]["random_policy_returns"] = random_policy_returns
+        eval_dict[eval_rollout]["on_policy_returns"] = dict()
+
 
 
     # TODO: Add a dud check here.
@@ -2323,16 +2778,17 @@ if __name__ == "__main__":
                     Path(rollouts_path).mkdir(parents=True, exist_ok=True)
 
                     # ...then roll out the model, accumulating returns.
-                    num_rollout_episodes = 10
                     episodic_returns_list = list()
-                    for i in range(num_rollout_episodes):
+                    zero_policy_returns_list = list()
+                    random_policy_returns_list = list()
+
+                    for i, eval_rollout_dict in eval_dict.items():
+
                         print(f"Rollout episode: {i}")
-                        seed = np.random.randint(0, 999999)
+
                         eval_save_path = f"{rollouts_path}/"
-                        # env_kwargs = {"write_env_state_info": True,
-                        #               "record_env_state_info": True,
-                        #               "seed": seed}
-                        env_kwargs = {"seed": seed}
+
+                        env_kwargs = {"seed": eval_rollout_dict["seed"]}
                         
                         episodic_returns = rollout_optomech_policy(
                             model_path,
@@ -2343,11 +2799,28 @@ if __name__ == "__main__":
                             env_kwargs=env_kwargs,
                         )
 
+                        eval_rollout_dict["on_policy_returns"][iteration] = episodic_returns
+
                         episodic_returns_list.append(episodic_returns)
-                    mean_eval_episode_return = np.mean(episodic_returns_list)
-                    print(f"Mean eval episodic return: {mean_eval_episode_return}")
+                        zero_policy_returns = eval_rollout_dict["zero_policy_returns"]
+                        zero_policy_returns_list.append(zero_policy_returns)
+                        random_policy_returns = eval_rollout_dict["random_policy_returns"]
+                        random_policy_returns_list.append(random_policy_returns)
+
+                    episodic_returns_array = np.array(episodic_returns_list).flatten()
+                    zero_policy_returns_array = np.array(zero_policy_returns_list).flatten()
+                    random_policy_returns_array = np.array(random_policy_returns_list).flatten()
+
+                    mean_eval_episode_return = np.mean(episodic_returns_array)
+                    mean_zero_return_advantage = np.mean(episodic_returns_array - zero_policy_returns_array)
+                    mean_random_return_advantage = np.mean(episodic_returns_array - random_policy_returns_array)
 
                     writer.add_scalar("eval/best_policy_mean_returns", mean_eval_episode_return, iteration)
+                    writer.add_scalar("eval/best_policy_zero_return_advantage", mean_zero_return_advantage, iteration)
+                    writer.add_scalar("eval/best_policy_random_return_advantage", mean_random_return_advantage, iteration)
+
+
+                    print(f"Mean eval episodic return: {mean_eval_episode_return}")
 
 
             if iteration % args.model_save_interval == 0:
@@ -2384,33 +2857,46 @@ if __name__ == "__main__":
 
                 print("Evaluating model.")
 
-                from rollout import rollout_optomech_policy
                 eval_save_path = f"runs/{run_name}/eval_{args.exp_name}_{str(iteration)}"
-                episodic_returns = rollout_optomech_policy(
-                    model_path,
-                    env_vars_path=args_store_path,
-                    rollout_episodes=1,
-                    exploration_noise=0.0,
-                    eval_save_path=eval_save_path,
-                )
+                # ...then roll out the model, accumulating returns.
+                episodic_returns_list = list()
+                zero_policy_returns_list = list()
+                random_policy_returns_list = list()
 
-                # if episodic_returns > best_eval_episode_return:
-                #     best_eval_episode_return = episodic_returns
-                #     print(f"New best eval episodic return: {best_eval_episode_return}")
+                for i, eval_rollout_dict in eval_dict.items():
 
-                # for idx, episodic_return in enumerate(episodic_returns):
-                    # print(f"Episodic return: {episodic_return}")
+                    print(f"Rollout episode: {i}")
 
-                writer.add_scalar("eval/episodic_return", np.mean(episodic_returns), iteration)
+                    env_kwargs = {"seed": eval_rollout_dict["seed"]}
+                    
+                    episodic_returns = rollout_optomech_policy(
+                        model_path,
+                        env_vars_path=args_store_path,
+                        rollout_episodes=1,
+                        exploration_noise=0.0,
+                        env_kwargs=env_kwargs,
+                    )
+                    eval_rollout_dict["on_policy_returns"][iteration] = episodic_returns
+                    episodic_returns_list.append(episodic_returns)
+
+                    zero_policy_returns = eval_rollout_dict["zero_policy_returns"]
+                    zero_policy_returns_list.append(zero_policy_returns)
+
+                    random_policy_returns = eval_rollout_dict["random_policy_returns"]
+                    random_policy_returns_list.append(random_policy_returns)
+
+                episodic_returns_array = np.array(episodic_returns_list).flatten()
+                zero_policy_returns_array = np.array(zero_policy_returns_list).flatten()
+                random_policy_returns_array = np.array(random_policy_returns_list).flatten()
+
+                mean_eval_episode_return = np.mean(episodic_returns_array)
+                mean_zero_return_advantage = np.mean(episodic_returns_array - zero_policy_returns_array)
+                mean_random_return_advantage = np.mean(episodic_returns_array - random_policy_returns_array)
+
+                writer.add_scalar("eval/mean_returns", mean_eval_episode_return, iteration)
+                writer.add_scalar("eval/zero_return_advantage", mean_zero_return_advantage, iteration)
+                writer.add_scalar("eval/random_return_advantage", mean_random_return_advantage, iteration)
                 
-                print("Model evaluated.")
-                
-                # if args.upload_model:
-                #     from cleanrl_utils.huggingface import push_to_hub
-                #     repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
-                #     repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-                #     push_to_hub(args, episodic_returns, repo_id, "DDPG", f"runs/{run_name}", f"videos/{run_name}-eval")
-        
 
         step_time = time.time()
 
@@ -2467,11 +2953,8 @@ if __name__ == "__main__":
                         actor.action_scale.cpu() * args.exploration_noise * decay,
                         ).to(device)
 
-                if args.actor_type == "impala":
+                if args.actor_type == "impala" or args.actor_type == "impalalarge":
 
-                    # print(torch.tensor(obs))
-                    # print(torch.tensor(prior_actions))
-                    # print(torch.tensor(prior_rewards).unsqueeze(0))
                     if torch.tensor(obs).dtype != torch.float32:
 
                         obs = np.array((obs / 255.0).astype(np.float32))
@@ -2586,15 +3069,15 @@ if __name__ == "__main__":
 
                 print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
                 writer.add_scalar("episode/episodic_return", info["episode"]["r"], global_step)
-
-                writer.add_scalar("episode/episodic_return_gain/", info["episode"]["r"] - (args.max_episode_steps * np.mean(first_step_reward) / args.reward_scale), global_step)
+                episodic_return_gain = info["episode"]["r"] - (args.max_episode_steps * np.mean(first_step_reward) / args.reward_scale)
+                writer.add_scalar("episode/episodic_return_gain/", episodic_return_gain, global_step)
                 writer.add_scalar("episode/episodic_length", info["episode"]["l"], global_step)
                 print("Episode %d has ended with %d steps." % (global_step, info["episode"]["l"]))
                 print("Episode %d has ended with %d reward." % (global_step, info["episode"]["r"]))
 
                 first_step_reward = None
                 # Add this episodes return to the list...
-                train_episodic_return_list.append(info["episode"]["r"])
+                train_episodic_return_list.append(episodic_return_gain)
 
                 # ...and if the list is now too long, pop the first element.
                 if len(train_episodic_return_list) > 100:
