@@ -1,23 +1,23 @@
 #!/bin/bash
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
-#SBATCH --output=/dev/null
-#SBATCH --error=/dev/null 
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=48:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
 
-    "--exploration_noise=0.01 --decay_rate=0.995 --gpu_list=0 --exp_name="nanoelfplus-as1.0-noise0.01-decay0.995""
-    "--exploration_noise=0.1 --decay_rate=0.995 --gpu_list=1 --exp_name="nanoelfplus-as1.0-noise0.1-decay0.995""
-    "--exploration_noise=1.0 --decay_rate=0.995 --gpu_list=2 --exp_name="nanoelfplus-as1.0-noise1.0-decay0.995""
-    "--exploration_noise=10.0 --decay_rate=0.995 --gpu_list=3 --exp_name="nanoelfplus-as1.0-noise10.0-decay0.995""
-    "--exploration_noise=0.01 --decay_rate=0.998 --gpu_list=4 --exp_name="nanoelfplus-as1.0-noise0.01-decay0.98""
-    "--exploration_noise=0.1 --decay_rate=0.998 --gpu_list=5 --exp_name="nanoelfplus-as1.0-noise0.1-decay0.98""
-    "--exploration_noise=1.0 --decay_rate=0.998 --gpu_list=6 --exp_name="nanoelfplus-as1.0-noise1.0-decay0.98""
-    "--exploration_noise=10.0 --decay_rate=0.998 --gpu_list=7 --exp_name="nanoelfplus-as1.0-noise10.0-decay0.98""
+    "--seed=111111  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=0 --exp_name="optomech-nanoelfplus-512""
+    "--seed=222222  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=1 --exp_name="optomech-nanoelfplus-512""
+    "--seed=333333  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=2 --exp_name="optomech-nanoelfplus-512""
+    "--seed=444444  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=3 --exp_name="optomech-nanoelfplus-512""
+    "--seed=555555  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=4 --exp_name="optomech-nanoelfplus-512""
+    "--seed=666666  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=5 --exp_name="optomech-nanoelfplus-512""
+    "--seed=777777  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=6 --exp_name="optomech-nanoelfplus-512""
+    "--seed=888888  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=7 --exp_name="optomech-nanoelfplus-512""
+    
+
 
 )
 
@@ -48,20 +48,21 @@ for VARIANT in "${VARIANTS[@]}"; do
         --l2_reg=0.0 \
         --reward_function=negaexpstrehl \
         --reward_scale=1.0 \
-        --max_grad_norm=0.1 \
+        --max_grad_norm=1.0 \
         --buffer_size=1_000_000 \
         --learning_starts=100_000 \
         --max_episode_steps=500 \
-        --actor_type=impala \
+        --actor_type=impalalarge \
         --use_multiscale_head \
-        --critic_type=impala \
+        --critic_type=impalalarge \
         --actor_learning_rate=1e-4 \
         --critic_learning_rate=3e-4 \
         --qnetwork_channel_scale=16 \
         --actor_channel_scale=16 \
-        --actor_fc_scale=256 \
-        --qnetwork_fc_scale=256 \
         --action_scale=1.0 \
+        --exploration_noise=0.001 \
+        --decay_rate=0.995 \
+        --writer_interval=1000 \
         $VARIANT &  # Run in background
 done
 
