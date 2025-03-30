@@ -268,7 +268,7 @@ def rollout_optomech_policy(model_path=None,
                                     torch.Tensor(prior_rewards).unsqueeze(0).to(device))
                 else:
                     actions = actor(torch.Tensor(obs).to(device))
-                actions += torch.normal(0,
+                actions += torch.normal(torch.zeros_like(actions),
                                         actor.action_scale * exploration_noise)
                 actions = actions.cpu().numpy().clip(
                     envs.single_action_space.low,
