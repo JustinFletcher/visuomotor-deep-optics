@@ -261,7 +261,7 @@ def rollout_optomech_policy(model_path=None,
                 # prior_action = torch.Tensor(obs['prior_action']).to(device)
                 # print("rollout prior action shape")
                 # print(prior_action.shape)
-                if args.actor_type == "impala":
+                if args.actor_type == "impala" or args.actor_type == "impalalarge":
             
                     actions = actor(torch.Tensor(obs).to(device),
                                     torch.Tensor(prior_actions).to(device),
@@ -269,7 +269,7 @@ def rollout_optomech_policy(model_path=None,
                 else:
                     actions = actor(torch.Tensor(obs).to(device))
                 actions += torch.normal(torch.zeros_like(actions),
-                                        actor.action_scale * exploration_noise)
+                                        torch.ones_like(actions) * actor.action_scale * exploration_noise)
                 actions = actions.cpu().numpy().clip(
                     envs.single_action_space.low,
                     envs.single_action_space.high)
