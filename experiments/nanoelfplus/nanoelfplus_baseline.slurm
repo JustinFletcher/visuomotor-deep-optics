@@ -9,13 +9,13 @@
 VARIANTS=(
 
     "--seed=111111  --action_scale=1.0 --gpu_list=0 --exp_name="optomech-nanoelfplus-large-action""
-    "--seed=222222  --action_scale=1.0 --gpu_list=0 --exp_name="optomech-nanoelfplus-large-action""
-    "--seed=333333  --action_scale=1.0 --gpu_list=0 --exp_name="optomech-nanoelfplus-large-action""
-    "--seed=444444  --action_scale=1.0 --gpu_list=0 --exp_name="optomech-nanoelfplus-large-action""
-    "--seed=555555  --action_scale=1e-2 --gpu_list=0 --exp_name="optomech-nanoelfplus-small-action""
-    "--seed=666666  --action_scale=1e-2 --gpu_list=0 --exp_name="optomech-nanoelfplus-small-action""
-    "--seed=777777  --action_scale=1e-2 --gpu_list=0 --exp_name="optomech-nanoelfplus-small-action""
-    "--seed=888888  --action_scale=1e-2 --gpu_list=0 --exp_name="optomech-nanoelfplus-small-action""
+    "--seed=222222  --action_scale=1.0 --gpu_list=1 --exp_name="optomech-nanoelfplus-large-action""
+    "--seed=333333  --action_scale=1.0 --gpu_list=2 --exp_name="optomech-nanoelfplus-large-action""
+    "--seed=444444  --action_scale=1.0 --gpu_list=3 --exp_name="optomech-nanoelfplus-large-action""
+    "--seed=555555  --action_scale=1e-2 --gpu_list=4 --exp_name="optomech-nanoelfplus-small-action""
+    "--seed=666666  --action_scale=1e-2 --gpu_list=5 --exp_name="optomech-nanoelfplus-small-action""
+    "--seed=777777  --action_scale=1e-2 --gpu_list=6 --exp_name="optomech-nanoelfplus-small-action""
+    "--seed=888888  --action_scale=1e-2 --gpu_list=7 --exp_name="optomech-nanoelfplus-small-action""
 
 
 )
