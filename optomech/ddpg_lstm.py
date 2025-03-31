@@ -2031,6 +2031,14 @@ class ImpalaLargeActor(nn.Module):
                 layer_init(
                     nn.Linear(
                         int(np.prod(pre_head_output_shape[1:])),
+                        fc_scale
+                        ),
+                    std=1.0
+                ),
+                nn.Tanh(),
+                layer_init(
+                    nn.Linear(
+                        fc_scale,
                         int(np.prod(envs.single_action_space.shape))
                         ),
                     std=1.0
