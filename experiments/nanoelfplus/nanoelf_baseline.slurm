@@ -2,6 +2,8 @@
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
