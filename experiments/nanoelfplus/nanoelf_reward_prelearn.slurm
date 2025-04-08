@@ -49,18 +49,18 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_function=negaexpstrehl \
         --reward_scale=10.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=1_000_000 \
+        --learning_starts=500_000 \
         --prelearning_sample=scales \
         --max_episode_steps=500 \
         --actor_type=impalalarge \
         --critic_type=impalalarge \
-        --actor_learning_rate=3e-4 \
+        --actor_learning_rate=1e-3 \
         --critic_learning_rate=1e-3 \
         --qnetwork_channel_scale=16 \
         --actor_channel_scale=16 \
         --actor_fc_scale=256 \
         --qnetwork_fc_scale=256 \
-        --decay_rate=0.995 \
+        --decay_rate=0.9995 \
         --action_scale=1e-2 \
         --writer_interval=1000 \
         $VARIANT &  # Run in background
