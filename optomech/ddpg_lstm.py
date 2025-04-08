@@ -2734,7 +2734,7 @@ if __name__ == "__main__":
                  mu=0.0, 
                  theta=0.15, 
                  sigma_initial=args.exploration_noise, 
-                 min_sigma=args.exploration_noise * 0.001, 
+                 min_sigma=args.exploration_noise * 0.01, 
                  decay_rate=args.decay_rate,
                  auto_decay=False,
                  device='cpu')
@@ -3114,7 +3114,8 @@ if __name__ == "__main__":
                     episode_done = list()
 
                 noise_generator.reset()
-                noise_generator.decay()
+                if global_step > args.learning_starts:
+                    noise_generator.decay()
                 if actor.use_lstm:
                     print("Resetting Actor Hidden State")
                     actor.reset_hidden()
