@@ -2681,7 +2681,7 @@ if __name__ == "__main__":
             n_envs=args.num_envs
         )
 
-    num_eval_rollouts = 16
+    num_eval_rollouts = 4
 
     eval_dict = dict()
     for eval_rollout in range(num_eval_rollouts):
@@ -3280,10 +3280,11 @@ if __name__ == "__main__":
 
                 if clip_gradients:
                     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.max_grad_norm)
-
                 
                 if iteration % args.writer_interval == 0:
                     actor_grad_clipped = get_grad_norm(actor)
+                    writer.add_scalar("grads/actor_grad", actor_grad, global_step)
+                    writer.add_scalar("grads/actor_grad_clipped", actor_grad_clipped, global_step)
 
                 actor_optimizer.step()
 
