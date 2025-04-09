@@ -143,6 +143,8 @@ class Args:
     # Custom Algorthim Arguments
     """Which prelearning sample strategy to use (e.g., 'scales', 'normal')"""
     prelearning_sample: str = ""
+    """How many steps to optimize the q function before actor training starts"""
+    actor_training_delay: int = 10_000
 
     # visual pendulum parameters
     # learning_rate: float = 3e-4
@@ -3229,7 +3231,7 @@ if __name__ == "__main__":
                 torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=args.max_grad_norm)
             q_optimizer.step()
 
-            if global_step % args.policy_frequency == 0:
+            if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
 
 
                 if prior_state_models:
