@@ -2413,6 +2413,15 @@ class OUNoiseTorch:
         """Apply exponential decay to sigma."""
         self.sigma = max(self.min_sigma, self.sigma * self.decay_rate)
 
+def get_grad_norm(model, norm_type=2):
+    total_norm = 0.0
+    parameters = [p for p in model.parameters() if p.grad is not None]
+    for p in parameters:
+        param_norm = p.grad.data.norm(norm_type)
+        total_norm += param_norm.item() ** norm_type
+    total_norm = total_norm ** (1. / norm_type)
+    return total_norm
+
 if __name__ == "__main__":
 
 
@@ -3229,13 +3238,26 @@ if __name__ == "__main__":
 
             qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
 
+
+            if iteration % args.writer_interval == 0:
+                qf1_grad = get_grad_norm(qf1)
+
             clip_gradients = True
             # optimize the model
             q_optimizer.zero_grad()
             qf1_loss.backward(retain_graph=bptt)
             # qf1_loss.backward(retain_graph=True)
+            
             if clip_gradients:
                 torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=args.max_grad_norm)
+
+            if iteration % args.writer_interval == 0:
+
+                qf1_grad_clipped = get_grad_norm(qf1)
+                writer.add_scalar("grads/qf1_grad", qf1_grad, global_step)
+                writer.add_scalar("grads/qf1_grad_clipped", qf1_grad_clipped, global_step)
+
+
             q_optimizer.step()
 
             if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
@@ -3263,8 +3285,17 @@ if __name__ == "__main__":
 
                 actor_optimizer.zero_grad()
                 actor_loss.backward(retain_graph=bptt)
+
+                if iteration % args.writer_interval == 0:
+                    actor_grad = get_grad_norm(actor)
+
                 if clip_gradients:
                     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.max_grad_norm)
+
+                
+                if iteration % args.writer_interval == 0:
+                    actor_grad_clipped = get_grad_norm(actor)
+
                 actor_optimizer.step()
 
                 if iteration % args.writer_interval == 0:
@@ -3279,7 +3310,7 @@ if __name__ == "__main__":
 
 
             if iteration % args.writer_interval == 0:
-                writer.add_scalar("losses/qf1_values", qf1_a_values_batch.mean().item(), global_step)
+                writer.add_scalar("losses/qf1_a_values", qf1_a_values_batch.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
 
 
