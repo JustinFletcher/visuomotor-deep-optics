@@ -10,14 +10,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --max_grad_norm=0.1 --policy_frequency=1 --exploration_noise=0.01 --use_multiscale_head --exp_name="optomech-nanoelf""
-    "--gpu_list=1 --max_grad_norm=1.0 --policy_frequency=3 --exploration_noise=0.01 --use_multiscale_head --exp_name="optomech-nanoelf""
-    "--gpu_list=2 --max_grad_norm=1.0 --policy_frequency=1 --exploration_noise=0.001 --use_multiscale_head --exp_name="optomech-nanoelf""
-    "--gpu_list=3 --max_grad_norm=0.1 --policy_frequency=3 --exploration_noise=0.001 --use_multiscale_head --exp_name="optomech-nanoelf""
-    "--gpu_list=4 --max_grad_norm=0.1 --policy_frequency=1 --exploration_noise=0.01 --exp_name="optomech-nanoelf""
-    "--gpu_list=5 --max_grad_norm=1.0 --policy_frequency=3 --exploration_noise=0.01 --exp_name="optomech-nanoelf""
-    "--gpu_list=6 --max_grad_norm=1.0 --policy_frequency=1 --exploration_noise=0.001 --exp_name="optomech-nanoelf""
-    "--gpu_list=7 --max_grad_norm=0.1 --policy_frequency=3 --exploration_noise=0.001 --exp_name="optomech-nanoelf""
+    "--gpu_list=0 --max_grad_norm=0.1 --policy_frequency=1 --exploration_noise=0.01 --actor_type=impalalarge --critic_type=impalalarge --use_multiscale_head --exp_name="optomech-nanoelf-largeimpala""
+    "--gpu_list=1 --max_grad_norm=1.0 --policy_frequency=3 --exploration_noise=0.01 --actor_type=impalalarge --critic_type=impalalarge --use_multiscale_head --exp_name="optomech-nanoelf-largeimpala""
+    "--gpu_list=2 --max_grad_norm=1.0 --policy_frequency=1 --exploration_noise=0.001 --actor_type=impalalarge --critic_type=impalalarge --actor_type=impala --critic_type=impala --use_multiscale_head --exp_name="optomech-nanoelf-largeimpala""
+    "--gpu_list=3 --max_grad_norm=0.1 --policy_frequency=3 --exploration_noise=0.001 --actor_type=impalalarge --critic_type=impalalarge --use_multiscale_head --exp_name="optomech-nanoelf-largeimpalaimpala""
+    "--gpu_list=4 --max_grad_norm=0.1 --policy_frequency=1 --exploration_noise=0.01 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala""
+    "--gpu_list=5 --max_grad_norm=1.0 --policy_frequency=3 --exploration_noise=0.01 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala""
+    "--gpu_list=6 --max_grad_norm=1.0 --policy_frequency=1 --exploration_noise=0.001 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala""
+    "--gpu_list=7 --max_grad_norm=0.1 --policy_frequency=3 --exploration_noise=0.001 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala""
 
 
 )
@@ -44,7 +44,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_save_interval=100000 \
         --num_envs=1 \
         --batch_size=32 \
-        --tau=0.0001 \
+        --tau=0.0003 \
         --l2_reg=0.0 \
         --reward_function=negaexpstrehl \
         --reward_scale=10.0 \
@@ -52,15 +52,13 @@ for VARIANT in "${VARIANTS[@]}"; do
         --learning_starts=500_000 \
         --prelearning_sample=scales \
         --max_episode_steps=500 \
-        --actor_type=impalalarge \
-        --critic_type=impalalarge \
-        --actor_learning_rate=1e-3 \
-        --critic_learning_rate=1e-3 \
+        --actor_learning_rate=2e-4 \
+        --critic_learning_rate=3e-4 \
         --qnetwork_channel_scale=16 \
         --actor_channel_scale=16 \
         --actor_fc_scale=256 \
         --qnetwork_fc_scale=256 \
-        --decay_rate=0.9995 \
+        --decay_rate=0.999 \
         --action_scale=1e-2 \
         --writer_interval=1000 \
         $VARIANT &  # Run in background
