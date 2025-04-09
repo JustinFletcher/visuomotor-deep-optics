@@ -1626,7 +1626,6 @@ class ImpalaActor(nn.Module):
                           kernel_size=4,
                           stride=1)),
             nn.ReLU(),
-            nn.Flatten()
         )
 
         # Get the output shape of the visual encoder
@@ -1793,7 +1792,6 @@ class ImpalaCritic(nn.Module):
                           stride=1)
                           ),
             nn.ReLU(),
-            nn.Flatten()
         )
 
         # Get the output shape of the visual encoder
@@ -1979,7 +1977,6 @@ class ImpalaLargeActor(nn.Module):
             encoder_block_2,
             encoder_block_3,
             nn.ReLU(),
-            nn.Flatten()
         )
     
 
@@ -2185,7 +2182,6 @@ class ImpalaLargeCritic(nn.Module):
             encoder_block_2,
             encoder_block_3,
             nn.ReLU(),
-            nn.Flatten()
         )
     
     
@@ -2822,8 +2818,8 @@ if __name__ == "__main__":
                     random_policy_returns_array = np.array(random_policy_returns_list).flatten()
 
                     mean_eval_episode_return = np.mean(episodic_returns_array)
-                    mean_zero_return_advantage = np.mean(episodic_returns_array - zero_policy_returns_array)
-                    mean_random_return_advantage = np.mean(episodic_returns_array - random_policy_returns_array)
+                    mean_zero_return_advantage = np.mean(episodic_returns_array / zero_policy_returns_array)
+                    mean_random_return_advantage = np.mean(episodic_returns_array / random_policy_returns_array)
 
                     writer.add_scalar("eval/best_policy_mean_returns", mean_eval_episode_return, iteration)
                     writer.add_scalar("eval/best_policy_zero_return_advantage", mean_zero_return_advantage, iteration)
@@ -2892,6 +2888,17 @@ if __name__ == "__main__":
                     zero_policy_returns = eval_rollout_dict["zero_policy_returns"]
                     zero_policy_returns_list.append(zero_policy_returns)
 
+                    episodic_returns = rollout_optomech_policy(
+                        model_path,
+                        env_vars_path=args_store_path,
+                        rollout_episodes=1,
+                        exploration_noise=0.0,
+                        env_kwargs=env_kwargs,
+                    )
+                    eval_rollout_dict["on_policy_returns"][iteration] = episodic_returns
+                    episodic_returns_list.append(episodic_returns)
+
+
                     random_policy_returns = eval_rollout_dict["random_policy_returns"]
                     random_policy_returns_list.append(random_policy_returns)
 
@@ -2900,8 +2907,8 @@ if __name__ == "__main__":
                 random_policy_returns_array = np.array(random_policy_returns_list).flatten()
 
                 mean_eval_episode_return = np.mean(episodic_returns_array)
-                mean_zero_return_advantage = np.mean(episodic_returns_array - zero_policy_returns_array)
-                mean_random_return_advantage = np.mean(episodic_returns_array - random_policy_returns_array)
+                mean_zero_return_advantage = np.mean(episodic_returns_array / zero_policy_returns_array)
+                mean_random_return_advantage = np.mean(episodic_returns_array / random_policy_returns_array)
 
                 writer.add_scalar("eval/mean_returns", mean_eval_episode_return, iteration)
                 writer.add_scalar("eval/zero_return_advantage", mean_zero_return_advantage, iteration)
