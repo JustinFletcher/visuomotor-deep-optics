@@ -2897,17 +2897,6 @@ if __name__ == "__main__":
                     zero_policy_returns = eval_rollout_dict["zero_policy_returns"]
                     zero_policy_returns_list.append(zero_policy_returns)
 
-                    episodic_returns = rollout_optomech_policy(
-                        model_path,
-                        env_vars_path=args_store_path,
-                        rollout_episodes=1,
-                        exploration_noise=0.0,
-                        env_kwargs=env_kwargs,
-                    )
-                    eval_rollout_dict["on_policy_returns"][iteration] = episodic_returns
-                    episodic_returns_list.append(episodic_returns)
-
-
                     random_policy_returns = eval_rollout_dict["random_policy_returns"]
                     random_policy_returns_list.append(random_policy_returns)
 
