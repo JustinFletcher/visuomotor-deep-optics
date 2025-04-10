@@ -10,14 +10,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --actor_training_delay=400_000 --policy_frequency=1 --exploration_noise=0.01 --actor_type=impalalarge --critic_type=impalalarge --exp_name="optomech-nanoelf-largeimpala-pf1-noise0.01-delay400k""
-    "--gpu_list=1 --actor_training_delay=100_000 --policy_frequency=3 --exploration_noise=0.01 --actor_type=impalalarge --critic_type=impalalarge --exp_name="optomech-nanoelf-largeimpala-pf3-noise0.01-delay100k""
-    "--gpu_list=2 --actor_training_delay=100_000 --policy_frequency=1 --exploration_noise=0.001 --actor_type=impalalarge --critic_type=impalalarge --exp_name="optomech-nanoelf-largeimpala-pf1-noise0.001-delay100k""
-    "--gpu_list=3 --actor_training_delay=400_000 --policy_frequency=3 --exploration_noise=0.001 --actor_type=impalalarge --critic_type=impalalarge --exp_name="optomech-nanoelf-largeimpala-pf3-noise0.001-delay400k""
-    "--gpu_list=4 --actor_training_delay=400_000 --policy_frequency=1 --exploration_noise=0.01 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala-pf1-noise0.01-delay400k""
-    "--gpu_list=5 --actor_training_delay=100_000 --policy_frequency=3 --exploration_noise=0.01 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala-pf3-noise0.01-delay100k""
-    "--gpu_list=6 --actor_training_delay=100_000 --policy_frequency=1 --exploration_noise=0.001 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala-pf1-noise0.001-delay100k""
-    "--gpu_list=7 --actor_training_delay=400_000 --policy_frequency=3 --exploration_noise=0.001 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala-pf3-noise0.001-delay400k""
+    "--gpu_list=0 --actor_training_delay=400_000 --policy_frequency=1 --exploration_noise=0.01 --actor_type=impalalarge --critic_type=impalalarge --exp_name="optomech-nanoelf-largeimpala-pf1-noise0.01-delay400k-50kstart""
+    "--gpu_list=1 --actor_training_delay=100_000 --policy_frequency=3 --exploration_noise=0.01 --actor_type=impalalarge --critic_type=impalalarge --exp_name="optomech-nanoelf-largeimpala-pf3-noise0.01-delay100k-50kstart""
+    "--gpu_list=2 --actor_training_delay=100_000 --policy_frequency=1 --exploration_noise=0.001 --actor_type=impalalarge --critic_type=impalalarge --exp_name="optomech-nanoelf-largeimpala-pf1-noise0.001-delay100k-50kstart""
+    "--gpu_list=3 --actor_training_delay=400_000 --policy_frequency=3 --exploration_noise=0.001 --actor_type=impalalarge --critic_type=impalalarge --exp_name="optomech-nanoelf-largeimpala-pf3-noise0.001-delay400k-50kstart""
+    "--gpu_list=4 --actor_training_delay=400_000 --policy_frequency=1 --exploration_noise=0.01 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala-pf1-noise0.01-delay400k-50kstart""
+    "--gpu_list=5 --actor_training_delay=100_000 --policy_frequency=3 --exploration_noise=0.01 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala-pf3-noise0.01-delay100k-50kstart""
+    "--gpu_list=6 --actor_training_delay=100_000 --policy_frequency=1 --exploration_noise=0.001 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala-pf1-noise0.001-delay100k-50kstart""
+    "--gpu_list=7 --actor_training_delay=400_000 --policy_frequency=3 --exploration_noise=0.001 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-smallimpala-pf3-noise0.001-delay400k-50kstart""
 
 
 )
@@ -44,14 +44,14 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_save_interval=100_000 \
         --num_envs=1 \
         --batch_size=32 \
-        --tau=0.0003 \
+        --tau=0.0005 \
         --gamma=0.99 \
         --l2_reg=0.0 \
         --reward_function=strehl \
         --reward_scale=1.0 \
         --max_grad_norm=1.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=500_000 \
+        --learning_starts=50_000 \
         --max_episode_steps=100 \
         --actor_learning_rate=1e-4 \
         --critic_learning_rate=1e-3 \
