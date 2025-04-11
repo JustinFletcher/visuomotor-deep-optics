@@ -60,7 +60,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_fc_scale=256 \
         --qnetwork_fc_scale=256 \
         --decay_rate=0.998 \
-        --action_scale=1.0 \
+        --action_scale=1e-2 \
         --writer_interval=100 \
         $VARIANT &  # Run in background
 done
