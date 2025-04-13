@@ -10,14 +10,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --action_scale=1e-2 --actor_learning_rate=1e-4 --decay_rate=0.998 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-4-decay0.998-as1e-2""
-    "--gpu_list=1 --action_scale=1e-2 --actor_learning_rate=1e-4 --decay_rate=0.999 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-4-decay0.999-as1e-2""
-    "--gpu_list=2 --action_scale=1e-2 --actor_learning_rate=1e-5 --decay_rate=0.998 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-5-decay0.998-as1e-2""
-    "--gpu_list=3 --action_scale=1e-2 --actor_learning_rate=1e-5 --decay_rate=0.999 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-5-decay0.999-as1e-2""
-    "--gpu_list=4 --action_scale=1.0 --actor_learning_rate=1e-4 --decay_rate=0.998 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-4-decay0.998-as1e-0""
-    "--gpu_list=5 --action_scale=1.0 --actor_learning_rate=1e-4 --decay_rate=0.999 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-4-decay0.999-as1e-0""
-    "--gpu_list=6 --action_scale=1.0 --actor_learning_rate=1e-5 --decay_rate=0.998 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-5-decay0.998-as1e-0""
-    "--gpu_list=7 --action_scale=1.0 --actor_learning_rate=1e-5 --decay_rate=0.999 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-5-decay0.999-as1e-0""
+    "--gpu_list=0 --action_scale=1e-2 --tau=0.0001 --actor_learning_rate=1e-4 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-4-as1e-2-tau1e-4""
+    "--gpu_list=1 --action_scale=1e-2 --tau=0.0001 --actor_learning_rate=1e-4 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-4-as1e-2-tau1e-4""
+    "--gpu_list=2 --action_scale=1e-2 --tau=0.0001 --actor_learning_rate=1e-5 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-5-as1e-2-tau1e-4""
+    "--gpu_list=3 --action_scale=1e-2 --tau=0.0001 --actor_learning_rate=1e-5 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-5-as1e-2-tau1e-4""
+    "--gpu_list=4 --action_scale=1.0 --tau=0.0005 --actor_learning_rate=1e-4 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-4-as1e-0-tau5e-4""
+    "--gpu_list=5 --action_scale=1.0 --tau=0.0005 --actor_learning_rate=1e-4 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-4-as1e-0-tau5e-4""
+    "--gpu_list=6 --action_scale=1.0 --tau=0.0005 --actor_learning_rate=1e-5 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-5-as1e-0-tau5e-4""
+    "--gpu_list=7 --action_scale=1.0 --tau=0.0005 --actor_learning_rate=1e-5 --actor_type=impala --critic_type=impala --exp_name="optomech-nanoelf-lr1e-5-as1e-0-tau5e-4""
     
     
 
@@ -45,7 +45,6 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_save_interval=100_000 \
         --num_envs=1 \
         --batch_size=32 \
-        --tau=0.0005 \
         --gamma=0.99 \
         --l2_reg=0.0 \
         --reward_function=strehl \
@@ -61,7 +60,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_channel_scale=16 \
         --actor_fc_scale=256 \
         --qnetwork_fc_scale=256 \
-        --exploration_noise=0.01 \
+        --exploration_noise=0.1 \
+        --decay_rate=0.999 \
         --writer_interval=100 \
         $VARIANT &  # Run in background
 done
