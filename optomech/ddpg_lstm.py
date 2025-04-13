@@ -3012,7 +3012,7 @@ if __name__ == "__main__":
         prior_actions = actions.copy()
 
         # ALGO LOGIC: put action logic here
-        if global_step < args.learning_starts:
+        if global_step < (args.learning_starts + args.actor_training_delay):
 
             if args.prelearning_sample == "scales":
 
@@ -3096,7 +3096,7 @@ if __name__ == "__main__":
         if first_step_reward is None:
             first_step_reward = rewards
 
-        if iteration % args.writer_interval == 0 and global_step > args.learning_starts:
+        if iteration % args.writer_interval == 0 and (global_step > args.learning_starts + args.actor_training_delay):
             writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
             writer.add_scalar("online/action_std", actions.std().item(), global_step)
             # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
@@ -3110,7 +3110,7 @@ if __name__ == "__main__":
                     action_label = f"online/action_{i}_{j}"
                     writer.add_scalar(action_label, action_element, global_step)
 
-        if iteration % args.writer_interval == 0 and global_step < args.learning_starts:
+        if iteration % args.writer_interval == 0 and (global_step > args.learning_starts + args.actor_training_delay):
             writer.add_scalar("prelearning/action_mean", actions.mean().item(), global_step)
             writer.add_scalar("prelearning/action_std", actions.std().item(), global_step)
             # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
@@ -3158,17 +3158,6 @@ if __name__ == "__main__":
 
             rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
-    
-        
-         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        # if "final_info" in infos:
-        #     for info in infos["final_info"]:
-
-        #         print(info)
-        #         print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
-        #         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-        #         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-        #         break
 
          # TRY NOT TO MODIFY: record rewards for plotting purposes
         if infos:
@@ -3235,8 +3224,6 @@ if __name__ == "__main__":
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
-
-            # data = rb.sample(args.batch_size)
 
             # Unpack data
             if bptt:
@@ -3423,7 +3410,7 @@ if __name__ == "__main__":
                 for param, target_param in zip(actor.parameters(), target_actor.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-            # TODO: Once stable, update this outward.
+            # Soft update the target networks.
             for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
             for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
