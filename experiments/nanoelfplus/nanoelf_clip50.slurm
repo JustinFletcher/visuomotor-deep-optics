@@ -44,7 +44,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --save_model \
         --model_save_interval=100_000 \
         --num_envs=1 \
-        --batch_size=64 \
+        --batch_size=32 \
         --gamma=0.99 \
         --l2_reg=0.0 \
         --reward_function=strehl \
@@ -56,10 +56,10 @@ for VARIANT in "${VARIANTS[@]}"; do
         --policy_frequency=3 \
         --max_episode_steps=100 \
         --critic_learning_rate=1e-3 \
-        --qnetwork_channel_scale=32 \
-        --actor_channel_scale=32 \
-        --actor_fc_scale=512 \
-        --qnetwork_fc_scale=512 \
+        --qnetwork_channel_scale=16 \
+        --actor_channel_scale=16 \
+        --actor_fc_scale=256 \
+        --qnetwork_fc_scale=256 \
         --exploration_noise=0.1 \
         --decay_rate=0.9993 \
         --writer_interval=100 \
