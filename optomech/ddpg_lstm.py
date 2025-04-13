@@ -78,7 +78,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "Hopper-v4"
     """the environment id of the Atari game"""
-    total_timesteps: int = 10_000_000
+    total_timesteps: int = 100_000_000
     """total timesteps of the experiments"""
     # learning_rate: float = 3e-4
     actor_learning_rate: float = 1e-5
@@ -1646,6 +1646,7 @@ class ImpalaActor(nn.Module):
                     mlp_output_size),
                 std=np.sqrt(2.0)
             ),
+            nn.LayerNorm(mlp_output_size),
             nn.ReLU(),
         )
 
@@ -1813,6 +1814,7 @@ class ImpalaCritic(nn.Module):
                     mlp_output_size),
                 std=np.sqrt(2)
             ),
+            nn.LayerNorm(mlp_output_size),
             nn.ReLU(),
         )
 
@@ -2480,12 +2482,6 @@ if __name__ == "__main__":
     with open(args_store_path, "w") as f:
         json.dump(vars(args), f)
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
-
     # Check if MPS is available
     if torch.cuda.is_available():
         print("Running with CUDA")
@@ -2516,6 +2512,7 @@ if __name__ == "__main__":
         )
     
     bptt = False
+    
 
     if args.actor_type == "impala" or args.actor_type == "impalalarge":
         prior_state_models = True
@@ -2590,58 +2587,134 @@ if __name__ == "__main__":
     
 
     if args.critic_type == "vanilla":
-        # qf1 = QNetwork(envs).to(device)
-        qf1 = VanillaCritic(envs,
-                    channel_scale=args.qnetwork_channel_scale,
-                    fc_scale=args.qnetwork_fc_scale,
-                    low_dim=args.low_dim_qnetwork,
-                           action_scale=args.action_scale).to(device)
+
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        qf1 = VanillaCritic(
+            envs,
+            channel_scale=args.qnetwork_channel_scale,
+            fc_scale=args.qnetwork_fc_scale,
+            low_dim=args.low_dim_qnetwork,
+            action_scale=args.action_scale).to(device)
+        qf1_target = VanillaCritic(
+            envs,
+            channel_scale=args.qnetwork_channel_scale,
+            fc_scale=args.qnetwork_fc_scale,
+            low_dim=args.low_dim_qnetwork,
+            action_scale=args.action_scale).to(device)
         
-        # qf1_target = QNetwork(envs).to(device)
-        qf1_target = VanillaCritic(envs,
-                            channel_scale=args.qnetwork_channel_scale,
-                            fc_scale=args.qnetwork_fc_scale,
-                            low_dim=args.low_dim_qnetwork,
-                           action_scale=args.action_scale).to(device)
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        qf2 = VanillaCritic(
+            envs,
+            channel_scale=args.qnetwork_channel_scale,
+            fc_scale=args.qnetwork_fc_scale,
+            low_dim=args.low_dim_qnetwork,
+            action_scale=args.action_scale).to(device)
+        qf2_target = VanillaCritic(
+            envs,
+            channel_scale=args.qnetwork_channel_scale,
+            fc_scale=args.qnetwork_fc_scale,
+            low_dim=args.low_dim_qnetwork,
+            action_scale=args.action_scale).to(device)
 
     elif args.critic_type == "custom":
 
-        qf1 = CustomCritic(envs,
-                           device,
-                           channel_scale=args.actor_channel_scale,
-                           fc_scale=args.actor_fc_scale,
-                                   bptt=bptt).to(device)
-        qf1_target = CustomCritic(envs,
-                                  device,
-                                  channel_scale=args.actor_channel_scale,
-                                  fc_scale=args.actor_fc_scale,
-                                   bptt=bptt,
-                           action_scale=args.action_scale).to(device)
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        qf1 = CustomCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            bptt=bptt).to(device)
+        qf1_target = CustomCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            bptt=bptt,
+            action_scale=args.action_scale).to(device)
+        
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        qf2 = CustomCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            bptt=bptt).to(device)
+        qf2_target = CustomCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            bptt=bptt,
+            action_scale=args.action_scale).to(device)
 
     elif args.critic_type == "impala":
-        qf1 = ImpalaCritic(envs,
-                           device,
-                           channel_scale=args.actor_channel_scale,
-                           fc_scale=args.actor_fc_scale,
-                           action_scale=args.action_scale).to(device)
-        qf1_target = ImpalaCritic(envs,
-                                  device,
-                                  channel_scale=args.actor_channel_scale,
-                                  fc_scale=args.actor_fc_scale,
-                           action_scale=args.action_scale).to(device)
+
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        qf1 = ImpalaCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale+16,
+            action_scale=args.action_scale).to(device)
+        qf1_target = ImpalaCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale+16,
+            action_scale=args.action_scale).to(device)
+        
+        _ = torch.randn(1000)
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        _ = torch.randn(1000)
+        qf2 = ImpalaCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            action_scale=args.action_scale).to(device)
+        qf2_target = ImpalaCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            action_scale=args.action_scale).to(device)
+        
+        for p in qf2.parameters():
+            p.data += 1e-3 * torch.randn_like(p)
+        for p in qf2_target.parameters():
+            p.data += 1e-3 * torch.randn_like(p)
         
     elif args.critic_type == "impalalarge":
 
-        qf1 = ImpalaLargeCritic(envs,
-                           device,
-                           channel_scale=args.actor_channel_scale,
-                           fc_scale=args.actor_fc_scale,
-                           action_scale=args.action_scale).to(device)
-        qf1_target = ImpalaLargeCritic(envs,
-                                  device,
-                                  channel_scale=args.actor_channel_scale,
-                                  fc_scale=args.actor_fc_scale,
-                           action_scale=args.action_scale).to(device)
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        qf1 = ImpalaLargeCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            action_scale=args.action_scale).to(device)
+        qf1_target = ImpalaLargeCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            action_scale=args.action_scale).to(device)
+        _ = torch.randn(1000)
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        _ = torch.randn(1000)
+        qf2 = ImpalaLargeCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            action_scale=args.action_scale).to(device)
+        qf2_target = ImpalaLargeCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            action_scale=args.action_scale).to(device)
 
     else:
         raise ValueError("Invalid critic type specified.")
@@ -2659,9 +2732,22 @@ if __name__ == "__main__":
     summary(actor, )
     summary(qf1,)
 
+    # Write a test to fail if qf1 and qf2 have any identical parameters.
+    any_different = False
+    for p1, p2 in zip(qf1.parameters(), qf2.parameters()):
+        if not(p1.data.equal(p2.data)):
+            any_different = True
+            break
+
+    # print([torch.allclose(p1, p2) for p1, p2 in zip(qf1.parameters(), qf2.parameters())])
+    # print("qf1 and qf2 have different parameters.")
+    
+
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
-    q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.critic_learning_rate)
+    qf2_target.load_state_dict(qf2.state_dict())
+    qf1_optimizer = optim.Adam(list(qf1.parameters()), lr=args.critic_learning_rate)
+    qf2_optimizer = optim.Adam(list(qf2.parameters()), lr=args.critic_learning_rate)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.actor_learning_rate)
 
     envs.single_observation_space.dtype = np.float32
@@ -2717,6 +2803,14 @@ if __name__ == "__main__":
     obs, info = envs.reset(seed=args.seed)
 
     print("Environments Reset.")
+
+
+    # TRY NOT TO MODIFY: seeding
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.deterministic = args.torch_deterministic
+
 
     episode_state = list()
     episode_action = list()
@@ -3193,27 +3287,55 @@ if __name__ == "__main__":
 
                 if prior_state_models:
 
+                    # TODO: I belive target smoothing goes here, added to next_state_actions_batch.
+                    # TODO: Make sure the noise doesn't need to be random per-element.
+
+                    # next_action = (actor_target(next_state) + noise).clamp(-1, 1)
+
                     next_state_actions_batch = target_actor(
                         next_observations_batch.to(device),
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device)
                     )
+
+                    policy_noise = 0.2
+
+                    noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
+                    # TODO: WARNING: This will break asymmetric action spaces.
+                    noisy_next_action = (next_state_actions_batch + noise).clamp(float(envs.single_action_space.low[0]), float(envs.single_action_space.high[0]))  # assume action range [-1, 1]
+
                     qf1_next_target_batch = qf1_target(
                         next_observations_batch.to(device),
                         next_state_actions_batch.to(device),
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device)
                     )
+                    #TODO: Verfiy that we nned to use the twin target here.
+                    qf2_next_target_batch = qf2_target(
+                        next_observations_batch.to(device),
+                        next_state_actions_batch.to(device),
+                        prior_actions_batch.to(device),
+                        prior_rewards_batch.to(device)
+                    )
+                    qf1_next_target_batch = torch.min(qf1_next_target_batch, qf2_next_target_batch)
 
                 else:
 
                     next_state_actions_batch = target_actor(next_observations_batch)
                     qf1_next_target_batch = qf1_target(next_observations_batch, next_state_actions_batch)
+                    qf2_next_target_batch = qf2_target(next_observations_batch, next_state_actions_batch)
+                    qf1_next_target_batch = torch.min(qf1_next_target_batch, qf2_next_target_batch)
                 
                 next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
 
             if prior_state_models:
                 qf1_a_values_batch = qf1(
+                    observations_batch.to(device),
+                    actions_batch_batch.to(device),
+                    prior_actions_batch.to(device),
+                    prior_rewards_batch.to(device)
+                ).view(-1)
+                qf2_a_values_batch = qf2(
                     observations_batch.to(device),
                     actions_batch_batch.to(device),
                     prior_actions_batch.to(device),
@@ -3225,32 +3347,39 @@ if __name__ == "__main__":
                     actions_batch_batch.to(device)
                 ).view(-1)
 
-            qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
-
-
-            if iteration % args.writer_interval == 0:
-                qf1_grad = get_grad_norm(qf1)
 
             clip_gradients = True
-            # optimize the model
-            q_optimizer.zero_grad()
-            qf1_loss.backward(retain_graph=bptt)
-            # qf1_loss.backward(retain_graph=True)
             
+            qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
+            if iteration % args.writer_interval == 0:
+                qf1_grad = get_grad_norm(qf1)
+            qf1_optimizer.zero_grad()
+            qf1_loss.backward(retain_graph=bptt)
             if clip_gradients:
                 torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=args.max_grad_norm)
-
             if iteration % args.writer_interval == 0:
-
                 qf1_grad_clipped = get_grad_norm(qf1)
                 writer.add_scalar("grads/qf1_grad", qf1_grad, global_step)
                 writer.add_scalar("grads/qf1_grad_clipped", qf1_grad_clipped, global_step)
+            # Step the critic optimizers.
+            qf1_optimizer.step()
 
+            qf2_loss = F.mse_loss(qf2_a_values_batch, next_q_value_batch)
+            if iteration % args.writer_interval == 0:
+                qf2_grad = get_grad_norm(qf2)
+            qf2_optimizer.zero_grad()
+            qf2_loss.backward(retain_graph=bptt)
+            if clip_gradients:
+                torch.nn.utils.clip_grad_norm_(qf2.parameters(), max_norm=args.max_grad_norm)
+            if iteration % args.writer_interval == 0:
+                qf2_grad_clipped = get_grad_norm(qf2)
+                writer.add_scalar("grads/qf2_grad", qf2_grad, global_step)
+                writer.add_scalar("grads/qf2_grad_clipped", qf2_grad_clipped, global_step)
+            # Step the critic optimizers.
+            qf2_optimizer.step()
 
-            q_optimizer.step()
-
+            # If it a policy update step and we're past the actor training delay, update the actor.
             if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
-
 
                 if prior_state_models:
                     actor_loss = -qf1(
@@ -3297,11 +3426,18 @@ if __name__ == "__main__":
             # TODO: Once stable, update this outward.
             for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+            for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
+                target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
 
             if iteration % args.writer_interval == 0:
                 writer.add_scalar("losses/qf1_a_values", qf1_a_values_batch.mean().item(), global_step)
+                writer.add_scalar("losses/qf2_a_values", qf2_a_values_batch.mean().item(), global_step)
+                # Write the l2 distance between the two qf1 and qf2 outputs.
+                writer.add_scalar("losses/qf1_qf2_l2", torch.linalg.vector_norm(qf1_a_values_batch - qf2_a_values_batch).item(), global_step)
+
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
+                writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
 
 
                 
