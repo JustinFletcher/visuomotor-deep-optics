@@ -2385,7 +2385,7 @@ if __name__ == "__main__":
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device)
                     )
-                    policy_noise = 0.2
+                    policy_noise = 0.001
 
                     noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
                     # TODO: WARNING: This will break asymmetric action spaces.
