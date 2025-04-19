@@ -21,6 +21,7 @@ import torch.optim as optim
 from tensordict import TensorDict
 
 import torch.distributions as dist
+from typing import Tuple
 from torchrl.envs import GymWrapper, TransformedEnv
 # from torchrl.envs.transforms import ToTensor
 from torchrl.data import LazyTensorStorage, TensorDictReplayBuffer
@@ -319,404 +320,6 @@ class ReplayBufferLSTM2:
         return len(self.buffer)
 
 
-
-
-class BasicConv(nn.Module):
-    def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False):
-        super(BasicConv, self).__init__()
-        self.out_channels = out_planes
-        self.conv = nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
-        self.bn = nn.BatchNorm2d(out_planes,eps=1e-5, momentum=0.01, affine=True) if bn else None
-        self.relu = nn.ReLU() if relu else None
-
-    def forward(self, x):
-        x = self.conv(x)
-        if self.bn is not None:
-            x = self.bn(x)
-        if self.relu is not None:
-            x = self.relu(x)
-        return x
-
-class Flatten(nn.Module):
-    def forward(self, x):
-        return x.view(x.size(0), -1)
-
-class ChannelGate(nn.Module):
-    def __init__(self, gate_channels, reduction_ratio=16, pool_types=['avg', 'max']):
-        super(ChannelGate, self).__init__()
-        self.gate_channels = gate_channels
-        self.mlp = nn.Sequential(
-            Flatten(),
-            nn.Linear(gate_channels, gate_channels // reduction_ratio),
-            nn.ReLU(),
-            nn.Linear(gate_channels // reduction_ratio, gate_channels)
-            )
-        self.pool_types = pool_types
-    def forward(self, x):
-        channel_att_sum = None
-        for pool_type in self.pool_types:
-            if pool_type=='avg':
-                avg_pool = F.avg_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
-                channel_att_raw = self.mlp( avg_pool )
-            elif pool_type=='max':
-                max_pool = F.max_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
-                channel_att_raw = self.mlp( max_pool )
-            elif pool_type=='lp':
-                lp_pool = F.lp_pool2d( x, 2, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
-                channel_att_raw = self.mlp( lp_pool )
-            elif pool_type=='lse':
-                # LSE pool only
-                lse_pool = self.logsumexp_2d(x)
-                channel_att_raw = self.mlp( lse_pool )
-
-            if channel_att_sum is None:
-                channel_att_sum = channel_att_raw
-            else:
-                channel_att_sum = channel_att_sum + channel_att_raw
-
-        scale = F.sigmoid( channel_att_sum ).unsqueeze(2).unsqueeze(3).expand_as(x)
-        return x * scale
-
-    def logsumexp_2d(tensor):
-        tensor_flatten = tensor.view(tensor.size(0), tensor.size(1), -1)
-        s, _ = torch.max(tensor_flatten, dim=2, keepdim=True)
-        outputs = s + (tensor_flatten - s).exp().sum(dim=2, keepdim=True).log()
-        return outputs
-
-class ChannelPool(nn.Module):
-    def forward(self, x):
-        return torch.cat( (torch.max(x,1)[0].unsqueeze(1), torch.mean(x,1).unsqueeze(1)), dim=1 )
-
-class SpatialGate(nn.Module):
-    def __init__(self):
-        super(SpatialGate, self).__init__()
-        kernel_size = 7
-        self.compress = ChannelPool()
-        self.spatial = BasicConv(2, 1, kernel_size, stride=1, padding=(kernel_size-1) // 2, relu=False)
-    def forward(self, x):
-        x_compress = self.compress(x)
-        x_out = self.spatial(x_compress)
-        scale = F.sigmoid(x_out) # broadcasting
-        return x * scale
-
-class CBAM(nn.Module):
-    def __init__(self, gate_channels, reduction_ratio=16, pool_types=['avg', 'max'], no_spatial=False):
-        super(CBAM, self).__init__()
-        self.ChannelGate = ChannelGate(gate_channels, reduction_ratio, pool_types)
-        self.no_spatial=no_spatial
-        if not no_spatial:
-            self.SpatialGate = SpatialGate()
-    def forward(self, x):
-        x_out = self.ChannelGate(x)
-        if not self.no_spatial:
-            x_out = self.SpatialGate(x_out)
-        return x_out
-    
-
-class BasicBlock(nn.Module):
-    def __init__(self, in_planes, out_planes, dropRate=0.0):
-        super(BasicBlock, self).__init__()
-        self.bn1 = nn.BatchNorm2d(in_planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1,
-                               padding=1, bias=False)
-        self.droprate = dropRate
-    def forward(self, x):
-        out = self.conv1(self.relu(self.bn1(x)))
-        if self.droprate > 0:
-            out = F.dropout(out, p=self.droprate, training=self.training)
-        return torch.cat([x, out], 1)
-
-class BottleneckBlock(nn.Module):
-    def __init__(self, in_planes, out_planes, dropRate=0.0):
-        super(BottleneckBlock, self).__init__()
-        inter_planes = out_planes * 4
-        self.bn1 = nn.BatchNorm2d(in_planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv1 = nn.Conv2d(in_planes, inter_planes, kernel_size=1, stride=1,
-                               padding=0, bias=False)
-        self.bn2 = nn.BatchNorm2d(inter_planes)
-        self.conv2 = nn.Conv2d(inter_planes, out_planes, kernel_size=3, stride=1,
-                               padding=1, bias=False)
-        self.droprate = dropRate
-    def forward(self, x):
-        out = self.conv1(self.relu(self.bn1(x)))
-        if self.droprate > 0:
-            out = F.dropout(out, p=self.droprate, inplace=False, training=self.training)
-        out = self.conv2(self.relu(self.bn2(out)))
-        if self.droprate > 0:
-            out = F.dropout(out, p=self.droprate, inplace=False, training=self.training)
-        return torch.cat([x, out], 1)
-
-class TransitionBlock(nn.Module):
-    def __init__(self, in_planes, out_planes, dropRate=0.0):
-        super(TransitionBlock, self).__init__()
-        self.bn1 = nn.BatchNorm2d(in_planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=1,
-                               padding=0, bias=False)
-        self.droprate = dropRate
-    def forward(self, x):
-        out = self.conv1(self.relu(self.bn1(x)))
-        if self.droprate > 0:
-            out = F.dropout(out, p=self.droprate, inplace=False, training=self.training)
-        return F.avg_pool2d(out, 2)
-
-class DenseBlock(nn.Module):
-    def __init__(self, nb_layers, in_planes, growth_rate, block, dropRate=0.0):
-        super(DenseBlock, self).__init__()
-        self.layer = self._make_layer(block, in_planes, growth_rate, nb_layers, dropRate)
-    def _make_layer(self, block, in_planes, growth_rate, nb_layers, dropRate):
-        layers = []
-        for i in range(nb_layers):
-            layers.append(block(in_planes+i*growth_rate, growth_rate, dropRate))
-        return nn.Sequential(*layers)
-    def forward(self, x):
-        return self.layer(x)
-
-class DenseNet3(nn.Module):
-    def __init__(self, depth, num_classes, growth_rate=12,
-                 reduction=0.5, bottleneck=True, dropRate=0.0):
-        super(DenseNet3, self).__init__()
-        in_planes = 2 * growth_rate
-        n = (depth - 4) / 3
-        if bottleneck == True:
-            n = n/2
-            block = BottleneckBlock
-        else:
-            block = BasicBlock
-        n = int(n)
-        # 1st conv before any dense block
-        self.conv1 = nn.Conv2d(3, in_planes, kernel_size=3, stride=1,
-                               padding=1, bias=False)
-        # 1st block
-        self.block1 = DenseBlock(n, in_planes, growth_rate, block, dropRate)
-        in_planes = int(in_planes+n*growth_rate)
-        self.trans1 = TransitionBlock(in_planes, int(math.floor(in_planes*reduction)), dropRate=dropRate)
-        in_planes = int(math.floor(in_planes*reduction))
-        # 2nd block
-        self.block2 = DenseBlock(n, in_planes, growth_rate, block, dropRate)
-        in_planes = int(in_planes+n*growth_rate)
-        self.trans2 = TransitionBlock(in_planes, int(math.floor(in_planes*reduction)), dropRate=dropRate)
-        in_planes = int(math.floor(in_planes*reduction))
-        # 3rd block
-        self.block3 = DenseBlock(n, in_planes, growth_rate, block, dropRate)
-        in_planes = int(in_planes+n*growth_rate)
-        # global average pooling and classifier
-        self.bn1 = nn.BatchNorm2d(in_planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.fc = nn.Linear(in_planes, num_classes)
-        self.in_planes = in_planes
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-            elif isinstance(m, nn.Linear):
-                m.bias.data.zero_()
-    def forward(self, x):
-        out = self.conv1(x)
-        out = self.trans1(self.block1(out))
-        out = self.trans2(self.block2(out))
-        out = self.block3(out)
-        out = self.relu(self.bn1(out))
-        out = F.avg_pool2d(out, 8)
-        out = out.view(-1, self.in_planes)
-        return self.fc(out)
-
-
-
-class ConvLSTMCell(nn.Module):
-
-    def __init__(self, input_dim, hidden_dim, kernel_size, bias):
-        """
-        Initialize ConvLSTM cell.
-
-        Parameters
-        ----------
-        input_dim: int
-            Number of channels of input tensor.
-        hidden_dim: int
-            Number of channels of hidden state.
-        kernel_size: (int, int)
-            Size of the convolutional kernel.
-        bias: bool
-            Whether or not to add the bias.
-        """
-
-        super(ConvLSTMCell, self).__init__()
-
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-
-        self.kernel_size = kernel_size
-        self.padding = kernel_size[0] // 2, kernel_size[1] // 2
-        self.bias = bias
-
-        self.conv = nn.Conv2d(in_channels=self.input_dim + self.hidden_dim,
-                              out_channels=4 * self.hidden_dim,
-                              kernel_size=self.kernel_size,
-                              padding=self.padding,
-                              bias=self.bias)
-
-    def forward(self, input_tensor, cur_state):
-        h_cur, c_cur = cur_state
-
-        combined = torch.cat([input_tensor, h_cur], dim=1)  # concatenate along channel axis
-
-        combined_conv = self.conv(combined)
-        cc_i, cc_f, cc_o, cc_g = torch.split(combined_conv, self.hidden_dim, dim=1)
-        i = torch.sigmoid(cc_i)
-        f = torch.sigmoid(cc_f)
-        o = torch.sigmoid(cc_o)
-        g = torch.tanh(cc_g)
-
-        c_next = f * c_cur + i * g
-        h_next = o * torch.tanh(c_next)
-
-        return h_next, c_next
-
-    def init_hidden(self, batch_size, image_size):
-        height, width = image_size
-        return (torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device),
-                torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device))
-
-
-class ConvLSTM(nn.Module):
-
-    """
-
-    Parameters:
-        input_dim: Number of channels in input
-        hidden_dim: Number of hidden channels
-        kernel_size: Size of kernel in convolutions
-        num_layers: Number of LSTM layers stacked on each other
-        batch_first: Whether or not dimension 0 is the batch or not
-        bias: Bias or no bias in Convolution
-        return_all_layers: Return the list of computations for all layers
-        Note: Will do same padding.
-
-    Input:
-        A tensor of size B, T, C, H, W or T, B, C, H, W
-    Output:
-        A tuple of two lists of length num_layers (or length 1 if return_all_layers is False).
-            0 - layer_output_list is the list of lists of length T of each output
-            1 - last_state_list is the list of last states
-                    each element of the list is a tuple (h, c) for hidden state and memory
-    Example:
-        >> x = torch.rand((32, 10, 64, 128, 128))
-        >> convlstm = ConvLSTM(64, 16, 3, 1, True, True, False)
-        >> _, last_states = convlstm(x)
-        >> h = last_states[0][0]  # 0 for layer index, 0 for h index
-    """
-
-    def __init__(self, input_dim, hidden_dim, kernel_size, num_layers,
-                 batch_first=False, bias=True, return_all_layers=False):
-        super(ConvLSTM, self).__init__()
-
-        self._check_kernel_size_consistency(kernel_size)
-
-        # Make sure that both `kernel_size` and `hidden_dim` are lists having len == num_layers
-        kernel_size = self._extend_for_multilayer(kernel_size, num_layers)
-        hidden_dim = self._extend_for_multilayer(hidden_dim, num_layers)
-        if not len(kernel_size) == len(hidden_dim) == num_layers:
-            raise ValueError('Inconsistent list length.')
-
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.kernel_size = kernel_size
-        self.num_layers = num_layers
-        self.batch_first = batch_first
-        self.bias = bias
-        self.return_all_layers = return_all_layers
-
-        cell_list = []
-        for i in range(0, self.num_layers):
-            cur_input_dim = self.input_dim if i == 0 else self.hidden_dim[i - 1]
-
-            cell_list.append(ConvLSTMCell(input_dim=cur_input_dim,
-                                          hidden_dim=self.hidden_dim[i],
-                                          kernel_size=self.kernel_size[i],
-                                          bias=self.bias))
-
-        self.cell_list = nn.ModuleList(cell_list)
-
-    def forward(self, input_tensor, hidden_state=None):
-        """
-
-        Parameters
-        ----------
-        input_tensor: todo
-            5-D Tensor either of shape (t, b, c, h, w) or (b, t, c, h, w)
-        hidden_state: todo
-            None. todo implement stateful
-
-        Returns
-        -------
-        last_state_list, layer_output
-        """
-        if not self.batch_first:
-            # (t, b, c, h, w) -> (b, t, c, h, w)
-            input_tensor = input_tensor.permute(1, 0, 2, 3, 4)
-
-        b, _, _, h, w = input_tensor.size()
-
-        # Implement stateful ConvLSTM
-        if hidden_state is not None:
-            raise NotImplementedError()
-        else:
-            # Since the init is done in forward. Can send image size here
-            hidden_state = self._init_hidden(batch_size=b,
-                                             image_size=(h, w))
-
-        layer_output_list = []
-        last_state_list = []
-
-        seq_len = input_tensor.size(1)
-        cur_layer_input = input_tensor
-
-        for layer_idx in range(self.num_layers):
-
-            h, c = hidden_state[layer_idx]
-            output_inner = []
-            for t in range(seq_len):
-                h, c = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t, :, :, :],
-                                                 cur_state=[h, c])
-                output_inner.append(h)
-
-            layer_output = torch.stack(output_inner, dim=1)
-            cur_layer_input = layer_output
-
-            layer_output_list.append(layer_output)
-            last_state_list.append([h, c])
-
-        if not self.return_all_layers:
-            layer_output_list = layer_output_list[-1:]
-            last_state_list = last_state_list[-1:]
-
-        return layer_output_list, last_state_list
-
-    def _init_hidden(self, batch_size, image_size):
-        init_states = []
-        for i in range(self.num_layers):
-            init_states.append(self.cell_list[i].init_hidden(batch_size, image_size))
-        return init_states
-
-    @staticmethod
-    def _check_kernel_size_consistency(kernel_size):
-        if not (isinstance(kernel_size, tuple) or
-                (isinstance(kernel_size, list) and all([isinstance(elem, tuple) for elem in kernel_size]))):
-            raise ValueError('`kernel_size` must be tuple or list of tuples')
-
-    @staticmethod
-    def _extend_for_multilayer(param, num_layers):
-        if not isinstance(param, list):
-            param = [param] * num_layers
-        return param
-
 class VanillaCritic(nn.Module):
 
     def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True, action_scale=1.0):
@@ -926,535 +529,6 @@ class VanillaActor(nn.Module):
 
         a = (x * self.action_scale + self.action_bias)
         return a
-    
-class CBAMCritic(nn.Module):
-
-    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
-        super().__init__()
-
-
-        self.use_lstm = False
-
-        # Get the observation space shape from the environment.
-        obs_shape = envs.single_observation_space.shape
-     
-        vector_action_size = envs.single_action_space.shape[0]
-
-        # Handle channels-last environments.
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
-            input_channels = envs.single_observation_space.shape[-1]
-        else:
-            self.channels_last = False
-            input_channels = envs.single_observation_space.shape[0]
-        
-        self.visual = not(low_dim)
-
-        self.o_conv = nn.Sequential(
-                # nn.MaxPool2d(4),
-                conv_init(
-                    nn.Conv2d(
-                        input_channels, 
-                        channel_scale, 
-                        kernel_size=8, 
-                        stride=4)
-                        ),
-                nn.ReLU(),
-                conv_init(
-                    nn.Conv2d(
-                        channel_scale, 
-                        channel_scale // 2, 
-                        kernel_size=4, 
-                        stride=2)
-                        ),
-                nn.ReLU(),
-                conv_init(
-                    nn.Conv2d(
-                        channel_scale // 2,
-                        channel_scale // 4,
-                        kernel_size=3,
-                        stride=1)
-                    ),
-                nn.Flatten(),
-            )
-
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            output_dim = self.o_conv(x).shape[1]
-
-        if self.visual:
-            self.merge_fc1 = uniform_init(
-                nn.Linear(output_dim + vector_action_size, fc_scale),
-                lower_bound=-1/np.sqrt(output_dim + vector_action_size),
-                upper_bound=1/np.sqrt(output_dim + vector_action_size))
-        
-        else:
-            self.merge_fc1 = uniform_init(
-                nn.Linear(vector_action_size, fc_scale),
-                lower_bound=-1/np.sqrt(vector_action_size),
-                upper_bound=1/np.sqrt(vector_action_size))
-            
-        self.merge_fc2 = uniform_init(
-            nn.Linear(fc_scale, fc_scale // 2),
-            lower_bound=-1/np.sqrt(fc_scale),
-            upper_bound=1/np.sqrt(fc_scale))
-
-        self.merge_fc3 = uniform_init(
-            nn.Linear(fc_scale // 2, fc_scale // 4),
-            lower_bound=-1/np.sqrt(fc_scale // 2),
-            upper_bound=1/np.sqrt(fc_scale // 2))
-
-        self.fc_q = nn.Linear(fc_scale // 4, 1)
-
-    def forward(self, o, a):
-
-        # Handle channels-last environments.
-        if self.channels_last:
-            o = o.permute(0, 3, 1, 2)
-
-        if self.visual:
-            o = o / 255.0
-            x_o = F.relu(self.o_conv(o.to(torch.float32)))
-            x = torch.cat([x_o, a], 1)
-
-        else: 
-            x = a 
-
-        x = F.relu(self.merge_fc1(x))
-        x = F.relu(self.merge_fc2(x))
-        x = F.relu(self.merge_fc3(x))
-        q_vals = self.fc_q(x)
-
-        return q_vals
-
-class CBAMActor(nn.Module):
-
-    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True):
-        super().__init__()
-
-        self.use_lstm = False
-        # Get the observation space shape from the environment.
-        obs_shape = envs.single_observation_space.shape
-
-        vector_action_size = envs.single_action_space.shape[0]
-
-        # Check if this is a channels-last environment
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
-            input_channels = envs.single_observation_space.shape[-1]
-        else:
-            self.channels_last = False
-            input_channels = envs.single_observation_space.shape[0]
-
-        self.visual = not(low_dim)
-
-
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            output_dim = self.conv(x).shape[1]
-
-        self.ones_output = torch.ones(1, output_dim)
-
-        self.fc1 = uniform_init(
-            nn.Linear(output_dim, fc_scale // 2),
-            lower_bound=-1/np.sqrt(output_dim),
-            upper_bound=1/np.sqrt(output_dim)
-            )
-        self.fc2 = uniform_init(
-            nn.Linear(fc_scale // 2, fc_scale // 4),
-            lower_bound=-1/np.sqrt(fc_scale // 2),
-            upper_bound=1/np.sqrt(fc_scale // 2)
-            )
-        # self.fc3 = uniform_init(
-        #     nn.Linear(
-        #         fc_scale,
-        #         int(np.prod(envs.single_action_space.shape))
-        #         ),
-        #     lower_bound=-3e-4,
-        #     upper_bound=3e-4
-        #     )
-        self.fc3 = uniform_init(
-            nn.Linear(fc_scale // 4, int(np.prod(envs.single_action_space.shape))),
-            lower_bound=-1/np.sqrt(fc_scale // 4),
-            upper_bound=1/np.sqrt(fc_scale // 4)
-        )
-                                
-        # action rescaling
-        self.register_buffer(
-            # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_scale", torch.tensor(action_scale, dtype=torch.float32)
-        )
-        self.register_buffer(
-            # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_bias", torch.tensor(0.0, dtype=torch.float32)
-        )
-
-    def forward(self, x):
-
-        # Handle channels-last environments.
-        if self.channels_last:
-            x = x.permute(0, 3, 1, 2)
-
-        if self.visual:
-            x = x / 255.0
-            print(x.dtype)
-            x = F.relu(self.conv(x.to(torch.float32)))
-        else:
-            x = self.ones_output
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.tanh(self.fc3(x))
-
-        a = (x * self.action_scale + self.action_bias)
-        return a
-
-class RepeatVector(nn.Module):
-    """
-    A simple custom layer that takes an input of shape [batch_size, C]
-    (or [batch_size, C, 1, 1]) and repeats it in H and W dimensions
-    to produce [batch_size, C, H, W].
-    """
-    def __init__(self, out_h=117, out_w=117):
-        super().__init__()
-        self.out_h = out_h
-        self.out_w = out_w
-
-    def forward(self, x):
-        # Assuming x has shape [batch_size, C]
-        # 1) Unsqueeze twice -> shape [batch_size, C, 1, 1]
-        x = x.unsqueeze(-1).unsqueeze(-1)
-        
-        # 2) Repeat along the last two dims -> shape [batch_size, C, H, W]
-        x = x.repeat(1, 1, self.out_h, self.out_w)
-        return x
-    
-class ZeroPad1dToLength(nn.Module):
-    """
-    A custom layer that takes a 2D tensor [batch_size, length]
-    and pads it (on the right) to a specified 'target_length' with zeros.
-    """
-    def __init__(self, target_length: int):
-        super().__init__()
-        self.target_length = target_length
-
-    def forward(self, x):
-        # x has shape: [batch_size, length]
-
-        current_length = x.shape[-1]
-        
-        if current_length > self.target_length:
-            raise ValueError(
-                f"Input length ({current_length}) is greater than "
-                f"the target length ({self.target_length})."
-            )
-        
-        pad_size = self.target_length - current_length
-        
-        # F.pad takes a tuple (pad_left, pad_right) for 1D padding
-        # We pad on the right (second value in tuple).
-        x_padded = F.pad(x, (0, pad_size), mode='constant', value=0.0)
-        # Now x_padded has shape: [batch_size, target_length]
-        
-        return x_padded
-
-class CustomActor(nn.Module):
-
-    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
-        
-        super().__init__()
-        # Initialize the shape parameters
-
-        self.device = device
-        self.use_lstm = True
-        self.lstm_hidden_dim = lstm_hidden_dim
-        self.lstm_num_layers = lstm_num_layers
-
-        vector_action_size = envs.single_action_space.shape[0]
-        # Seperate out the prior action and the image
-
-        obs_shape = envs.single_observation_space.shape
-
-        # Check if this is a channels-last environment
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
-            input_channels = obs_shape[-1]
-        else:
-            self.channels_last = False
-            input_channels = obs_shape[0]
-
-        # Define the visual encoder, so that we know the output shape.
-        self.visual_encoder = nn.Sequential(
-            conv_init(
-                nn.Conv2d(input_channels, 
-                          16,
-                          kernel_size=8,
-                          stride=4)),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(16,
-                          32,
-                          kernel_size=4,
-                          stride=2)),
-            nn.ReLU(),
-            nn.Flatten()
-        )
-
-        # Get the output shape of the visual encoder
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            visual_output_shape = self.visual_encoder(x).shape
-    
-        mlp_output_size = fc_scale
-        self.mlp = nn.Sequential(
-            nn.Flatten(),
-            uniform_init(
-                nn.Linear(
-                    int(np.prod(visual_output_shape[1:])),
-                    mlp_output_size),
-                lower_bound=-1/np.sqrt(np.prod(visual_output_shape[1:])),
-                upper_bound=1/np.sqrt(np.prod(visual_output_shape[1:]))
-            ),
-            nn.ReLU(),
-        )
-
-        # Define the LSTM
-        self.lstm = nn.LSTM(
-            input_size=mlp_output_size,
-            hidden_size=self.lstm_hidden_dim,
-            num_layers=self.lstm_num_layers,
-            batch_first=True
-        )
-
-        # Get the output shape of the LSTM
-        with torch.inference_mode():
-            x = torch.zeros(1, mlp_output_size)
-            pre_head_output_shape = self.lstm(x)[0].shape
-
-        # Build the action head following the convolutional LSTM
-        small_initial_action = True
-        if small_initial_action: 
-            self.action_head = nn.Sequential(
-                uniform_init(
-                    nn.Linear(
-                        int(np.prod(pre_head_output_shape[1:])),
-                        int(np.prod(envs.single_action_space.shape))
-                            ),
-                    lower_bound=-1e-4,
-                    upper_bound=1e-4
-                ),
-                nn.Tanh()
-            )
-        else:
-            self.action_head = nn.Sequential(
-                uniform_init(
-                    nn.Linear(
-                        int(np.prod(pre_head_output_shape[1:])),
-                        int(np.prod(envs.single_action_space.shape))
-                            ),
-                    lower_bound=-1/np.sqrt(np.prod(pre_head_output_shape[1:])),
-                    upper_bound=1/np.sqrt(np.prod(pre_head_output_shape[1:]))
-                ),
-                nn.Tanh()
-            )
-                                
-        # action rescaling
-        self.register_buffer(
-            # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            # "action_scale", torch.tensor(0.01, dtype=torch.float32)
-            "action_scale", torch.tensor(action_scale, dtype=torch.float32)
-        )
-        self.register_buffer(
-            # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_bias", torch.tensor(0.0, dtype=torch.float32)
-        )
-
-        # Important: Set the hidden state to None initially.
-        self.hidden = self.init_hidden()
-
-    def init_hidden(self):
-        """
-        Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
-        Shapes:
-          h, c: [num_layers=1, batch_size, hidden_dim]
-        """
-        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
-        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
-        return (h, c)
-
-    def reset_hidden(self, ):
-        """
-        Reset the agent's internal hidden state to zeros.
-        """
-        self.hidden = self.init_hidden()
-
-    def forward(self, o):
-
-        # Handle channels-last environments.
-        if self.channels_last:
-            o = o.permute(0, 3, 1, 2)
-
-        x_o = self.visual_encoder(o)
-        x = self.mlp(x_o)
-        # TODO: add a_prior, r_prior here
-        # x, new_hidden = self.lstm(torch.cat([x, a], 1), self.hidden)
-        x, new_hidden = self.lstm(x, self.hidden)
-
-        # new_hidden is a tuple (h, c) after processing x
-        # detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
-        detached_hidden = new_hidden[0], new_hidden[1]
-        self.hidden = detached_hidden
-
-        # Apply action prediciton head and activation function
-        a = self.action_head(x)
-
-        a = (a * self.action_scale + self.action_bias)
-        return a
-
-class CustomCritic(nn.Module):
-    
-    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True,
-                                   bptt=False):
-        
-        super().__init__()
-        # Initialize the shape parameters
-
-        self.use_lstm = True
-        self.device = device
-
-        self.lstm_hidden_dim = lstm_hidden_dim
-        self.lstm_num_layers = lstm_num_layers
-
-
-        vector_action_size = envs.single_action_space.shape[0]
-        # Seperate out the prior action and the image
-
-        obs_shape = envs.single_observation_space.shape
-
-        # Check if this is a channels-last environment
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
-            input_channels = obs_shape[-1]
-        else:
-            self.channels_last = False
-            input_channels = obs_shape[0]
-
-        # Define the visual encoder, so that we know the output shape.
-        self.visual_encoder = nn.Sequential(
-            conv_init(
-                nn.Conv2d(input_channels, 
-                          16,
-                          kernel_size=8,
-                          stride=4)
-                          ),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(16,
-                          32,
-                          kernel_size=4,
-                          stride=2)
-                          ),
-            nn.ReLU(),
-            nn.Flatten()
-        )
-
-        # Get the output shape of the visual encoder
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            visual_output_shape = self.visual_encoder(x).shape
-
-
-        mlp_output_size = fc_scale
-        self.mlp = nn.Sequential(
-            nn.Flatten(),
-            uniform_init(
-                nn.Linear(
-                    int(np.prod(visual_output_shape[1:])),
-                    mlp_output_size),
-                lower_bound=-1/np.sqrt(np.prod(visual_output_shape[1:])),
-                upper_bound=1/np.sqrt(np.prod(visual_output_shape[1:]))
-            ),
-            nn.ReLU(),
-        )
-
-        # Define the LSTM
-        self.lstm = nn.LSTM(
-            input_size=mlp_output_size + vector_action_size,
-            hidden_size=self.lstm_hidden_dim,
-            num_layers=self.lstm_num_layers,
-            batch_first=True
-        )
-
-        # Get the output shape of the LSTM
-        with torch.inference_mode():
-            x = torch.zeros(1, mlp_output_size + vector_action_size)
-            pre_head_output_shape = self.lstm(x)[0].shape
-
-        # Build the q head following the convolutional LSTM
-        self.q_head = nn.Sequential(
-            uniform_init(
-                nn.Linear(int(np.prod(pre_head_output_shape[1:])), 1),
-                lower_bound=-1/np.sqrt(np.prod(pre_head_output_shape[1:])),
-                upper_bound=1/np.sqrt(np.prod(pre_head_output_shape[1:]))
-            ),
-        )
-
-        # Important: Set the hidden state to None initially.
-        self.hidden = self.init_hidden()
-
-    def init_hidden(self):
-        """
-        Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
-        Shapes:
-          h, c: [num_layers=1, batch_size, hidden_dim]
-        """
-        # TODO: Consider requires_grad_() here
-        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
-        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device) 
-        return (h, c)
-
-    def reset_hidden(self):
-        """
-        Reset the agent's internal hidden state to zeros.
-        """
-        self.hidden = self.init_hidden()
-
-
-    def forward(self, o, a):
-    
-
-        # Handle channels-last environments.
-        if self.channels_last:
-            o = o.permute(0, 3, 1, 2)
-
-        # Extract visual feature maps
-        x_o = self.visual_encoder(o)
-        x = self.mlp(x_o)
-        # TODO: add a_prior, r_prior here
-        x, new_hidden = self.lstm(torch.cat([x, 100 * a], 1), self.hidden)
-
-        # new_hidden is a tuple (h, c) after processing x
-        detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
-        self.hidden = detached_hidden
-
-        # Apply action prediciton head and activation function
-        q = self.q_head(x)
-        return q
     
 
 class MultiscaleActionModule(nn.Module):
@@ -1679,9 +753,17 @@ class ImpalaActor(nn.Module):
                 layer_init(
                     nn.Linear(
                         int(np.prod(pre_head_output_shape[1:])),
+                        fc_scale // 2,
+                            ),
+                    std=1e-3
+                ),
+                nn.Tanh(),
+                layer_init(
+                    nn.Linear(
+                        fc_scale // 2,
                         int(np.prod(envs.single_action_space.shape))
                             ),
-                    std=1.0
+                    std=1e-3
                 ),
                 nn.Tanh()
             )
@@ -1714,6 +796,9 @@ class ImpalaActor(nn.Module):
         Reset the agent's internal hidden state to zeros.
         """
         self.hidden = self.init_hidden()
+
+    def register_activation_hooks(self, writer=None, global_prefix="actor"):
+        pass
 
     def forward(self, o, a_prior, r_prior):
 
@@ -1833,7 +918,17 @@ class ImpalaCritic(nn.Module):
         # Build the q head following the convolutional LSTM
         self.q_head = nn.Sequential(
             layer_init(
-                nn.Linear(int(np.prod(pre_head_output_shape[1:])), 1),
+                nn.Linear(
+                    int(np.prod(pre_head_output_shape[1:])),
+                    fc_scale // 2
+                    ),
+                std=1.0
+            ),
+            nn.Tanh(),
+            layer_init(
+                nn.Linear(fc_scale // 2,
+                          1
+                          ),
                 std=1.0
             ),
         )
@@ -1857,6 +952,9 @@ class ImpalaCritic(nn.Module):
         Reset the agent's internal hidden state to zeros.
         """
         self.hidden = self.init_hidden()
+
+    def register_activation_hooks(self, writer=None, global_prefix="critic"):
+        pass
 
 
     def forward(self, o, a, a_prior, r_prior):
@@ -2277,8 +1375,6 @@ class ImpalaLargeCritic(nn.Module):
         # Apply action prediciton head and activation function
         q = self.q_head(x)
         return q
-    
-
 
 def uniform_init(layer, lower_bound=-1e-4, upper_bound=1e-4):
 
@@ -2309,8 +1405,6 @@ def init_lstm_weights(lstm):
             n = param.size(0)
             param.data[n//4:n//2] = 1.0  # forget gate bias
     return lstm
-
-
 
 
 def log_gradients_in_model(model, logger, step):
@@ -2564,6 +1658,8 @@ if __name__ == "__main__":
                            use_multiscale_head=args.use_multiscale_head,
                            action_scale=args.action_scale).to(device)
         
+        actor.register_activation_hooks(writer)
+        
 
     elif args.actor_type == "impalalarge":
         
@@ -2655,7 +1751,7 @@ if __name__ == "__main__":
             envs,
             device,
             channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale+16,
+            fc_scale=args.actor_fc_scale + 16,
             action_scale=args.action_scale).to(device)
         qf1_target = ImpalaCritic(
             envs,
@@ -2684,6 +1780,7 @@ if __name__ == "__main__":
             p.data += 1e-3 * torch.randn_like(p)
         for p in qf2_target.parameters():
             p.data += 1e-3 * torch.randn_like(p)
+
         
     elif args.critic_type == "impalalarge":
 
@@ -3016,11 +2113,11 @@ if __name__ == "__main__":
 
             if args.prelearning_sample == "scales":
 
-                pre_learn_iters = int(args.learning_starts / args.num_envs)
-                num_scale_samples = pre_learn_iters // 20
-                scale_reset_interval =  int(pre_learn_iters / num_scale_samples)
+                # pre_learn_iters = int(args.learning_starts / args.num_envs)
+                # num_scale_samples = pre_learn_iters // 20
+                # scale_reset_interval =  int(pre_learn_iters / num_scale_samples)
                 # scale_reset_interval =  int(args.max_episode_steps / args.num_envs)
-                if (iteration % 1) == 0:
+                if (iteration % args.max_episode_steps) == 0:
                 # if global_step % args.max_episode_steps == 0:
                     print("Resetting scales.")
 
@@ -3040,6 +2137,7 @@ if __name__ == "__main__":
                 actions = np.array([(actor.action_scale.cpu() * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
 
         else:
+
             with torch.no_grad():
 
                 decay_noise = True
@@ -3110,7 +2208,7 @@ if __name__ == "__main__":
                     action_label = f"online/action_{i}_{j}"
                     writer.add_scalar(action_label, action_element, global_step)
 
-        if iteration % args.writer_interval == 0 and (global_step > args.learning_starts + args.actor_training_delay):
+        if iteration % args.writer_interval == 0 and (global_step < args.learning_starts + args.actor_training_delay):
             writer.add_scalar("prelearning/action_mean", actions.mean().item(), global_step)
             writer.add_scalar("prelearning/action_std", actions.std().item(), global_step)
             # writer.add_scalar("actions/l2",actions.mean().item(), global_step)
@@ -3442,3 +2540,18 @@ if __name__ == "__main__":
     envs.close()
     writer.close()
     print("Done.")
+
+    def log_activations(self):
+        if self._writer is not None:
+            for name, activation in self._activations.items():
+                self._writer.add_histogram(f"{self._prefix}/{name}", activation.cpu(), self._step)
+                self._writer.add_scalar(f"{self._prefix}/{name}_mean", activation.mean().item(), self._step)
+                self._writer.add_scalar(f"{self._prefix}/{name}_max", activation.max().item(), self._step)
+                self._writer.add_scalar(f"{self._prefix}/{name}_min", activation.min().item(), self._step)
+    def log_activations(self):
+        if self._writer is not None:
+            for name, activation in self._activations.items():
+                self._writer.add_histogram(f"{self._prefix}/{name}", activation.cpu(), self._step)
+                self._writer.add_scalar(f"{self._prefix}/{name}_mean", activation.mean().item(), self._step)
+                self._writer.add_scalar(f"{self._prefix}/{name}_max", activation.max().item(), self._step)
+                self._writer.add_scalar(f"{self._prefix}/{name}_min", activation.min().item(), self._step)

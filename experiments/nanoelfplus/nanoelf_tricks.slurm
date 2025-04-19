@@ -10,7 +10,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --actor_learning_rate=1e-4 --exp_name="optomech-nanoelf-clip50-lr1e-4-as1e-2-tau1e-4""
+    "--gpu_list=0 --exp_name="tricks""
+    "--gpu_list=1 --exp_name="tricks""
+    "--gpu_list=2 --exp_name="tricks""
+    "--gpu_list=3 --exp_name="tricks""
+    "--gpu_list=4 --exp_name="tricks""
+    "--gpu_list=5 --exp_name="tricks""
+    "--gpu_list=6 --exp_name="tricks""
+    "--gpu_list=7 --exp_name="tricks""
   
     
 
@@ -38,28 +45,29 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_save_interval=100_000 \
         --num_envs=1 \
         --batch_size=32 \
-        --gamma=0.99 \
-        --l2_reg=0.0 \
+        --gamma=0.8 \
+        --l2_reg=1e-3 \
         --reward_function=strehl \
-        --reward_scale=1.0 \
+        --reward_scale=10.0 \
         --max_grad_norm=50.0 \
-         --tau=0.0001 \
+        --tau=0.0001 \
         --buffer_size=1_000_000 \
         --learning_starts=50_000 \
         --actor_training_delay=100_000 \
-        --policy_frequency=3 \
+        --policy_frequency=1 \
         --max_episode_steps=100 \
         --critic_learning_rate=1e-3 \
+        --actor_learning_rate=1e-4 \
         --qnetwork_channel_scale=16 \
         --actor_channel_scale=16 \
         --action_scale=1e-2 \
         --actor_type=impala \
-        --critic_type=impala \   
+        --critic_type=impala \
         --actor_fc_scale=256 \
         --qnetwork_fc_scale=256 \
         --exploration_noise=0.1 \
         --decay_rate=0.9993 \
-        --writer_interval=100 \
+        --writer_interval=1 \
         $VARIANT &  # Run in background
 done
 
