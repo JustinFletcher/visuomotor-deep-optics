@@ -146,6 +146,8 @@ class Args:
     prelearning_sample: str = ""
     """How many steps to optimize the q function before actor training starts"""
     actor_training_delay: int = 10_000
+    """Whether or not to use target smoothing"""
+    target_smoothing: bool = False
 
     # visual pendulum parameters
     # learning_rate: float = 3e-4
@@ -2377,17 +2379,21 @@ if __name__ == "__main__":
 
                     # next_action = (actor_target(next_state) + noise).clamp(-1, 1)
 
+
                     next_state_actions_batch = target_actor(
                         next_observations_batch.to(device),
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device)
                     )
-
                     policy_noise = 0.2
 
                     noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
                     # TODO: WARNING: This will break asymmetric action spaces.
                     noisy_next_action = (next_state_actions_batch + noise).clamp(float(envs.single_action_space.low[0]), float(envs.single_action_space.high[0]))  # assume action range [-1, 1]
+
+                    if args.target_smoothing:
+                        next_state_actions_batch = noisy_next_action
+
 
                     qf1_next_target_batch = qf1_target(
                         next_observations_batch.to(device),

@@ -10,15 +10,15 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name="tricks""
-    "--gpu_list=1 --exp_name="tricks""
-    "--gpu_list=2 --exp_name="tricks""
-    "--gpu_list=3 --exp_name="tricks""
-    "--gpu_list=4 --exp_name="tricks""
-    "--gpu_list=5 --exp_name="tricks""
-    "--gpu_list=6 --exp_name="tricks""
-    "--gpu_list=7 --exp_name="tricks""
-  
+    "--gpu_list=0 --exp_name="target_smoothing""
+    "--gpu_list=1 --exp_name="target_smoothing""
+    "--gpu_list=2 --exp_name="target_smoothing""
+    "--gpu_list=3 --exp_name="target_smoothing""
+    "--gpu_list=4 --exp_name="target_smoothing""
+    "--gpu_list=5 --exp_name="target_smoothing""
+    "--gpu_list=6 --exp_name="target_smoothing""
+    "--gpu_list=7 --exp_name="target_smoothing""
+    
     
 
 )
@@ -38,6 +38,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --focal_plane_image_size_pixels=64 \
         --observation_mode=image_only \
         --command_secondaries \
+        --target_smoothing \
         --incremental_control \
         --model_wind_diff_motion \
         --init_differential_motion \
@@ -53,7 +54,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --tau=0.0001 \
         --buffer_size=1_000_000 \
         --learning_starts=50_000 \
-        --actor_training_delay=100_000 \
+        --actor_training_delay=50_000 \
         --policy_frequency=1 \
         --max_episode_steps=100 \
         --critic_learning_rate=1e-3 \
@@ -65,7 +66,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_type=impala \
         --actor_fc_scale=256 \
         --qnetwork_fc_scale=256 \
-        --exploration_noise=0.1 \
+        --exploration_noise=0.01 \
         --decay_rate=0.9993 \
         --writer_interval=1 \
         $VARIANT &  # Run in background
