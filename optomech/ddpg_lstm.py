@@ -874,7 +874,7 @@ class ImpalaActor(nn.Module):
         x, new_hidden = self.lstm(x, hidden)
         # Remove the sequence dimension if it was added
         if x.dim() == 3:
-            x.squeeze_(1)
+            x = x.squeeze(1)
         #     new_hidden = (new_hidden[0].squeeze(1), new_hidden[1].squeeze(1))
         if new_hidden[0].ndim == 3:
 
@@ -1025,11 +1025,11 @@ class ImpalaCritic(nn.Module):
         # TODO: this will require a total refactor for BPTT
         # Add a sequence dimension to the input
         if x.dim() == 2:
-            x.unsqueeze_(1)
+            x = x.unsqueeze(1)
         x, new_hidden = self.lstm(x, hidden)
         # Remove the sequence dimension if it was added
         if x.dim() == 3:
-            x.squeeze_(1)
+            x = x.squeeze(1)
             new_hidden = (new_hidden[0].squeeze(1), new_hidden[1].squeeze(1))
 
         # Apply action prediciton head and activation function
@@ -2476,7 +2476,7 @@ if __name__ == "__main__":
                             prior_rewards_batch.to(device),
                             actor_hidden_batch,
                         )
-                    policy_noise = 0.1
+                    policy_noise = 0.01
 
                     noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
                     # TODO: WARNING: This will break asymmetric action spaces.
