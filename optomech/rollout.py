@@ -207,23 +207,33 @@ def rollout_optomech_policy(model_path=None,
     obs, _ = envs.reset()
     episodic_returns = list()
 
+
+    def get_zero_hidden(lstm_num_layers=1, lstm_hidden_dim=256):
+        """
+        Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
+        Shapes:
+          h, c: [num_layers=1, batch_size, hidden_dim]
+        """
+        h = torch.zeros(lstm_num_layers, lstm_hidden_dim,)
+        c = torch.zeros(lstm_num_layers, lstm_hidden_dim,)
+        return (h, c)
+
+
     if model_path is not None:
         # Load our actor model.
         actor = torch.load(model_path, weights_only=False, map_location=device)
+        hidden = get_zero_hidden(lstm_num_layers=1, lstm_hidden_dim=args.actor_fc_scale)
 
     # Reset the global step counter.
     global_step = 0
-
-    # Generate UUIDs for each environment episode.
-    # env_uuids = [env.uuid for env in envs]
     env_uuid_attrs = envs.get_attr("uuid")
     env_uuids = [str(env_uuid_attr) for env_uuid_attr in env_uuid_attrs]
     episode_data = list()
-    
-
     prior_actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
     _, rewards, _, _, _ = envs.step(prior_actions)
     prior_rewards = rewards
+
+
 
     # Evaluate the policy for the specified number of episodes.
     while len(episodic_returns) < rollout_episodes:
@@ -263,9 +273,11 @@ def rollout_optomech_policy(model_path=None,
                 # print(prior_action.shape)
                 if args.actor_type == "impala" or args.actor_type == "impalalarge":
             
-                    actions = actor(torch.Tensor(obs).to(device),
-                                    torch.Tensor(prior_actions).to(device),
-                                    torch.Tensor(prior_rewards).unsqueeze(0).to(device))
+                    actions, hidden = actor(
+                        torch.Tensor(obs).to(device),
+                        torch.Tensor(prior_actions).to(device),
+                        torch.Tensor(prior_rewards).unsqueeze(0).to(device),
+                        (hidden[0].to(device), hidden[1].to(device)),)
                 else:
                     actions = actor(torch.Tensor(obs).to(device))
                 actions += torch.normal(torch.zeros_like(actions),
@@ -377,6 +389,9 @@ def rollout_optomech_policy(model_path=None,
                 episode_data = list()
                 # Generate new UUIDs for the next environments.
                 env_uuids = [str(uuid.uuid4()) for _ in range(args.num_envs)]
+
+                if model_path is not None:
+                    hidden = get_zero_hidden(lstm_num_layers=1, lstm_hidden_dim=args.actor_fc_scale)
 
 
         # Update the observations for the next step.
