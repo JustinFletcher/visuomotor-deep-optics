@@ -5,7 +5,7 @@
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 #SBATCH --account=MHPCC96650DAS       # 
-#SBATCH --gres=gpu:A100-SMX4:8
+#SBATCH --gres=gpu:A100-SXM4:8
 #SBATCH --time=72:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
