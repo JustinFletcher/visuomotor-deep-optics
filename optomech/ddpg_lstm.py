@@ -728,20 +728,19 @@ class ImpalaActor(nn.Module):
             self.channels_last = False
             input_channels = obs_shape[0]
 
-        # TODO: I havled the stride!
         # Define the visual encoder, so that we know the output shape.
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
-                          16,
+                          channel_scale,
                           kernel_size=8,
-                          stride=2)),
+                          stride=4)),
             nn.ReLU(),
             conv_init(
-                nn.Conv2d(16,
-                          32,
+                nn.Conv2d(channel_scale,
+                          channel_scale * 2,
                           kernel_size=4,
-                          stride=1)),
+                          stride=2)),
             nn.ReLU(),
         )
 
@@ -800,6 +799,7 @@ class ImpalaActor(nn.Module):
                             ),
                     std=1e-3
                 ),
+                nn.LayerNorm(fc_scale // 2),
                 nn.Tanh(),
                 layer_init(
                     nn.Linear(
@@ -920,21 +920,20 @@ class ImpalaCritic(nn.Module):
             input_channels = obs_shape[0]
 
         # Define the visual encoder, so that we know the output shape.
-        # TODO: I havled the stride!
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
-                          16,
+                          channel_scale,
                           kernel_size=8,
-                          stride=2)
-                          ),
+                          stride=4),
+                ),
             nn.ReLU(),
             conv_init(
-                nn.Conv2d(16,
-                          32,
+                nn.Conv2d(channel_scale,
+                          channel_scale * 2,
                           kernel_size=4,
-                          stride=1)
-                          ),
+                          stride=2)
+                ),
             nn.ReLU(),
         )
 
@@ -982,6 +981,7 @@ class ImpalaCritic(nn.Module):
                     ),
                 std=1.0
             ),
+            nn.LayerNorm(fc_scale // 2),
             nn.Tanh(),
             layer_init(
                 nn.Linear(fc_scale // 2,
@@ -1687,20 +1687,6 @@ if __name__ == "__main__":
                             low_dim=args.low_dim_actor,
                            action_scale=args.action_scale).to(device)
         
-    elif args.actor_type == "custom":
-        actor = CustomActor(envs,
-                            device,
-                            channel_scale=args.actor_channel_scale,
-                            fc_scale=args.actor_fc_scale,
-                            bptt=bptt,
-                           action_scale=args.action_scale).to(device)
-        target_actor = CustomActor(envs,
-                                   device,
-                                   channel_scale=args.actor_channel_scale,
-                                   fc_scale=args.actor_fc_scale,
-                                   bptt=bptt,
-                           action_scale=args.action_scale).to(device)
-
     elif args.actor_type == "impala":
 
         actor = ImpalaActor(envs,
@@ -1767,38 +1753,6 @@ if __name__ == "__main__":
             channel_scale=args.qnetwork_channel_scale,
             fc_scale=args.qnetwork_fc_scale,
             low_dim=args.low_dim_qnetwork,
-            action_scale=args.action_scale).to(device)
-
-    elif args.critic_type == "custom":
-
-        torch.manual_seed(np.random.randint(0, 2**32 - 1))
-        qf1 = CustomCritic(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            bptt=bptt).to(device)
-        qf1_target = CustomCritic(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            bptt=bptt,
-            action_scale=args.action_scale).to(device)
-        
-        torch.manual_seed(np.random.randint(0, 2**32 - 1))
-        qf2 = CustomCritic(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            bptt=bptt).to(device)
-        qf2_target = CustomCritic(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            bptt=bptt,
             action_scale=args.action_scale).to(device)
 
     elif args.critic_type == "impala":
