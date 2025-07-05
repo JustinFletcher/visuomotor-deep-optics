@@ -52,7 +52,6 @@ if __name__ == "__main__":
         args.parent_dir,
         filter_disadvantageous=args.filter_disadvantageous,
         explore_to_exploit_ratio=args.explore_to_exploit_ratio)
-    combined_path = os.path.join(args.parent_dir, args.output_dir)
-    combined_rb.save(combined_path,
+    combined_rb.save(args.output_dir,
                      chunk_size=args.chunk_size,)
     print(f"Saved combined replay buffer to {combined_path}")
