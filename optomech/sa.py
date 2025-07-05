@@ -110,6 +110,7 @@ class Args:
     Command-line arguments for the simulated annealing rollout script.
     """
     # 1. Rollout and Dataset Settings
+    num_processes: int = 1
     num_episodes: int = 1
     dataset: bool = False
     eval_save_path: str = "./tmp/"

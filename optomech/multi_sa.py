@@ -57,4 +57,4 @@ if __name__ == "__main__":
     # multi_args = tyro.cli(MultiArgs)
 
     sa_args = tyro.cli(Args)
-    multi_sa_main(sa_args, num_processes)
+    multi_sa_main(sa_args, sa_args.num_processes)
