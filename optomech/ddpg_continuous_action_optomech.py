@@ -31,8 +31,6 @@ from anytree import Node, RenderTree
 
 import matplotlib.pyplot as plt
 
-from pathlib import Path
-
 
 
 @dataclass
@@ -161,6 +159,11 @@ class Args:
     """The type of aperture to use."""
     max_episode_steps: int = 100
 
+
+    """Toggle to enable discrete control."""
+    discrete_control: bool = False
+    """The number of discrete control steps."""
+    discrete_control_steps: int = 128
     """Toggle to enable incremental control."""
     incremental_control: bool = False
     """Toggle to enable agent control of tensioners."""
@@ -171,6 +174,7 @@ class Args:
     command_tip_tilt: bool = False
     """Toggle to enable agent control of dm."""
     command_dm: bool = False
+
 
 
     """ The type of observation to model 'image_only' or 'image_action'."""
@@ -1344,14 +1348,14 @@ class CustomCritic(nn.Module):
             conv_init(
                 nn.Conv2d(
                     3 * visual_output_channels,
-                    16,
+                    8,
                     kernel_size=7,
                     stride=2)
                 ),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(
-                    16,
+                    8,
                     8,
                     kernel_size=5,
                     stride=2)
@@ -1360,15 +1364,15 @@ class CustomCritic(nn.Module):
             conv_init(
                 nn.Conv2d(
                     8,
-                    4,
+                    8,
                     kernel_size=3,
                     stride=1)
                 ),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(
-                    4,
-                    4,
+                    8,
+                    8,
                     kernel_size=1,
                     stride=2)
                 ),
@@ -1675,20 +1679,6 @@ def make_env(env_id, idx, capture_video, run_name, flags):
 
 if __name__ == "__main__":
 
-    # Register our custom optomech environment.
-    gym.envs.registration.register(
-        id='optomech-v1',
-        entry_point='optomech.optomech:OptomechEnv',
-        # max_episode_steps=4,
-        # reward_threshold=flags.reward_threshold,
-    )
-
-    # Register our custom VisualPendulum environment.
-    gym.envs.registration.register(
-        id='VisualPendulum-v1',
-        entry_point='visual_pendulum:VisualPendulumEnv',
-        max_episode_steps=200,
-    )
 
     import stable_baselines3 as sb3
 
@@ -1701,6 +1691,20 @@ if __name__ == "__main__":
     
 
     args = tyro.cli(Args)
+    # Register our custom optomech environment.
+    gym.envs.registration.register(
+        id='optomech-v1',
+        entry_point='optomech.optomech:OptomechEnv',
+        # max_episode_steps=4,
+        # reward_threshold=flags.reward_threshold,
+    )
+
+    # Register our custom VisualPendulum environment.
+    gym.envs.registration.register(
+        id='VisualPendulum-v1',
+        entry_point='visual_pendulum:VisualPendulumEnv',
+        max_episode_steps=args.max_episode_steps,
+    )
 
 
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
@@ -1842,14 +1846,14 @@ if __name__ == "__main__":
     envs.single_observation_space.dtype = np.float32
 
 
-    rb = ReplayBuffer(
-        args.buffer_size,
-        envs.single_observation_space['image'],
-        envs.single_action_space,
-        device,
-        handle_timeout_termination=False,
-        n_envs=args.num_envs
-    )
+    # rb = ReplayBuffer(
+    #     args.buffer_size,
+    #     envs.single_observation_space['image'],
+    #     envs.single_action_space,
+    #     device,
+    #     handle_timeout_termination=False,
+    #     n_envs=args.num_envs
+    # )
 
     replay_buffer = TensorDictReplayBuffer(
         storage=LazyTensorStorage(args.buffer_size),
@@ -2011,7 +2015,7 @@ if __name__ == "__main__":
 
             for info in infos["final_info"]:
 
-                print(infos)
+                # print(infos)
                 print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
                 writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                 writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
@@ -2032,23 +2036,26 @@ if __name__ == "__main__":
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
+        # print(real_next_obs)
         # print(infos)
         # for idx, trunc in enumerate(truncations):
+        #     print(idx)
         #     if trunc:
-        #         real_next_obs[idx] = infos["final_observation"][idx]
+        #         real_next_obs = infos["final_observation"]
         # rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-        replay_buffer.add(
-            TensorDict(
+
+        print(infos.keys())
+        step_dict = TensorDict(
                 {
                     "observations": obs,
                     "next_observations": real_next_obs,
                     "actions": actions,
                     "rewards": torch.tensor(rewards, dtype=torch.float32),
                     "dones": terminations,
-                    "infos": infos,
+                    "infos": [infos],
                 }
-            )
-        )
+            )   
+        replay_buffer.add(step_dict)
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
@@ -2076,8 +2083,6 @@ if __name__ == "__main__":
             done = torch.squeeze(data['dones'], 1).to(device)
             # print(done.shape)
             # print("Data shape====")
-  
-
             # print("====Data shape: ")
             # print(data['observations']['image'].shape)
             # print(data['observations']['prior_action'].shape)
@@ -2114,8 +2119,9 @@ if __name__ == "__main__":
 
                 action_reg = 0.0
                 actor_loss = -qf1(obs_image, obs_prior_action, action
-                    ).mean() + (action_reg * (actor(obs_image, obs_prior_action)**2)
-                        ).mean()
+                    ).mean() 
+                
+                #+ (action_reg * (actor(obs_image, obs_prior_action)**2)).mean()
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
                 actor_optimizer.step()

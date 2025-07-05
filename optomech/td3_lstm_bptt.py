@@ -40,7 +40,7 @@ import matplotlib.pyplot as plt
 
 
 from rollout import rollout_optomech_policy
-from replay_buffers import *
+
 
 
 @dataclass
@@ -119,8 +119,6 @@ class Args:
 
     save_model: bool = False
     """whether to save model into the `runs/{run_name}` folder"""
-    replay_buffer_load_path: str = None
-    """the path to load the replay buffer from"""
 
     # Actor model parameters
     actor_type: str = "vanilla"
@@ -150,8 +148,6 @@ class Args:
     prelearning_sample: str = ""
     """How many steps to optimize the q function before actor training starts"""
     actor_training_delay: int = 10_000
-    """How many steps to wait before populating the RB"""
-    experience_sampling_delay: int = 10_000
     """Whether or not to use target smoothing"""
     target_smoothing: bool = False
 
@@ -273,6 +269,110 @@ class Args:
     """Whether to model temperature differential motion."""
 
 
+class ReplayBufferWithHiddenStates:
+    """
+    A replay buffer that stores transitions including actor and critic hidden states.
+    Each entry is a tuple:
+    (actor_hidden, qf1_hidden, qf2_hidden, state, action, last_action, reward, last_reward, next_state, done)
+    """
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, actor_hidden, qf1_hidden, qf2_hidden, state, action, last_action, reward, last_reward, next_state, done):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (actor_hidden, qf1_hidden, qf2_hidden, state, action, last_action, reward, last_reward, next_state, done)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        actor_hidden_list = []
+        qf1_hidden_list = []
+        qf2_hidden_list = []
+        s_lst, a_lst, la_lst, r_lst, lr_lst, ns_lst, d_lst = [], [], [], [], [], [], []
+        for transition in batch:
+            actor_hidden, qf1_hidden, qf2_hidden, state, action, last_action, reward, last_reward, next_state, done = transition
+            actor_hidden_list.append(actor_hidden)
+            qf1_hidden_list.append(qf1_hidden)
+            qf2_hidden_list.append(qf2_hidden)
+            s_lst.append(state)
+            a_lst.append(action)
+            la_lst.append(last_action)
+            r_lst.append(reward)
+            lr_lst.append(last_reward)
+            ns_lst.append(next_state)
+            d_lst.append(done)
+
+        actor_h = torch.cat([h for (h, c) in actor_hidden_list], dim=0)
+        actor_c = torch.cat([c for (h, c) in actor_hidden_list], dim=0)
+        actor_hidden_stacked = (actor_h, actor_c)
+
+        qf1_h = torch.cat([h for (h, c) in qf1_hidden_list], dim=0)
+        qf1_c = torch.cat([c for (h, c) in qf1_hidden_list], dim=0)
+        qf1_hidden_stacked = (qf1_h, qf1_c)
+
+        qf2_h = torch.cat([h for (h, c) in qf2_hidden_list], dim=0)
+        qf2_c = torch.cat([c for (h, c) in qf2_hidden_list], dim=0)
+        qf2_hidden_stacked = (qf2_h, qf2_c)
+
+        return actor_hidden_stacked, qf1_hidden_stacked, qf2_hidden_stacked, s_lst, a_lst, la_lst, r_lst, lr_lst, ns_lst, d_lst
+
+    def __len__(self):
+        return len(self.buffer)
+
+class ReplayBufferLSTM2:
+    """ 
+    Replay buffer for agent with LSTM network additionally storing previous action, 
+    initial input hidden state and output hidden state of LSTM.
+    And each sample contains the whole episode instead of a single step.
+    'hidden_in' and 'hidden_out' are only the initial hidden state for each episode, for LSTM initialization.
+
+    """
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, hidden_in, hidden_out, state, action, last_action, reward, last_reward, next_state, done):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (hidden_in, hidden_out, state, action, last_action, reward, last_reward, next_state, done)
+        self.position = int((self.position + 1) % self.capacity)  # as a ring buffer
+
+    def sample(self, batch_size):
+        s_lst, a_lst, la_lst, r_lst, lr_lst, ns_lst, hi_lst, ci_lst, ho_lst, co_lst, d_lst=[],[],[],[],[],[],[],[],[],[],[]
+        batch = random.sample(self.buffer, batch_size)
+        for sample in batch:
+            (h_in, c_in), (h_out, c_out), state, action, last_action, reward, last_reward, next_state, done = sample
+            s_lst.append(state) 
+            a_lst.append(action)
+            la_lst.append(last_action)
+            r_lst.append(reward)
+            lr_lst.append(last_reward)
+            ns_lst.append(next_state)
+            d_lst.append(done)
+            hi_lst.append(h_in)  # h_in: (1, batch_size=1, hidden_size)
+            ci_lst.append(c_in)
+            ho_lst.append(h_out)
+            co_lst.append(c_out)
+        hi_lst = torch.cat(hi_lst, dim=-2).detach() # cat along the batch dim
+        ho_lst = torch.cat(ho_lst, dim=-2).detach()
+        ci_lst = torch.cat(ci_lst, dim=-2).detach()
+        co_lst = torch.cat(co_lst, dim=-2).detach()
+
+        hidden_in = (hi_lst, ci_lst)
+        hidden_out = (ho_lst, co_lst)
+
+        return hidden_in, hidden_out, s_lst, a_lst, la_lst, r_lst, lr_lst, ns_lst, d_lst
+
+    def __len__(
+            self):  # cannot work in multiprocessing case, len(replay_buffer) is not available in proxy of manager!
+        return len(self.buffer)
+
+    def get_length(self):
+        return len(self.buffer)
 
 
 class VanillaCritic(nn.Module):
@@ -615,7 +715,7 @@ class MultiscaleActionModule(nn.Module):
 
 class ImpalaActor(nn.Module):
 
-    def __init__(self, envs, device, lstm_hidden_dim=128, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, use_multiscale_head=False, action_scale=1.0):
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, use_multiscale_head=False, action_scale=1.0):
         
         super().__init__()
         # Initialize the shape parameters
@@ -623,7 +723,7 @@ class ImpalaActor(nn.Module):
         self.device = device
         self.use_lstm = True
         self.bptt = bptt
-        self.lstm_hidden_dim = lstm_hidden_dim
+        self.lstm_hidden_dim = fc_scale
         self.lstm_num_layers = lstm_num_layers
         self.use_multiscale_head = use_multiscale_head
 
@@ -640,25 +740,20 @@ class ImpalaActor(nn.Module):
             self.channels_last = False
             input_channels = obs_shape[0]
 
+        # TODO: I havled the stride!
         # Define the visual encoder, so that we know the output shape.
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
-                          channel_scale,
+                          16,
                           kernel_size=8,
-                          stride=4)),
+                          stride=2)),
             nn.ReLU(),
             conv_init(
-                nn.Conv2d(channel_scale,
-                          channel_scale * 2,
+                nn.Conv2d(16,
+                          32,
                           kernel_size=4,
-                          stride=2)),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(channel_scale * 2,
-                          channel_scale * 4,
-                          kernel_size=2,
-                          stride=2)),
+                          stride=1)),
             nn.ReLU(),
         )
 
@@ -717,7 +812,6 @@ class ImpalaActor(nn.Module):
                             ),
                     std=1e-3
                 ),
-                nn.LayerNorm(fc_scale // 2),
                 nn.Tanh(),
                 layer_init(
                     nn.Linear(
@@ -754,14 +848,9 @@ class ImpalaActor(nn.Module):
         return (h, c)
 
 
-    def forward(self, o, a_prior, r_prior, hidden: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
-    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        
+    def forward(self, o, a_prior, r_prior, hidden):
 
-        if hidden is None:
-            h_0 = torch.zeros(self.lstm_num_layers, o.size(0), self.lstm_hidden_dim, dtype=o.dtype, device=o.device)
-            c_0 = torch.zeros(self.lstm_num_layers, o.size(0), self.lstm_hidden_dim, dtype=o.dtype, device=o.device)
-            hidden = (h_0, c_0)
+
         # batch_size, seq_len, channels, height, width = o.shape
 
         # Handle channels-last environments.
@@ -775,43 +864,22 @@ class ImpalaActor(nn.Module):
         # TODO: here, reshape is back to get a sequence again before the LSTM
         # conv_out = conv_out.view(batch_size, seq_len, 16, height, width)
         x = self.mlp(x_o)
+        x, new_hidden = self.lstm(torch.cat([x, a_prior, r_prior], 1), hidden)
 
-        h0, c0 = hidden
-        if h0.ndim == 2:
-            h0 = h0.unsqueeze(0)
-            c0 = c0.unsqueeze(0)
-        else:
-            h0 = h0.permute(1, 0, 2)
-            c0 = c0.permute(1, 0, 2)
-        hidden = (h0, c0)
-        x = torch.cat([x, a_prior, r_prior], 1)
-        # TODO: this will require a total refactor for BPTT
-        # Add a sequence dimension to the input
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        x, new_hidden = self.lstm(x, hidden)
-        # Remove the sequence dimension if it was added
-        if x.dim() == 3:
-            x = x.squeeze(1)
-        #     new_hidden = (new_hidden[0].squeeze(1), new_hidden[1].squeeze(1))
-        if new_hidden[0].ndim == 3:
 
-            new_hidden = (new_hidden[0].squeeze(0), new_hidden[1].squeeze(0))
+        # new_hidden is a tuple (h, c) after processing x
+        if not self.bptt:
+            new_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
 
         # Apply action prediciton head and activation function
         a = self.action_head(x)
 
         a = (a * self.action_scale + self.action_bias)
-
-        if new_hidden[0].ndim == 3:
-            raise ValueError("LSTM hidden state has 3 dimensions, expected 2.")
-        if new_hidden[1].ndim == 3:
-            raise ValueError("LSTM cell state has 3 dimensions, expected 2.")
         return a, new_hidden
 
 class ImpalaCritic(nn.Module):
     
-    def __init__(self, envs, device, lstm_hidden_dim=128, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
+    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
         
         super().__init__()
         # Initialize the shape parameters
@@ -820,7 +888,7 @@ class ImpalaCritic(nn.Module):
         self.device = device
         self.bptt = bptt
 
-        self.lstm_hidden_dim = lstm_hidden_dim
+        self.lstm_hidden_dim = fc_scale
         self.lstm_num_layers = lstm_num_layers
 
 
@@ -838,26 +906,21 @@ class ImpalaCritic(nn.Module):
             input_channels = obs_shape[0]
 
         # Define the visual encoder, so that we know the output shape.
+        # TODO: I havled the stride!
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
-                          channel_scale,
+                          16,
                           kernel_size=8,
-                          stride=4),
-                ),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(channel_scale,
-                          channel_scale * 2,
-                          kernel_size=4,
                           stride=2)
-                ),
+                          ),
             nn.ReLU(),
             conv_init(
-                nn.Conv2d(channel_scale * 2,
-                          channel_scale * 4,
-                          kernel_size=2,
-                          stride=2)),
+                nn.Conv2d(16,
+                          32,
+                          kernel_size=4,
+                          stride=1)
+                          ),
             nn.ReLU(),
         )
 
@@ -905,7 +968,6 @@ class ImpalaCritic(nn.Module):
                     ),
                 std=1.0
             ),
-            nn.LayerNorm(fc_scale // 2),
             nn.Tanh(),
             layer_init(
                 nn.Linear(fc_scale // 2,
@@ -916,15 +978,26 @@ class ImpalaCritic(nn.Module):
         )
 
 
-    def get_zero_hidden(self):
+    def init_hidden(self):
         """
         Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
         Shapes:
           h, c: [num_layers=1, batch_size, hidden_dim]
         """
+        # TODO: Consider requires_grad_() here
         h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
-        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
+        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device) 
         return (h, c)
+
+    def reset_hidden(self):
+        """
+        Reset the agent's internal hidden state to zeros.
+        """
+        self.hidden = self.init_hidden()
+
+    def register_activation_hooks(self, writer=None, global_prefix="critic"):
+        pass
+
 
     def forward(self, o, a, a_prior, r_prior, hidden=None):
 
@@ -936,29 +1009,20 @@ class ImpalaCritic(nn.Module):
         x_o = self.visual_encoder(o)
         x = self.mlp(x_o)
 
-        h0, c0 = hidden
-        if h0.ndim == 2:
-            h0 = h0.unsqueeze(0)
-            c0 = c0.unsqueeze(0)
-        else:
-            h0 = h0.permute(1, 0, 2)
-            c0 = c0.permute(1, 0, 2)
-        hidden = (h0, c0)
-        x = torch.cat([x, a, a_prior, r_prior], 1)
+        if hidden is not None:
+            self.hidden = hidden
 
-        # TODO: this will require a total refactor for BPTT
-        # Add a sequence dimension to the input
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        x, new_hidden = self.lstm(x, hidden)
-        # Remove the sequence dimension if it was added
-        if x.dim() == 3:
-            x = x.squeeze(1)
-            new_hidden = (new_hidden[0].squeeze(1), new_hidden[1].squeeze(1))
+        x, new_hidden = self.lstm(torch.cat([x, a, a_prior, r_prior], 1), self.hidden)
+        # new_hidden is a tuple (h, c) after processing x
+        if self.bptt:
+            detached_hidden = new_hidden[0], new_hidden[1]
+        else:
+            detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
+        self.hidden = detached_hidden
 
         # Apply action prediciton head and activation function
         q = self.q_head(x)
-        return q, new_hidden
+        return q
     
 
 class ResidualBlock(nn.Module):
@@ -1374,7 +1438,6 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
-    # return layer
 
 def init_lstm_weights(lstm):
     for name, param in lstm.named_parameters():
@@ -1612,6 +1675,20 @@ if __name__ == "__main__":
                             low_dim=args.low_dim_actor,
                            action_scale=args.action_scale).to(device)
         
+    elif args.actor_type == "custom":
+        actor = CustomActor(envs,
+                            device,
+                            channel_scale=args.actor_channel_scale,
+                            fc_scale=args.actor_fc_scale,
+                            bptt=bptt,
+                           action_scale=args.action_scale).to(device)
+        target_actor = CustomActor(envs,
+                                   device,
+                                   channel_scale=args.actor_channel_scale,
+                                   fc_scale=args.actor_fc_scale,
+                                   bptt=bptt,
+                           action_scale=args.action_scale).to(device)
+
     elif args.actor_type == "impala":
 
         actor = ImpalaActor(envs,
@@ -1626,7 +1703,8 @@ if __name__ == "__main__":
                                    fc_scale=args.actor_fc_scale,
                            use_multiscale_head=args.use_multiscale_head,
                            action_scale=args.action_scale).to(device)
-    
+        
+        actor.register_activation_hooks(writer)
         
 
     elif args.actor_type == "impalalarge":
@@ -1680,6 +1758,38 @@ if __name__ == "__main__":
             low_dim=args.low_dim_qnetwork,
             action_scale=args.action_scale).to(device)
 
+    elif args.critic_type == "custom":
+
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        qf1 = CustomCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            bptt=bptt).to(device)
+        qf1_target = CustomCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            bptt=bptt,
+            action_scale=args.action_scale).to(device)
+        
+        torch.manual_seed(np.random.randint(0, 2**32 - 1))
+        qf2 = CustomCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            bptt=bptt).to(device)
+        qf2_target = CustomCritic(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            bptt=bptt,
+            action_scale=args.action_scale).to(device)
+
     elif args.critic_type == "impala":
 
         torch.manual_seed(np.random.randint(0, 2**32 - 1))
@@ -1687,14 +1797,14 @@ if __name__ == "__main__":
             envs,
             device,
             channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
+            fc_scale=args.actor_fc_scale + 16,
             action_scale=args.action_scale).to(device
         )
         qf1_target = ImpalaCritic(
             envs,
             device,
             channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
+            fc_scale=args.actor_fc_scale+16,
             action_scale=args.action_scale).to(device
         )
         
@@ -1767,9 +1877,6 @@ if __name__ == "__main__":
     summary(actor, )
     summary(qf1,)
 
-
-
-
     # Write a test to fail if qf1 and qf2 have any identical parameters.
     any_different = False
     for p1, p2 in zip(qf1.parameters(), qf2.parameters()):
@@ -1798,8 +1905,9 @@ if __name__ == "__main__":
 
         rb = ReplayBufferWithHiddenStates(args.buffer_size)
 
+
     else:
-        
+
         rb = ReplayBuffer(
             args.buffer_size,
             envs.single_observation_space,
@@ -1808,20 +1916,7 @@ if __name__ == "__main__":
             handle_timeout_termination=False,
             n_envs=args.num_envs
         )
-        
-    if args.replay_buffer_load_path:
-        print(f"Loading replay buffer from {args.replay_buffer_load_path}")
-        # Search for replay_buffer_load_path in the current directory and its subdirectories.
-        if not os.path.exists(args.replay_buffer_load_path):
-            raise FileNotFoundError(f"Replay buffer load path {args.replay_buffer_load_path} does not exist.")
-        if os.path.isdir(args.replay_buffer_load_path):
-            # If the path is a directory, load the replay buffer from the latest file in the directory.
-            files = [f for f in os.listdir(args.replay_buffer_load_path) if f.endswith('.pt')]
-            if not files:
-                raise FileNotFoundError(f"No .pt files found in {args.replay_buffer_load_path}.")
 
-            rb.restore(args.replay_buffer_load_path)
-        print(f"Replay buffer loaded with {str(len(rb.buffer))} elements.")
     num_eval_rollouts = 4
 
     eval_dict = dict()
@@ -1885,10 +1980,9 @@ if __name__ == "__main__":
     initial_qf1_hidden_out = None
     initial_qf2_hidden_in = None
     initial_qf2_hidden_out = None
-    actor_hidden = actor.get_zero_hidden()
-    new_actor_hidden = actor.get_zero_hidden()
-    qf1_hidden = qf1.get_zero_hidden()
-    qf2_hidden = qf2.get_zero_hidden()    
+    actor_hidden = None
+    qf1_hidden = None
+    qf2_hidden = None    
     first_step_reward = None
 
     actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
@@ -2076,68 +2170,65 @@ if __name__ == "__main__":
 
         # ALGO LOGIC: put action logic here
         # If during prelearning, sample actions using the specified method.
-        # TODO: use args.experience_sampling_delay
-        if global_step >= args.experience_sampling_delay:
-            if global_step < (args.learning_starts + args.actor_training_delay):
+        if global_step < (args.learning_starts + args.actor_training_delay):
 
-                if args.prelearning_sample == "scales":
+            if args.prelearning_sample == "scales":
 
-                    if (iteration % args.max_episode_steps) == 0:
-                        
-                        print("Resetting scales.")
+                if (iteration % args.max_episode_steps) == 0:
+                    
+                    print("Resetting scales.")
 
-                        scales = [0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1.0]
-                        action_scale = np.random.choice(scales)
+                    scales = [0.000001, 0.00001,0.0001, 0.001, 0.01, 0.1, 1.0]
+                    action_scale = np.random.choice(scales)
 
-                    # actions = np.array([(sample_normal_action(envs.single_action_space, std_dev=action_std)) for _ in range(envs.num_envs)])
+                # actions = np.array([(sample_normal_action(envs.single_action_space, std_dev=action_std)) for _ in range(envs.num_envs)])
+            
+                actions = np.array([(actor.action_scale.cpu() * action_scale * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
                 
-                    actions = np.array([(actor.action_scale.cpu() * action_scale * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
-                    
-                elif args.prelearning_sample == "normal":
-                    
-                    actions = np.array([(sample_normal_action(envs.single_action_space)) for _ in range(envs.num_envs)])
+            elif args.prelearning_sample == "normal":
                 
-                else:
-                    
-                    actions = np.array([(actor.action_scale.cpu() * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
-
-            # Once prelearning is complete, sample actions using the actor.
+                actions = np.array([(sample_normal_action(envs.single_action_space)) for _ in range(envs.num_envs)])
+            
             else:
+                
+                actions = np.array([(actor.action_scale.cpu() * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
 
-                with torch.no_grad():
+        # Once prelearning is complete, sample actions using the actor.
+        else:
+
+            with torch.no_grad():
 
 
-                    # If the obs are 8bit images, convert to float32 and rescale.
-                    if torch.tensor(obs).dtype != torch.float32:
+                # If the obs are 8bit images, convert to float32 and rescale.
+                if torch.tensor(obs).dtype != torch.float32:
 
-                            obs = np.array((obs / 255.0).astype(np.float32))
+                        obs = np.array((obs / 255.0).astype(np.float32))
 
-                    # If the actor takes prior actions and rewards as input, pass them in.
-                    if args.actor_type == "impala" or args.actor_type == "impalalarge":
-        
-                        actions, new_actor_hidden = actor(
-                            torch.tensor(obs).to(device),
-                            torch.tensor(prior_actions).to(device),
-                            torch.tensor(prior_rewards).unsqueeze(0).to(torch.float32).to(device),
-                            actor_hidden
-                        )
-                    
-                    # Otherwise, just pass in the obs.
-                    else:
+                # If the actor takes prior actions and rewards as input, pass them in.
+                if args.actor_type == "impala" or args.actor_type == "impalalarge":
+    
+                    actions, new_actor_hidden = actor(
+                        torch.tensor(obs).to(device),
+                        torch.tensor(prior_actions).to(device),
+                        torch.tensor(prior_rewards).unsqueeze(0).to(torch.float32).to(device)
+                    )
+                
+                # Otherwise, just pass in the obs.
+                else:
 
-                        actions = actor(torch.Tensor(obs).to(device))
+                    actions = actor(torch.Tensor(obs).to(device))
 
-                    # Sample and add noise to the actions, then clip to action space bounds.
-                    noise = noise_generator.sample().to(device)
-                    actions += noise
-                    actions = actions.cpu().numpy().clip(
-                        actor.action_scale.cpu().numpy() * envs.single_action_space.low,
-                        actor.action_scale.cpu().numpy() * envs.single_action_space.high)
+                # Sample and add noise to the actions, then clip to action space bounds.
+                noise = noise_generator.sample().to(device)
+                actions += noise
+                actions = actions.cpu().numpy().clip(
+                    actor.action_scale.cpu().numpy() * envs.single_action_space.low,
+                    actor.action_scale.cpu().numpy() * envs.single_action_space.high)
 
         # If using BPTT, we need to store the initial hidden states.
-        # if initial_actor_hidden_in is None:
-        #     initial_actor_hidden_in = actor.get_zero_hidden()
-        #     initial_actor_hidden_out = initial_actor_hidden_in
+        if initial_actor_hidden_in is None:
+            initial_actor_hidden_in = new_actor_hidden
+            initial_actor_hidden_out = initial_actor_hidden_in
         
         # Store the current rewards before generating a new transition.
         # TODO: should this be a copy? 
@@ -2156,7 +2247,7 @@ if __name__ == "__main__":
         if iteration % args.writer_interval == 0 and (global_step > args.learning_starts + args.actor_training_delay):
             writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
             writer.add_scalar("online/action_std", actions.std().item(), global_step)
-            # writer.add_scalar("online/actions_l2", torch.norm(actions, p=2), global_step)
+            writer.add_scalar("online/actions_l2", torch.norm(actions, p=2), global_step)
             writer.add_scalar("online/reward_mean/", np.mean(rewards), global_step)
             writer.add_scalar("online/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
             writer.add_scalar("online/first_step_reward/", np.mean(first_step_reward), global_step)
@@ -2170,7 +2261,7 @@ if __name__ == "__main__":
         if iteration % args.writer_interval == 0 and (global_step < args.learning_starts + args.actor_training_delay):
             writer.add_scalar("prelearning/action_mean", actions.mean().item(), global_step)
             writer.add_scalar("prelearning/action_std", actions.std().item(), global_step)
-            # writer.add_scalar("prelearning/action_l2", torch.norm(actions, p=2), global_step)
+            writer.add_scalar("prelearning/action_l2", torch.norm(actions, p=2), global_step)
             writer.add_scalar("prelearning/reward_mean/", np.mean(rewards), global_step)
             writer.add_scalar("prelearning/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
             writer.add_scalar("prelearning/first_step_reward/", np.mean(first_step_reward), global_step)
@@ -2201,6 +2292,9 @@ if __name__ == "__main__":
         # If not using BPTT, we push the data to the replay buffer immediately.
         elif prior_state_models:
 
+            actor_hidden = new_actor_hidden
+            qf1_hidden = qf1.hidden
+            qf2_hidden = qf2.hidden
 
 
             # Push the transition, including hidden states, to the replay buffer.
@@ -2214,11 +2308,9 @@ if __name__ == "__main__":
             #         real_next_obs,
             #         terminations)
 
-            if actor_hidden[0].ndim == 3:
-            
-                raise ValueError("actor hidden 3 dimensions, expected 2.")
-
             rb.push(actor_hidden,
+                    qf1_hidden,
+                    qf2_hidden,
                     obs,
                     actions,
                     prior_actions,
@@ -2282,16 +2374,19 @@ if __name__ == "__main__":
                     noise_generator.decay()
                 if actor.use_lstm:
                     print("Resetting Actor Hidden State")
-                    actor_hidden = actor.get_zero_hidden()
-                    new_actor_hidden = actor.get_zero_hidden()
-
+                    actor.reset_hidden()
+                    print("Resetting Critic Hidden State")
+                    qf1.reset_hidden()
+                    print("Resetting Target Actor Hidden State")
+                    target_actor.reset_hidden()
+                    print("Resetting Target Critic Hidden State")
+                    qf1_target.reset_hidden()
+                    print("Agent Reset.")
                 break
 
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
-        actor_hidden = new_actor_hidden
-
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
@@ -2333,20 +2428,19 @@ if __name__ == "__main__":
 
 
                 (actor_hidden_batch,
+                 qf1_hidden_batch,
+                 qf2_hidden_batch,
                  observations_batch, 
                  actions_batch_batch,
                  prior_actions_batch,
                  rewards_batch,
                  prior_rewards_batch,
                  next_observations_batch,
-                 dones_batch) = rb.sample(args.batch_size,
-                                          device=device)
+                 dones_batch) = rb.sample(args.batch_size)
                 
                 actor_hidden_batch = actor_hidden_batch
-
-                # for observation in observations_batch:
-                #     print(observation.shape)
- 
+                qf1_hidden_batch = qf1_hidden_batch
+                qf2_hidden_batch = qf2_hidden_batch
                 observations_batch = torch.tensor(np.array(observations_batch), dtype=torch.float32).squeeze(1)
                 actions_batch_batch = torch.tensor(np.array(actions_batch_batch), dtype=torch.float32).squeeze(1)
                 prior_actions_batch = torch.tensor(np.array(prior_actions_batch), dtype=torch.float32).squeeze(1)
@@ -2376,9 +2470,9 @@ if __name__ == "__main__":
                             next_observations_batch.to(device),
                             prior_actions_batch.to(device),
                             prior_rewards_batch.to(device),
-                            actor_hidden_batch,
+                            actor_hidden_batch.to(device),
                         )
-                    policy_noise = 0.01
+                    policy_noise = 0.001
 
                     noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
                     # TODO: WARNING: This will break asymmetric action spaces.
@@ -2392,20 +2486,20 @@ if __name__ == "__main__":
                     if args.target_smoothing:
                         next_state_actions_batch = noisy_next_action
 
-                    qf1_next_target_batch, _ = qf1_target(
+                    qf1_next_target_batch = qf1_target(
                             next_observations_batch.to(device),
                             next_state_actions_batch.to(device),
                             prior_actions_batch.to(device),
                             prior_rewards_batch.to(device),
-                            actor_hidden_batch
+                            qf1_hidden_batch.to(device)
                         )
                     
-                    qf2_next_target_batch, _ = qf2_target(
+                    qf2_next_target_batch = qf2_target(
                             next_observations_batch.to(device),
                             next_state_actions_batch.to(device),
                             prior_actions_batch.to(device),
                             prior_rewards_batch.to(device),
-                            actor_hidden_batch
+                            qf2_hidden_batch.to(device)
                         )
                     qf1_next_target_batch = torch.min(
                             qf1_next_target_batch,
@@ -2415,19 +2509,19 @@ if __name__ == "__main__":
                 else:
 
                     # TODO: Verify if this is the proper use of hidden states.
-                    next_state_actions_batch, _ = target_actor(
+                    next_state_actions_batch = target_actor(
                             next_observations_batch,
-                            actor_hidden_batch
+                            actor_hidden_batch.to(device)
                         )
-                    qf1_next_target_batch, _ = qf1_target(
+                    qf1_next_target_batch = qf1_target(
                             next_observations_batch,
                             next_state_actions_batch,
-                            actor_hidden_batch
+                            qf1_hidden_batch.to(device)
                         )
                     qf2_next_target_batch = qf2_target(
                             next_observations_batch,
                             next_state_actions_batch,
-                            actor_hidden_batch
+                            qf2_hidden_batch.to(device)
                         )
                     qf1_next_target_batch = torch.min(
                             qf1_next_target_batch,
@@ -2443,15 +2537,15 @@ if __name__ == "__main__":
                     actions_batch_batch.to(device),
                     prior_actions_batch.to(device),
                     prior_rewards_batch.to(device),
-                    actor_hidden_batch
-                )[0].view(-1)
+                    qf1_hidden_batch.to(device)
+                ).view(-1)
                 qf2_a_values_batch = qf2(
                     observations_batch.to(device),
                     actions_batch_batch.to(device),
                     prior_actions_batch.to(device),
                     prior_rewards_batch.to(device),
-                    actor_hidden_batch
-                )[0].view(-1)
+                    qf2_hidden_batch.to(device)
+                ).view(-1)
 
             else:
                 qf1_a_values_batch = qf1(
@@ -2494,39 +2588,25 @@ if __name__ == "__main__":
             if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
 
                 if prior_state_models:
-                    # actor_loss, _ = -qf1(
-                    #     observations_batch.to(device),
-                    #     actor(
-                    #         observations_batch.to(device),
-                    #         prior_actions_batch.to(device),
-                    #         prior_rewards_batch.to(device),
-                    #         actor_hidden_batch
-                    #     )[0],
-                    #     prior_actions_batch.to(device),
-                    #     prior_rewards_batch.to(device),
-                    #     actor_hidden_batch
-                    # )[0].mean() + args.l2_reg * torch.linalg.vector_norm(
-                    #         actor(observations_batch.to(device),
-                    #               prior_actions_batch.to(device),
-                    #               prior_rewards_batch.to(device),
-                    #               actor_hidden_batch
-                    #               )[0],
-                    #         2
-                    #     )
-                    loss_actions, _ = actor(
+                    actor_loss, _ = -qf1(
+                        observations_batch.to(device),
+                        actor(
                             observations_batch.to(device),
                             prior_actions_batch.to(device),
                             prior_rewards_batch.to(device),
-                            actor_hidden_batch
-                        )
-                    loss_qvalues, _ = qf1(
-                        observations_batch.to(device),
-                        loss_actions,
+                            actor_hidden_batch.to(device)
+                        )[0],
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device),
-                        actor_hidden_batch
-                    )
-                    actor_loss = -loss_qvalues.mean()
+                        qf1_hidden_batch.to(device)
+                    ).mean() + args.l2_reg * torch.linalg.vector_norm(
+                            actor(observations_batch.to(device),
+                                  prior_actions_batch.to(device),
+                                  prior_rewards_batch.to(device),
+                                  actor_hidden_batch.to(device)
+                                  )[0],
+                            2
+                        )
                 
                 else:
                     actor_loss = -qf1(

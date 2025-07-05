@@ -64,6 +64,38 @@ def gaussian_kernel(n, std, normalised=False):
         gaussian2D /= (2*np.pi*(std**2))
     return gaussian2D
 
+def generalized_radial_profile(shape, alpha=10.0, beta=2.0, invert=False, normalize=False, epsilon=1e-8):
+    """
+    Generate a 2D matrix where each value is computed as:
+        f(d) = exp(-(d / alpha)^beta)
+    where d is the L2 distance from the center of the matrix.
+
+    Parameters:
+    - shape: Tuple[int, int] (height, width)
+    - alpha: float, controls steepness (larger = wider)
+    - beta: float, controls pointiness (larger = sharper)
+    - invert: bool, if True, return 1.0 / value (with epsilon to avoid divide-by-zero)
+    - normalize: bool, if True, normalize output to range [0.0, 1.0]
+    - epsilon: float, small value to avoid division by zero
+
+    Returns:
+    - 2D numpy array with the radial profile
+    """
+    rows, cols = shape
+    center_row = (rows - 1) / 2.0
+    center_col = (cols - 1) / 2.0
+    y_indices, x_indices = np.indices((rows, cols))
+    dists = np.sqrt((x_indices - center_col)**2 + (y_indices - center_row)**2)
+    profile = np.exp(- (dists / alpha) ** beta)
+
+    if invert:
+        profile = 1.0 / (profile + epsilon)
+
+    if normalize:
+        profile = (profile - np.min(profile)) / (np.max(profile) - np.min(profile))
+
+    return profile
+
 def offset_gaussian(n,
                     mu_x,
                     mu_y,
@@ -223,8 +255,7 @@ class ObjectPlane(object):
         # TODO: Correctly model a single objects intensity and translate to Gaussian std.
         # 0.02 arcsec fwhm
         # magnitude_response_function 16-bit value to: mag 9 star will give 5000 counts at 12 ms
-        std = 1
-        kernel_extent = 1
+
 
         # TODO: make mu_y and mu_x determined by source_position.
         # mu_x = self.extent_pixels // 4
@@ -232,10 +263,13 @@ class ObjectPlane(object):
         x = self.extent_pixels // 2
         y = self.extent_pixels // 2
 
+        array_value = 1.02e-12
+        array_value = 1.02e-8
+
         return one_hot_array(self.extent_pixels,
                              x,
                              y,
-                             value=1.0)
+                             value=array_value)
 
     def rgb2gray(self, rgb):
         return np.dot(rgb[...,:3], [0.2989, 0.5870, 0.1140])
@@ -555,6 +589,8 @@ class OpticalSystem(object):
         wavefront = hcipy.Wavefront(self.aperture, self.wavelength)
         perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
         self.perfect_image = perfect_image.intensity
+        # TODO: Build a camera-based imaging approach here.
+        # self.camera = hcipy.NoiselessDetector(focal_grid)
 
 
 
@@ -694,7 +730,7 @@ class OpticalSystem(object):
         return
     
 
-    def simulate(self):
+    def simulate(self, wavelength):
 
         """
         
@@ -712,7 +748,7 @@ class OpticalSystem(object):
 
 
         self.object_wavefront = hcipy.Wavefront(self.aperture,
-                                                self.wavelength)
+                                                wavelength)
         self.pre_atmosphere_object_wavefront = self.object_wavefront
 
         
@@ -873,6 +909,7 @@ class OpticalSystem(object):
             
             read_out_start_time = time.time()
             # This is the effective PSF of the system, as the camera is noiseless.
+            # Note: effective PSD is in units of charge per pixel.
             effective_psf = self.camera.read_out()
 
             effective_psf = effective_psf.reshape(
@@ -898,6 +935,8 @@ class OpticalSystem(object):
             image_spectrum = object_spectrum * effective_otf
 
             # Compute the image.
+            # Image is in units of charge per pixel.
+            # Charfe is in units of wavefront power * seconds.
             self.readout_image = np.abs(np.fft.fftshift(np.fft.ifft2(image_spectrum)))
             if self.report_time:
                 print("-- FFT time: %0.6f" % (time.time() - fft_start_time))
@@ -1208,8 +1247,11 @@ class OpticalSystem(object):
 
             if self.command_tip_tilt:
 
-                wind_diff_motion_tip_arcsec_std = 1.0
-                wind_diff_motion_tilt_arcsec_std = 1.0
+                # wind_diff_motion_tip_arcsec_std = 1.0
+                # wind_diff_motion_tilt_arcsec_std = 1.0
+
+                wind_diff_motion_tip_arcsec_std = 0.05
+                wind_diff_motion_tilt_arcsec_std = 0.05
 
             else:
 
@@ -1222,6 +1264,8 @@ class OpticalSystem(object):
             # Sample displacement in radians.
             wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
             wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
+            print("Wind PTT Displacements:")
+            print(wind_ptt_displacements)
             self._apply_ptt_displacements(wind_ptt_displacements)
 
 
@@ -1402,7 +1446,7 @@ class OpticalSystem(object):
         # TODO: Refactor to extract tuples to np array and use _apply_ptt_displacements.
         for segment_id in range(self.num_apertures):
 
-            print("Segment ID: %s" % segment_id)
+            # print("Segment ID: %s" % segment_id)
 
             # TODO: the following three lines need be generalized to nested lists.
             segment_piston_command = segments_ptt_commands[segment_id][0]
@@ -1467,23 +1511,23 @@ class OpticalSystem(object):
                 (segment_piston,
                  segment_tip,
                  segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
-                print("Before values")
-                print(self.segmented_mirror.get_segment_actuators(segment_id))
+                # print("Before values")
+                # print(self.segmented_mirror.get_segment_actuators(segment_id))
 
                 piston_state = segment_piston + segment_piston_command_meters
                 tip_state = segment_tip + segment_tip_command_radians
                 tilt_state = segment_tilt + segment_tilt_command_radians
 
-                print("commands")
-                print(segment_piston_command,
-                      segment_tip_command,
-                      segment_tilt_command)
-                print("command_units")
-                print(segment_piston_command_meters,
-                      segment_tip_command_radians,
-                      segment_tilt_command_radians)
-                print("baseline_dict")
-                print(self.segment_baseline_dict[segment_id]["piston"])
+                # print("commands")
+                # print(segment_piston_command,
+                #       segment_tip_command,
+                #       segment_tilt_command)
+                # print("command_units")
+                # print(segment_piston_command_meters,
+                #       segment_tip_command_radians,
+                #       segment_tilt_command_radians)
+                # print("baseline_dict")
+                # print(self.segment_baseline_dict[segment_id]["piston"])
 
                 # Enforce limits on incremental commmands with clip.
                 piston_state = np.clip(
@@ -1504,6 +1548,8 @@ class OpticalSystem(object):
                 segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
                 segment_tip_command_radians = segment_tip_command * max_tip_correction_radians
                 segment_tilt_command_radians = segment_tilt_command * max_tilt_correction_radians
+                # print("segment_tilt_command_radians")
+                # print(segment_tilt_command_radians)
 
                 piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
                 tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
@@ -1519,10 +1565,10 @@ class OpticalSystem(object):
             )
 
 
-            print("After values")
-            print(self.segmented_mirror.get_segment_actuators(segment_id))
+            # print("After values")
+            # print(self.segmented_mirror.get_segment_actuators(segment_id))
 
-            print("Done")
+            # print("Done")
 
 
 
@@ -2383,65 +2429,107 @@ class OptomechEnv(gym.Env):
                 # Iterate, simulating an AO loop.
                 for ao_step_num in range(self.ao_steps_per_command):
 
-                    if self.report_time:
-                        simulation_time_start = time.time()
-                
-                    # Simulate the entire optical system, updating its state.
-                    self.optical_system.simulate()
+                    bandwidth_nanometers = 100.0
+                    bandwidth_meters = bandwidth_nanometers / 1e9
+                    sampling = 10
+                    bandwidth_increment_meters = bandwidth_meters / sampling
+                    min_wavelength = self.optical_system.wavelength - (bandwidth_meters / 2)
+                    wavelengths = [min_wavelength + (i * bandwidth_increment_meters) for i in range(sampling)]
+                    # wavelengths = [self.optical_system.wavelength]
+                    # print(wavelengths)
+                    # print(self.optical_system.wavelength)
+                    # die
+                    for wavelength in wavelengths:
 
-                    if self.report_time:
-                        print("-- Simulation Step time: %.6f" % (time.time() - simulation_time_start))
-                
-                    if self.report_time:
-                        ao_step_time_start = time.time()
+                        if self.report_time:
+                            simulation_time_start = time.time()
+                    
+                        # Simulate the entire optical system, updating its state.
+                        # Add wavelength
+                        self.optical_system.simulate(wavelength)
 
-                    # If the AO loop is active.
-                    if self.ao_loop_active and not reset:
+                        if self.report_time:
+                            print("-- Simulation Step time: %.6f" % (time.time() - simulation_time_start))
+                    
+                        if self.report_time:
+                            ao_step_time_start = time.time()
 
-                        # Measure the wavefront using the SHWFS.
-                        shwfs_readout_vector = self.optical_system.get_shwfs_frame(
+                        # If the AO loop is active.
+                        if self.ao_loop_active and not reset:
+
+                            # Measure the wavefront using the SHWFS.
+                            shwfs_readout_vector = self.optical_system.get_shwfs_frame(
+                                integration_seconds=integration_seconds
+                            )
+                            
+                            # Compute the correction slopes for the DM.
+                            shwfs_slopes = self.optical_system.shwfse.estimate([shwfs_readout_vector + 1e-10])
+                            shwfs_slopes -= self.optical_system.reference_slopes
+                            self.shwfs_slopes = shwfs_slopes.ravel()
+                            self.shwfs_slopes_list.append(self.shwfs_slopes)
+
+                            # Perform wavefront compensation by setting the DM actuators.
+                            self.optical_system.dm.actuators = (1 - self.dm_leakage) * self.optical_system.dm.actuators - self.dm_gain * self.reconstruction_matrix.dot(self.shwfs_slopes)
+
+                            self.microns_opd_per_actuator_bit = 0.00015
+                            self.stroke_count_limit = 20000
+
+                            stroke_limit = self.microns_opd_per_actuator_bit * self.stroke_count_limit * 1e-6 / 2
+                            
+                            # Finally, clip actuator values to the stroke limit.
+                            self.optical_system.dm.actuators = np.clip(
+                                self.optical_system.dm.actuators,
+                                -stroke_limit,
+                                stroke_limit
+                            )
+
+                        if self.report_time:
+                            print("-- AO Step time: %.6f" % (time.time() - ao_step_time_start))
+
+                        # Get a fractional science frame.
+                        science_readout_vector = self.optical_system.get_science_frame(
                             integration_seconds=integration_seconds
                         )
-                        
-                        # Compute the correction slopes for the DM.
-                        shwfs_slopes = self.optical_system.shwfse.estimate([shwfs_readout_vector + 1e-10])
-                        shwfs_slopes -= self.optical_system.reference_slopes
-                        self.shwfs_slopes = shwfs_slopes.ravel()
-                        self.shwfs_slopes_list.append(self.shwfs_slopes)
+                        self.science_readout_raster = np.reshape(science_readout_vector,
+                                                                self.image_shape)
 
-                        # Perform wavefront compensation by setting the DM actuators.
-                        self.optical_system.dm.actuators = (1 - self.dm_leakage) * self.optical_system.dm.actuators - self.dm_gain * self.reconstruction_matrix.dot(self.shwfs_slopes)
-
-                        self.microns_opd_per_actuator_bit = 0.00015
-                        self.stroke_count_limit = 20000
-
-                        stroke_limit = self.microns_opd_per_actuator_bit * self.stroke_count_limit * 1e-6 / 2
-                        
-                        # Finally, clip actuator values to the stroke limit.
-                        self.optical_system.dm.actuators = np.clip(
-                            self.optical_system.dm.actuators,
-                            -stroke_limit,
-                            stroke_limit
-                        )
-
-                    if self.report_time:
-                        print("-- AO Step time: %.6f" % (time.time() - ao_step_time_start))
-
-                    # Get a fractional science frame.
-                    science_readout_vector = self.optical_system.get_science_frame(
-                        integration_seconds=integration_seconds
-                    )
-                    self.science_readout_raster = np.reshape(science_readout_vector,
-                                                             self.image_shape)
-
-                    # Note: This step accumulates the partial readout rasters,
-                    # in effect manually integrating them outside of HCIPy.
-                    frame += self.science_readout_raster
+                        # Note: This step accumulates the partial readout rasters,
+                        # in effect manually integrating them outside of HCIPy.
+                        # Divide by the length of wavelengths to conserve power.
+                        frame += self.science_readout_raster / float(len(wavelengths))
 
                     # Deepcopy the environment state so that it can be stored later.
                     if self.record_env_state_info and not reset:
                         self.save_state()
-                    
+
+            # Constants
+            h = 6.62607015e-34  # Planck's constant (Joule seconds)
+            c = 2.99792458e8    # Speed of light (meters per second)
+
+            # Inputs
+            power_watts = 1e-12         # Integrated power (Watts)
+            wavelength_meters = 500e-9  # Wavelength (meters)
+            quantum_efficiency = 0.8    # QE (unitless)
+            system_gain_e_per_dn = 0.5  # Electrons per DN
+
+            # Step 1: Total energy collected
+            energy_joules = frame * frame_interval_seconds
+
+            # Step 2: Energy per photon (assume center wavelength)
+            photon_energy_joules = h * c / self.optical_system.wavelength
+
+            # Step 3: Number of photons collected
+            n_photons = energy_joules / photon_energy_joules
+
+            # Step 4: Number of photoelectrons generated (accounting for QE)
+            n_electrons = n_photons * quantum_efficiency
+
+            # Step 5: Number of DN output (digital numbers, or "bits")
+            frame = n_electrons / system_gain_e_per_dn
+
+            # Step 6: Convert to integer
+            frame = np.clip(frame, 0, 65535)
+
             # Finally, append this frame to the stack of focal plane images.
             self.focal_plane_images.append(frame)
 
@@ -2470,12 +2558,98 @@ class OptomechEnv(gym.Env):
             for focal_plane_image in self.focal_plane_images:
 
 
-                strehls.append(hcipy.metrics.get_strehl_from_focal(
-                    focal_plane_image.flatten() / np.max(focal_plane_image),
-                    self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-                ))
+                normalized_ideal_psf = self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
+                normalized_focal_plane_image = focal_plane_image / np.max(focal_plane_image)
+                # strehls.append(hcipy.metrics.get_strehl_from_focal(
+                #     focal_plane_image.flatten() / np.max(focal_plane_image),
+                #     self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
+                # ))
 
-            reward = np.mean(strehls, dtype=np.float32)
+                # print(focal_plane_image.flatten())
+                # print(np.min(focal_plane_image.flatten()))
+                # print(np.median(focal_plane_image.flatten()))
+                # print(np.max(focal_plane_image.flatten()))
+                # print(self.optical_system.perfect_image)
+                # print(np.min(self.optical_system.perfect_image))
+                # print(np.median(self.optical_system.perfect_image))
+                # print(np.max(self.optical_system.perfect_image))
+
+                strehl = hcipy.metrics.get_strehl_from_focal(
+                    normalized_focal_plane_image.flatten(),
+                    normalized_ideal_psf
+                )
+                # strehl = np.max(normalized_focal_plane_image) / np.max(normalized_ideal_psf)
+                strehls.append(strehl)
+
+            reward = np.mean(strehls, dtype=np.float32) * 1e0
+
+        elif self.reward_function == "align":
+
+            rewards = list()
+            normalized_psf = self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
+        
+            for focal_plane_image in self.focal_plane_images:
+                
+                normalized_image = focal_plane_image / np.max(focal_plane_image)
+                
+
+                strehl = hcipy.metrics.get_strehl_from_focal(
+                    focal_plane_image.flatten(), 
+                    65535.0 * (self.optical_system.perfect_image / np.max(self.optical_system.perfect_image))
+                )
+                # This is normalized and inverted, meaning that values 
+                # near the origin are not counted, but further values are.
+                distance_map = generalized_radial_profile(
+                    normalized_image.shape,
+                    alpha=25,
+                    beta=0.5,
+                    normalize=True,
+                    invert=False)
+                
+                # This is going generally be ~<200/2**16
+                centering = np.mean(normalized_image * distance_map)
+                center_concentration = centering / np.mean(normalized_image)
+
+                mse = -np.mean((np.log(normalized_image.flatten()) - np.log(normalized_psf)) ** 2)
+
+                # 0.42 is good enough for centering.
+                # For elf, want diminishing returns at about 0.6
+                alpha_centering = 0.0
+                # 0.005 to 0.05 is good but imperfect at 1 ms
+                alpha_strehl = 0.0
+                # MSE starts being relevant at about -0.05 and improves slightly at -0.04
+                # 25 -> 5 for nanoelfplus
+                # for elf, want a maximum value of 0.6 - its around 8.0-12.0
+                alpha_mse = 1.0
+
+                # if alpha_centering * center_concentration > 0.6:
+                #     # If the center concentration is too low, we don't want to reward it.
+                #     alpha_centering = 0.0
+                # else:
+                #     alpha_mse = 0.0
+
+                print("Strehl: %.6f, Centering: %.6f, MSE: %.6f" % (strehl, center_concentration, mse))
+
+                reward = (alpha_strehl * strehl) +\
+                         (alpha_centering * center_concentration) +\
+                         (alpha_mse * mse)
+                rewards.append(reward)
+
+            reward = np.mean(rewards, dtype=np.float32)
+
+
+        elif self.reward_function == "image_mse":
+
+            mses = list()
+
+            for focal_plane_image in self.focal_plane_images:
+
+                mses.append(np.mean(
+                    (
+                    (focal_plane_image.flatten() / np.max(focal_plane_image))
+                    - (self.optical_system.perfect_image / np.max(self.optical_system.perfect_image))) ** 2
+                ))
+            reward = -np.mean(mses, dtype=np.float32)
 
         elif self.reward_function == "negastrehl":
 
@@ -2502,7 +2676,7 @@ class OptomechEnv(gym.Env):
                 ))
 
 
-            reward = (np.mean(strehls) ** np.e) - 1.0
+            reward = (np.mean(strehls) ** 10) - 1.0
 
         elif self.reward_function == "strehl_closed":
 
