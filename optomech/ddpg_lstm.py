@@ -73,10 +73,12 @@ class Args:
     """Whether to use an AsynchronousVectorEnv"""
     subproc_env: bool = False
     """Whether to use a SubprocVectorEnv"""
-    model_save_interval: int = 100
+    model_save_interval: int = 10_000
     """The interval between saving model weights"""
     writer_interval: int = 1000
     """The interval between recording to tensorboard"""
+    num_eval_rollouts: int = 1
+    """The number of rollouts to perform for each evaluation."""
 
     # Algorithm specific arguments
     env_id: str = "Hopper-v4"
@@ -1768,8 +1770,6 @@ if __name__ == "__main__":
     summary(qf1,)
 
 
-
-
     # Write a test to fail if qf1 and qf2 have any identical parameters.
     any_different = False
     for p1, p2 in zip(qf1.parameters(), qf2.parameters()):
@@ -1777,9 +1777,6 @@ if __name__ == "__main__":
             any_different = True
             break
 
-    # print([torch.allclose(p1, p2) for p1, p2 in zip(qf1.parameters(), qf2.parameters())])
-    # print("qf1 and qf2 have different parameters.")
-    
 
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
@@ -1799,7 +1796,7 @@ if __name__ == "__main__":
         rb = ReplayBufferWithHiddenStates(args.buffer_size)
 
     else:
-        
+
         rb = ReplayBuffer(
             args.buffer_size,
             envs.single_observation_space,
@@ -1822,10 +1819,9 @@ if __name__ == "__main__":
 
             rb.restore(args.replay_buffer_load_path)
         print(f"Replay buffer loaded with {str(len(rb.buffer))} elements.")
-    num_eval_rollouts = 4
 
     eval_dict = dict()
-    for eval_rollout in range(num_eval_rollouts):
+    for eval_rollout in range(args.num_eval_rollouts):
 
         eval_dict[eval_rollout] = dict()
         rollout_seed = np.random.randint(0, 999999)
@@ -2069,7 +2065,6 @@ if __name__ == "__main__":
                 writer.add_scalar("eval/zero_return_advantage", mean_zero_return_advantage, iteration)
                 writer.add_scalar("eval/random_return_advantage", mean_random_return_advantage, iteration)
                 
-
         step_time = time.time()
 
         prior_actions = actions.copy()
@@ -2078,6 +2073,7 @@ if __name__ == "__main__":
         # If during prelearning, sample actions using the specified method.
         # TODO: use args.experience_sampling_delay
         if global_step >= args.experience_sampling_delay:
+
             if global_step < (args.learning_starts + args.actor_training_delay):
 
                 if args.prelearning_sample == "scales":
@@ -2134,163 +2130,163 @@ if __name__ == "__main__":
                         actor.action_scale.cpu().numpy() * envs.single_action_space.low,
                         actor.action_scale.cpu().numpy() * envs.single_action_space.high)
 
-        # If using BPTT, we need to store the initial hidden states.
-        # if initial_actor_hidden_in is None:
-        #     initial_actor_hidden_in = actor.get_zero_hidden()
-        #     initial_actor_hidden_out = initial_actor_hidden_in
-        
-        # Store the current rewards before generating a new transition.
-        # TODO: should this be a copy? 
-        prior_rewards = rewards
-
-        # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-
-        # Rescale the rewards.
-        rewards = args.reward_scale * rewards
-
-        # If this is the first step of the episode, store the rewards.
-        if first_step_reward is None:
-            first_step_reward = rewards
-
-        if iteration % args.writer_interval == 0 and (global_step > args.learning_starts + args.actor_training_delay):
-            writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
-            writer.add_scalar("online/action_std", actions.std().item(), global_step)
-            # writer.add_scalar("online/actions_l2", torch.norm(actions, p=2), global_step)
-            writer.add_scalar("online/reward_mean/", np.mean(rewards), global_step)
-            writer.add_scalar("online/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
-            writer.add_scalar("online/first_step_reward/", np.mean(first_step_reward), global_step)
-            writer.add_scalar("online/reward_std/", np.std(rewards), global_step)
-            writer.add_scalar("online/noise_l2/", torch.norm(noise, p=2), global_step)
-            for i, action in enumerate(actions):
-                for j, action_element in enumerate(action):
-                    action_label = f"online/action_{i}_{j}"
-                    writer.add_scalar(action_label, action_element, global_step)
-
-        if iteration % args.writer_interval == 0 and (global_step < args.learning_starts + args.actor_training_delay):
-            writer.add_scalar("prelearning/action_mean", actions.mean().item(), global_step)
-            writer.add_scalar("prelearning/action_std", actions.std().item(), global_step)
-            # writer.add_scalar("prelearning/action_l2", torch.norm(actions, p=2), global_step)
-            writer.add_scalar("prelearning/reward_mean/", np.mean(rewards), global_step)
-            writer.add_scalar("prelearning/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
-            writer.add_scalar("prelearning/first_step_reward/", np.mean(first_step_reward), global_step)
-            writer.add_scalar("prelearning/reward_std/", np.std(rewards), global_step)
-            for i, action in enumerate(actions):
-                for j, action_element in enumerate(action):
-                    action_label = f"prelearning/action_{i}_{j}"
-                    writer.add_scalar(action_label, action_element, global_step)
-
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        real_next_obs = next_obs.copy()
-        
-        # for idx, trunc in enumerate(truncations):
-        #     print(idx)
-        #     if trunc:
-        #         real_next_obs = infos["final_observation"]
-
-        # If using BPTT, we store the trajectory, but only push it to the replay buffer when the episode ends.
-        if bptt:
-            episode_state.append(obs)
-            episode_action.append(actions)
-            episode_last_action.append(prior_actions)
-            episode_reward.append(rewards)
-            episode_last_reward.append(prior_rewards)
-            episode_next_state.append(next_obs)
-            episode_done.append(terminations)  
-
-        # If not using BPTT, we push the data to the replay buffer immediately.
-        elif prior_state_models:
-
-
-
-            # Push the transition, including hidden states, to the replay buffer.
-            # rb.push(ini_hidden_in,
-            #         ini_hidden_out,
-            #         obs,
-            #         actions,
-            #         prior_actions,
-            #         rewards,
-            #         prior_rewards,
-            #         real_next_obs,
-            #         terminations)
-
-            if actor_hidden[0].ndim == 3:
+            # If using BPTT, we need to store the initial hidden states.
+            # if initial_actor_hidden_in is None:
+            #     initial_actor_hidden_in = actor.get_zero_hidden()
+            #     initial_actor_hidden_out = initial_actor_hidden_in
             
-                raise ValueError("actor hidden 3 dimensions, expected 2.")
+            # Store the current rewards before generating a new transition.
+            # TODO: should this be a copy? 
+            prior_rewards = rewards
 
-            rb.push(actor_hidden,
-                    obs,
-                    actions,
-                    prior_actions,
-                    rewards,
-                    prior_rewards,
-                    real_next_obs,
-                    terminations)
+            # TRY NOT TO MODIFY: execute the game and log data.
+            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        # If not using BPTT or prior state models, we push the data to the replay buffer immediately.
-        else: 
+            # Rescale the rewards.
+            rewards = args.reward_scale * rewards
 
-            rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+            # If this is the first step of the episode, store the rewards.
+            if first_step_reward is None:
+                first_step_reward = rewards
 
+            if iteration % args.writer_interval == 0 and (global_step > args.learning_starts + args.actor_training_delay):
+                writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
+                writer.add_scalar("online/action_std", actions.std().item(), global_step)
+                # writer.add_scalar("online/actions_l2", torch.norm(actions, p=2), global_step)
+                writer.add_scalar("online/reward_mean/", np.mean(rewards), global_step)
+                writer.add_scalar("online/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
+                writer.add_scalar("online/first_step_reward/", np.mean(first_step_reward), global_step)
+                writer.add_scalar("online/reward_std/", np.std(rewards), global_step)
+                writer.add_scalar("online/noise_l2/", torch.norm(noise, p=2), global_step)
+                for i, action in enumerate(actions):
+                    for j, action_element in enumerate(action):
+                        action_label = f"online/action_{i}_{j}"
+                        writer.add_scalar(action_label, action_element, global_step)
 
-         # TRY NOT TO MODIFY: record rrewards for plotting purposes
-        if infos:
+            if iteration % args.writer_interval == 0 and (global_step < args.learning_starts + args.actor_training_delay):
+                writer.add_scalar("prelearning/action_mean", actions.mean().item(), global_step)
+                writer.add_scalar("prelearning/action_std", actions.std().item(), global_step)
+                # writer.add_scalar("prelearning/action_l2", torch.norm(actions, p=2), global_step)
+                writer.add_scalar("prelearning/reward_mean/", np.mean(rewards), global_step)
+                writer.add_scalar("prelearning/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
+                writer.add_scalar("prelearning/first_step_reward/", np.mean(first_step_reward), global_step)
+                writer.add_scalar("prelearning/reward_std/", np.std(rewards), global_step)
+                for i, action in enumerate(actions):
+                    for j, action_element in enumerate(action):
+                        action_label = f"prelearning/action_{i}_{j}"
+                        writer.add_scalar(action_label, action_element, global_step)
 
-            for info in infos["final_info"]:
+            # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
+            real_next_obs = next_obs.copy()
+            
+            # for idx, trunc in enumerate(truncations):
+            #     print(idx)
+            #     if trunc:
+            #         real_next_obs = infos["final_observation"]
 
+            # If using BPTT, we store the trajectory, but only push it to the replay buffer when the episode ends.
+            if bptt:
+                episode_state.append(obs)
+                episode_action.append(actions)
+                episode_last_action.append(prior_actions)
+                episode_reward.append(rewards)
+                episode_last_reward.append(prior_rewards)
+                episode_next_state.append(next_obs)
+                episode_done.append(terminations)  
 
-                print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("episode/episodic_return", info["episode"]["r"], global_step)
-                episodic_return_gain = info["episode"]["r"] - (args.max_episode_steps * np.mean(first_step_reward) / args.reward_scale)
-                writer.add_scalar("episode/episodic_return_gain/", episodic_return_gain, global_step)
-                writer.add_scalar("episode/episodic_length", info["episode"]["l"], global_step)
-                print("Episode %d has ended with %d steps." % (global_step, info["episode"]["l"]))
-                print("Episode %d has ended with %d reward." % (global_step, info["episode"]["r"]))
-
-                first_step_reward = None
-                # Add this episodes return to the list...
-                train_episodic_return_list.append(episodic_return_gain)
-
-                # ...and if the list is now too long, pop the first element.
-                if len(train_episodic_return_list) > 100:
-                    train_episodic_return_list.pop(0)
-
-                if bptt:
-
-                    rb.push(ini_hidden_in,
-                            ini_hidden_out,
-                            episode_state,
-                            episode_action,
-                            episode_last_action,
-                            episode_reward,
-                            episode_last_reward,
-                            episode_next_state,
-                            episode_done)
-                    
-                    ini_hidden_in = None
-                    ini_hidden_out = None
-                    episode_state = list()
-                    episode_action = list()
-                    episode_last_action = list()
-                    episode_reward = list()
-                    episode_last_reward = list()
-                    episode_next_state = list()
-                    episode_done = list()
-
-                noise_generator.reset()
-                if global_step > args.learning_starts:
-                    noise_generator.decay()
-                if actor.use_lstm:
-                    print("Resetting Actor Hidden State")
-                    actor_hidden = actor.get_zero_hidden()
-                    new_actor_hidden = actor.get_zero_hidden()
-
-                break
+            # If not using BPTT, we push the data to the replay buffer immediately.
+            elif prior_state_models:
 
 
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        obs = next_obs
-        actor_hidden = new_actor_hidden
+
+                # Push the transition, including hidden states, to the replay buffer.
+                # rb.push(ini_hidden_in,
+                #         ini_hidden_out,
+                #         obs,
+                #         actions,
+                #         prior_actions,
+                #         rewards,
+                #         prior_rewards,
+                #         real_next_obs,
+                #         terminations)
+
+                if actor_hidden[0].ndim == 3:
+                
+                    raise ValueError("actor hidden 3 dimensions, expected 2.")
+
+                rb.push(actor_hidden,
+                        obs,
+                        actions,
+                        prior_actions,
+                        rewards,
+                        prior_rewards,
+                        real_next_obs,
+                        terminations)
+
+            # If not using BPTT or prior state models, we push the data to the replay buffer immediately.
+            else: 
+
+                rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+
+
+            # TRY NOT TO MODIFY: record rrewards for plotting purposes
+            if infos:
+
+                for info in infos["final_info"]:
+
+
+                    print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
+                    writer.add_scalar("episode/episodic_return", info["episode"]["r"], global_step)
+                    episodic_return_gain = info["episode"]["r"] - (args.max_episode_steps * np.mean(first_step_reward) / args.reward_scale)
+                    writer.add_scalar("episode/episodic_return_gain/", episodic_return_gain, global_step)
+                    writer.add_scalar("episode/episodic_length", info["episode"]["l"], global_step)
+                    print("Episode %d has ended with %d steps." % (global_step, info["episode"]["l"]))
+                    print("Episode %d has ended with %d reward." % (global_step, info["episode"]["r"]))
+
+                    first_step_reward = None
+                    # Add this episodes return to the list...
+                    train_episodic_return_list.append(episodic_return_gain)
+
+                    # ...and if the list is now too long, pop the first element.
+                    if len(train_episodic_return_list) > 100:
+                        train_episodic_return_list.pop(0)
+
+                    if bptt:
+
+                        rb.push(ini_hidden_in,
+                                ini_hidden_out,
+                                episode_state,
+                                episode_action,
+                                episode_last_action,
+                                episode_reward,
+                                episode_last_reward,
+                                episode_next_state,
+                                episode_done)
+                        
+                        ini_hidden_in = None
+                        ini_hidden_out = None
+                        episode_state = list()
+                        episode_action = list()
+                        episode_last_action = list()
+                        episode_reward = list()
+                        episode_last_reward = list()
+                        episode_next_state = list()
+                        episode_done = list()
+
+                    noise_generator.reset()
+                    if global_step > args.learning_starts:
+                        noise_generator.decay()
+                    if actor.use_lstm:
+                        print("Resetting Actor Hidden State")
+                        actor_hidden = actor.get_zero_hidden()
+                        new_actor_hidden = actor.get_zero_hidden()
+
+                    break
+
+
+            # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
+            obs = next_obs
+            actor_hidden = new_actor_hidden
 
 
         # ALGO LOGIC: training.
