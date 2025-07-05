@@ -147,9 +147,13 @@ class ReplayBufferWithHiddenStates:
         self.buffer = []
         for root, dirs, files in os.walk(dir_path):
             if 'meta.pt' in files:
-                self._load_single_buffer(root,
-                                         filter_disadvantageous,
-                                         explore_to_exploit_ratio)
+                try:
+                    self._load_single_buffer(root,
+                                            filter_disadvantageous,
+                                            explore_to_exploit_ratio)
+                except Exception as e:
+                    print(f"Error loading buffer from {root}: {e}")
+                    continue
 
         self.position = len(self.buffer) 
 
