@@ -40,6 +40,7 @@ class Args:
     """
     # 1. Rollout and Dataset Settings
     parent_dir: str = "rollouts" 
+    output_dir: str = "merged_buffers"  # Directory to save the output
     chunk_size: int = 100  # Size of each chunk in the replay buffer
     filter_disadvantageous: bool = False  # Whether to filter out disadvantageous samples
     explore_to_exploit_ratio: int = 2  # Ratio of exploration to exploitation samples
