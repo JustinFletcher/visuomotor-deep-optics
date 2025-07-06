@@ -1901,6 +1901,7 @@ if __name__ == "__main__":
 
     print(actions)
     _, rewards, _, _, _ = envs.step(actions)
+    prior_rewards = rewards
 
     for iteration in range(args.total_timesteps):
         print("Iteration: ", iteration)
@@ -2137,6 +2138,7 @@ if __name__ == "__main__":
             
             # Store the current rewards before generating a new transition.
             # TODO: should this be a copy? 
+            # TODO: Can this samely be done with prior actions?
             prior_rewards = rewards
 
             # TRY NOT TO MODIFY: execute the game and log data.
