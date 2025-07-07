@@ -27,7 +27,7 @@ poetry run python optomech/multi_sa.py \
     --num_envs=1 \
     --reward_function=align \
     --max_episode_steps=3_0 \
-    --num_processes=1  &  # Run in background
+    --num_processes=100  &  # Run in background
 
 wait
 
