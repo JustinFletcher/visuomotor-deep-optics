@@ -26,7 +26,10 @@ poetry run python optomech/multi_sa.py \
     --model_wind_diff_motion \
     --num_envs=1 \
     --reward_function=align \
-    --max_episode_steps=300_000 \
-    --num_processes=100  &  # Run in background
+    --max_episode_steps=3_000 \
+    --num_processes=10  &  # Run in background
 
 wait
+
+# sbatch 
+# merge
