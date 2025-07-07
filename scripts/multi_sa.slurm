@@ -7,10 +7,10 @@
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
-cd visuomotor-deep-optics/
+cd ~/visuomotor-deep-optics/
 
 poetry run python optomech/multi_sa.py \
-    --eval_save_path=$WORKDIR/output_buffers_2 \
+    --eval_save_path=$WORKDIR/output_buffers_$(uuidgen) \
     --env-id optomech-v1 \
     --object_type=single \
     --ao_interval_ms=5.0 \
@@ -27,7 +27,7 @@ poetry run python optomech/multi_sa.py \
     --num_envs=1 \
     --reward_function=align \
     --max_episode_steps=3_000 \
-    --num_processes=10  &  # Run in background
+    --num_processes=1  &  # Run in background
 
 wait
 
