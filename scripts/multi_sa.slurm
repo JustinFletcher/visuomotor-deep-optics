@@ -10,7 +10,7 @@
 cd ~/visuomotor-deep-optics/
 
 poetry run python optomech/multi_sa.py \
-    --eval_save_path=$WORKDIR/output_buffers_$(uuidgen) \
+    --eval_save_path=$WORKDIR/output_buffers_$(uuidgen:0:8) \
     --env-id optomech-v1 \
     --object_type=single \
     --ao_interval_ms=5.0 \
