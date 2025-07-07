@@ -2,8 +2,8 @@
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --output=/dev/null
-#SBATCH --error=/dev/null
+#SBATCH --output=$WORKDIR/out.txt
+#SBATCH --error=$WORKDIR/err.txt
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
@@ -11,7 +11,7 @@ cd ~/visuomotor-deep-optics/
 
 uuid=$(uuidgen)
 short_uuid=${uuid:0:8} 
-for i in {1..1}; do
+for i in {1..100}; do
     echo "Number: $i"
     poetry run python optomech/multi_sa.py \
         --eval_save_path=$WORKDIR/output_buffers_$short_uuid \
@@ -30,7 +30,7 @@ for i in {1..1}; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --max_episode_steps=3_0 \
+        --max_episode_steps=300_000 \
         --num_processes=1  &  # Run in background
 done
 
