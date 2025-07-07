@@ -9,8 +9,11 @@
 
 cd ~/visuomotor-deep-optics/
 
+uuid=$(uuidgen)
+short_uuid=${uuid:0:8} 
+
 poetry run python optomech/multi_sa.py \
-    --eval_save_path=$WORKDIR/output_buffers_$(uuidgen:0:8) \
+    --eval_save_path=$WORKDIR/output_buffers_$(short_uuid) \
     --env-id optomech-v1 \
     --object_type=single \
     --ao_interval_ms=5.0 \
