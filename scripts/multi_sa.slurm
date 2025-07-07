@@ -30,7 +30,7 @@ for i in {1..1}; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --max_episode_steps=3_0 \
+        --max_episode_steps=300_000 \
         --num_processes=1  &  # Run in background
 done
 

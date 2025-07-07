@@ -2,8 +2,8 @@
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --output=$WORKDIR/out.txt
-#SBATCH --error=$WORKDIR/err.txt
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
