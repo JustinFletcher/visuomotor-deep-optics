@@ -348,6 +348,12 @@ def sa(args):
             eta = (elapsed / iter_num) * (total_iters - iter_num)
         else:
             eta = 0.0
+        # Compute steps per second
+        steps_per_second = iter_num / elapsed if elapsed > 0 else 0.0
+
+        # Print progress if not silenced
+        if not args.silence:
+            print(f"Steps per second: {steps_per_second:.2f}")
 
         # Print progress with requested formatting
         # reward: 3 decimal, cost_delta: 3 decimal, temp: 3 decimal, elapsed: 1 decimal, ETA: hh:mm:ss
@@ -462,6 +468,7 @@ def sa(args):
     # Write final reward to a readable text file
     with open(os.path.join(episode_save_path, "best_reward.txt"), "w") as f:
         f.write(f"Best reward: {best_reward}\n")  
+        f.write(f"SPS: {steps_per_second:.2f}\n")
 
 
     return
