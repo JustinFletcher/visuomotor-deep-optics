@@ -5,13 +5,13 @@
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 #SBATCH --account=MHPCC96650DAS       # 
-#SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=72:00:00                # Maximum runtime (D-HH:MM:SS)
 
 cd ~/visuomotor-deep-optics/
 
 uuid=$(uuidgen)
 short_uuid=${uuid:0:8} 
-for i in {1..100}; do
+for i in {1..10}; do
     echo "Number: $i"
     poetry run python optomech/multi_sa.py \
         --eval_save_path=$WORKDIR/output_buffers_$short_uuid \
