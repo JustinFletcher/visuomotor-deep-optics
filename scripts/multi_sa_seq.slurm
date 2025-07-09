@@ -11,7 +11,8 @@ cd ~/visuomotor-deep-optics/
 
 uuid=$(uuidgen)
 short_uuid=${uuid:0:8} 
-for i in {1..100}; do
+i=1
+while true; do
     echo "Number: $i"
     poetry run python optomech/multi_sa.py \
         --eval_save_path=$WORKDIR/output_buffers_$short_uuid \
@@ -32,6 +33,7 @@ for i in {1..100}; do
         --reward_function=align \
         --max_episode_steps=300_000 \
         --num_processes=1  # Run in background
+    ((i++))
 done
 
 wait
