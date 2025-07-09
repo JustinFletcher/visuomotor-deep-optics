@@ -9,13 +9,24 @@
 
 cd ~/visuomotor-deep-optics/
 
-uuid=$(uuidgen)
+# Get the absolute path to this script
+script_path="$(realpath "${BASH_SOURCE[0]}")"
+
+# Hash this file's contents
+hash=$(sha256sum "$script_path" | awk '{print $1}')
+
+# Format the hash as a UUID (first 32 characters)
+uuid="${hash:0:8}-${hash:8:4}-${hash:12:4}-${hash:16:4}-${hash:20:12}"
+
+echo "UUID for this script ($script_path):"
+echo "$uuid"
+
 short_uuid=${uuid:0:8} 
 i=1
 while true; do
     echo "Number: $i"
     poetry run python optomech/multi_sa.py \
-        --eval_save_path=$WORKDIR/output_buffers_$short_uuid \
+        --eval_save_path=$WORKDIR/buffer_pool_$short_uuid \
         --env-id optomech-v1 \
         --object_type=single \
         --ao_interval_ms=5.0 \
@@ -31,7 +42,7 @@ while true; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --max_episode_steps=300_000 \
+        --max_episode_steps=300 \
         --num_processes=1  # Run in background
     ((i++))
 done
