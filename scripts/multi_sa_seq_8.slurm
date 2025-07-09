@@ -43,7 +43,7 @@ while true; do
         --num_envs=1 \
         --reward_function=align \
         --max_episode_steps=10_000 \
-        --num_processes=1  # Run in background
+        --num_processes=8  # Run in background
     ((i++))
 done
 
