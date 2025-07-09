@@ -459,6 +459,10 @@ def sa(args):
     print("Saving replay buffer to disk...")
     Path(episode_save_path).mkdir(parents=True, exist_ok=True)
     rb.save(os.path.join(episode_save_path, "replay_buffer.pt"))
+    # Write final reward to a readable text file
+    with open(os.path.join(episode_save_path, "best_reward.txt"), "w") as f:
+        f.write(f"Best reward: {best_reward}\n")  
+
 
     return
 
