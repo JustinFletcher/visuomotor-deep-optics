@@ -5,7 +5,7 @@ import gc
 import sys
 import uuid
 import shutil
-import multiprocessing
+# import multiprocessing
 from pathlib import Path
 import tyro
 
@@ -16,6 +16,15 @@ from sa import Args, sa
 from replay_buffers import ReplayBufferWithHiddenStates
 
 from merge_replay_buffers import merge_replay_buffers
+
+import os
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["TORCH_NUM_THREADS"] = "1"
 
 def run_sa_in_subprocess(proc_id: int, args: Args, parent_dir: str):
     """
@@ -58,7 +67,7 @@ if __name__ == "__main__":
 
     # multi_args = tyro.cli(MultiArgs)
 
-    multiprocessing.set_start_method("spawn", force=True)
+    # multiprocessing.set_start_method("spawn", force=True)
     sa_args = tyro.cli(Args)
     multi_sa_main(sa_args, sa_args.num_processes)
 
