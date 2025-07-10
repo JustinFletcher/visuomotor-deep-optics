@@ -51,7 +51,7 @@ while true; do
       --model_wind_diff_motion \
       --num_envs=1 \
       --reward_function=align \
-      --max_episode_steps=100 \
+      --max_episode_steps=300_000 \
       --num_processes=1 &  # Each subprocess uses 1 process
   done
 
