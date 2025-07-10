@@ -22,32 +22,38 @@ echo "UUID for this script ($script_path):"
 echo "$uuid"
 
 short_uuid=${uuid:0:8} 
-i=1
+i=0
+
 while true; do
-    echo "Number: $i"
+  echo "Batch $i: launching 64 parallel runs"
+  
+  for n in {1..16}; do
+    echo "  Starting process $n in batch $i"
     poetry run python optomech/multi_sa.py \
-        --eval_save_path=$WORKDIR/exp64_$short_uuid \
-        --env-id optomech-v1 \
-        --object_type=single \
-        --ao_interval_ms=5.0 \
-        --control_interval_ms=5.0 \
-        --frame_interval_ms=5.0 \
-        --decision_interval_ms=5.0 \
-        --num_atmosphere_layers=0 \
-        --aperture_type=elf \
-        --focal_plane_image_size_pixels=256 \
-        --observation_mode=image_only \
-        --command_secondaries \
-        --init_differential_motion \
-        --model_wind_diff_motion \
-        --num_envs=1 \
-        --reward_function=align \
-        --max_episode_steps=10_000 \
-        --num_processes=64  # Run in background
-    ((i++))
+      --eval_save_path="$WORKDIR/exp16_${short_uuid}_$i_$n" \
+      --env-id optomech-v1 \
+      --object_type=single \
+      --ao_interval_ms=5.0 \
+      --control_interval_ms=5.0 \
+      --frame_interval_ms=5.0 \
+      --decision_interval_ms=5.0 \
+      --num_atmosphere_layers=0 \
+      --aperture_type=elf \
+      --focal_plane_image_size_pixels=256 \
+      --observation_mode=image_only \
+      --command_secondaries \
+      --init_differential_motion \
+      --model_wind_diff_motion \
+      --num_envs=1 \
+      --reward_function=align \
+      --max_episode_steps=1000 \
+      --num_processes=1 &  # Each subprocess uses 1 process
+  done
+
+  wait  # Wait for all 16 background processes to finish
+  ((i++))
 done
 
-wait
 
 # sbatch 
 # merge
