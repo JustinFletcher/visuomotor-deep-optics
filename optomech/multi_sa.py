@@ -38,19 +38,17 @@ def multi_sa_main(args: Args, num_processes: int = 2):
     print(f"[multi_sa] Writing rollout outputs to: {parent_dir}")
 
 
-    procs = []
-    for i in range(num_processes):
-        p = multiprocessing.Process(target=run_sa_in_subprocess, args=(i, args, parent_dir))
-        p.start()
-        procs.append(p)
+    # procs = []
+    # for i in range(num_processes):
+    #     p = multiprocessing.Process(target=run_sa_in_subprocess, args=(i, args, parent_dir))
+    #     p.start()
+    #     procs.append(p)
 
-    for p in procs:
-        p.join()
-
-    # combined_rb = merge_replay_buffers(parent_dir)
-    # combined_path = os.path.join(parent_dir, "combined_replay_buffer.pt")
-    # combined_rb.save(combined_path)
-    # print(f"Saved combined replay buffer to {combined_path}")
+    # for p in procs:
+    #     p.join()
+    sub_dir = os.path.join(parent_dir, str(uuid.uuid4()))
+    args.eval_save_path = sub_dir
+    sa(args)
 
     return
 
