@@ -50,11 +50,14 @@ def multi_sa_main(args: Args, num_processes: int = 2):
     # combined_rb.save(combined_path)
     # print(f"Saved combined replay buffer to {combined_path}")
 
+    return
+
 
 if __name__ == "__main__":
     num_processes = 4
 
     # multi_args = tyro.cli(MultiArgs)
 
+    multiprocessing.set_start_method("spawn", force=True)
     sa_args = tyro.cli(Args)
     multi_sa_main(sa_args, sa_args.num_processes)
