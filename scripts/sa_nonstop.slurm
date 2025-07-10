@@ -35,7 +35,7 @@ while true; do
     sleep 1  # Sleep for 1 second before starting each process  
     echo "  Starting process $n in batch $i"
     poetry run python optomech/multi_sa.py \
-      --eval_save_path="$WORKDIR/new_64_${short_uuid}" \
+      --eval_save_path="$WORKDIR/sa_${short_uuid}" \
       --env-id optomech-v1 \
       --object_type=single \
       --ao_interval_ms=5.0 \
@@ -51,7 +51,7 @@ while true; do
       --model_wind_diff_motion \
       --num_envs=1 \
       --reward_function=align \
-      --max_episode_steps=1000 \
+      --max_episode_steps=100 \
       --num_processes=1 &  # Each subprocess uses 1 process
   done
 
