@@ -2,10 +2,11 @@
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=64
+#SBATCH --ntasks=32
 #SBATCH --cpus-per-task=1
 #SBATCH --nodes=1
-#SBATCH --exclusive   # prevents sharing node with others (important!
+#SBATCH --nodelist=cr4mi[1-4]
+#SBATCH --exclusive  
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 #SBATCH --account=MHPCC96650DAS       # 
@@ -31,7 +32,7 @@ i=0
 while true; do
   echo "Batch $i: launching 64 parallel runs"
   
-  for n in {1..64}; do
+  for n in {1..32}; do
     sleep 1  # Sleep for 1 second before starting each process  
     echo "  Starting process $n in batch $i"
     poetry run python optomech/multi_sa.py \
@@ -51,7 +52,7 @@ while true; do
       --model_wind_diff_motion \
       --num_envs=1 \
       --reward_function=align \
-      --max_episode_steps=300_000 \
+      --max_episode_steps=100_000 \
       --num_processes=1 &  # Each subprocess uses 1 process
   done
 
