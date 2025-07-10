@@ -469,6 +469,7 @@ def sa(args):
                 f.write(f"Global step: {global_step}\n")
                 f.write(f"Best reward: {best_reward}\n")  
                 f.write(f"SPS: {steps_per_second:.2f}\n")
+                f.write(f"Done: 0\n")
 
     # Save the replay buffer to disk
     print("Saving replay buffer to disk...")
@@ -476,8 +477,10 @@ def sa(args):
     rb.save(os.path.join(episode_save_path, "replay_buffer.pt"))
     # Write final reward to a readable text file
     with open(os.path.join(episode_save_path, "best_reward.txt"), "w") as f:
+        f.write(f"Global step: {global_step}\n")
         f.write(f"Best reward: {best_reward}\n")  
         f.write(f"SPS: {steps_per_second:.2f}\n")
+        f.write(f"Done: 1\n")
 
     gc.collect()  # Clean up memory
     torch.cuda.empty_cache()
