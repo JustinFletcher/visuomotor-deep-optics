@@ -5,7 +5,7 @@
 #SBATCH --ntasks=32
 #SBATCH --cpus-per-task=1
 #SBATCH --nodes=1
-#SBATCH --nodelist=cr4mi[1-4]
+#SBATCH --exclude=cr2arm[1-2],cr3arm[3-4],cr3cn[5-7]
 #SBATCH --exclusive  
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
