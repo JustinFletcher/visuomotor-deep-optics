@@ -1,5 +1,6 @@
 # Standard library imports
 import os
+import gc
 import json
 import uuid
 import pickle
@@ -470,7 +471,9 @@ def sa(args):
         f.write(f"Best reward: {best_reward}\n")  
         f.write(f"SPS: {steps_per_second:.2f}\n")
 
-
+    gc.collect()  # Clean up memory
+    torch.cuda.empty_cache()
+    del envs  # Clean up the environment
     return
 
 
