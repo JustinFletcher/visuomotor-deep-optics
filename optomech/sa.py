@@ -466,6 +466,7 @@ def sa(args):
 
             # Write final reward to a readable text file
             with open(os.path.join(episode_save_path, "best_reward.txt"), "w") as f:
+                f.write(f"Global step: {global_step}\n")
                 f.write(f"Best reward: {best_reward}\n")  
                 f.write(f"SPS: {steps_per_second:.2f}\n")
 

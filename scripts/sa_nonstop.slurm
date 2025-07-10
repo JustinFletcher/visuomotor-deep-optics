@@ -2,7 +2,7 @@
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=16
+#SBATCH --ntasks=64
 #SBATCH --cpus-per-task=1
 #SBATCH --nodes=1
 #SBATCH --exclusive   # prevents sharing node with others (important!
