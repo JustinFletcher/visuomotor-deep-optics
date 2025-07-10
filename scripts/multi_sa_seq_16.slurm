@@ -28,6 +28,8 @@ while true; do
   echo "Batch $i: launching 16 parallel runs"
   
   pkill -9 -f python
+  pkill -f python
+
   for n in {1..16}; do
     sleep 1  # Sleep for 1 second before starting each process  
     echo "  Starting process $n in batch $i"
@@ -55,6 +57,12 @@ while true; do
   wait  # Wait for all 16 background processes to finish
 
   ((i++))
+
+  pkill -9 -f python
+  pkill -f python
+  echo "Batch $i completed. Waiting for 60 seconds before starting the next batch..."
+
+  sleep 60
 done
 
 # sbatch 

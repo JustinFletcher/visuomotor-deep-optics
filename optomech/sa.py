@@ -1,5 +1,6 @@
 # Standard library imports
 import os
+import sys
 import gc
 import json
 import uuid
@@ -480,3 +481,5 @@ def sa(args):
 if __name__ == "__main__":
     args = tyro.cli(Args)
     cli_main(args)
+    sys.exit(0)
+

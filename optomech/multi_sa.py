@@ -1,6 +1,8 @@
 # multi_sa.py
 
 import os
+import gc
+import sys
 import uuid
 import shutil
 import multiprocessing
@@ -61,3 +63,6 @@ if __name__ == "__main__":
     multiprocessing.set_start_method("spawn", force=True)
     sa_args = tyro.cli(Args)
     multi_sa_main(sa_args, sa_args.num_processes)
+
+    gc.collect()  # Clean up memory
+    sys.exit(0)
