@@ -28,6 +28,7 @@ while true; do
   echo "Batch $i: launching 16 parallel runs"
   
   for n in {1..16}; do
+    sleep 1  # Sleep for 1 second before starting each process  
     echo "  Starting process $n in batch $i"
     poetry run python optomech/multi_sa.py \
       --eval_save_path="$WORKDIR/exp16_${short_uuid}" \
@@ -51,6 +52,8 @@ while true; do
   done
 
   wait  # Wait for all 16 background processes to finish
+
+  pkill -9 -f python
   ((i++))
 done
 
