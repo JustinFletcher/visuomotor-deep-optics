@@ -4,7 +4,7 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks=32
 #SBATCH --cpus-per-task=1
-#SBATCH --nodes=4
+#SBATCH --nodes=1
 #SBATCH --nodelist=cr4mi[1-4]
 #SBATCH --exclusive  
 #SBATCH --output=/dev/null
