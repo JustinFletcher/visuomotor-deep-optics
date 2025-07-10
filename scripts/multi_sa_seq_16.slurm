@@ -30,7 +30,7 @@ while true; do
   for n in {1..16}; do
     echo "  Starting process $n in batch $i"
     poetry run python optomech/multi_sa.py \
-      --eval_save_path="$WORKDIR/exp16_${short_uuid}_$i_$n" \
+      --eval_save_path="$WORKDIR/exp16_${short_uuid}" \
       --env-id optomech-v1 \
       --object_type=single \
       --ao_interval_ms=5.0 \
