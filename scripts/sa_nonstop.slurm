@@ -10,7 +10,7 @@
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 #SBATCH --account=MHPCC96650DAS       # 
-#SBATCH --time=1-00:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=12:00:00                # Maximum runtime (D-HH:MM:SS)
 
 cd ~/visuomotor-deep-optics/
 
