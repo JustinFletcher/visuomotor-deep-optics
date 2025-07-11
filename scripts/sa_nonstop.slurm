@@ -2,13 +2,12 @@
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=32
+#SBATCH --ntasks=4
 #SBATCH --exclude=cr2arm[1-2],cr3arm[3-4],cr4arm[5-8],cr3cn[5-7]
-#SBATCH --cpus-per-task=1
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 #SBATCH --account=MHPCC96650DAS       # 
-#SBATCH --time=12:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=7-00:00:00                # Maximum runtime (D-HH:MM:SS)
 
 cd ~/visuomotor-deep-optics/
 
@@ -28,9 +27,9 @@ short_uuid=${uuid:0:8}
 i=0
 
 while true; do
-  echo "Batch $i: launching 32 parallel runs"
+  echo "Batch $i: launching 4 parallel runs"
   
-  for n in {1..32}; do
+  for n in {1..4}; do
     sleep 1  # Sleep for 1 second before starting each process  
     echo "  Starting process $n in batch $i"
     poetry run python optomech/multi_sa.py \
@@ -50,7 +49,7 @@ while true; do
       --model_wind_diff_motion \
       --num_envs=1 \
       --reward_function=align \
-      --max_episode_steps=100_000 \
+      --max_episode_steps=3_000 \
       --num_processes=1 &  # Each subprocess uses 1 process
   done
 
