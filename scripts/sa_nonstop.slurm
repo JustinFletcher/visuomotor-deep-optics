@@ -2,7 +2,6 @@
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=2
 #SBATCH --exclude=cr2arm[1-2],cr3arm[3-4],cr4arm[5-8],cr3cn[5-7]
 #SBATCH --output=sa.out
 #SBATCH --error=sa.err
@@ -49,7 +48,7 @@ while true; do
       --model_wind_diff_motion \
       --num_envs=1 \
       --reward_function=align \
-      --max_episode_steps=3_000 \
+      --max_episode_steps=100_000 \
       --num_processes=1 &  # Each subprocess uses 1 process
   done
 
