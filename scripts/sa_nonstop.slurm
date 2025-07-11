@@ -2,7 +2,7 @@
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=32
+#SBATCH --ntasks=64
 #SBATCH --cpus-per-task=1
 #SBATCH --nodes=1
 #SBATCH --exclude=cr2arm[1-2],cr3arm[3-4],cr3cn[5-7],cr1dpu[1-2]
@@ -32,7 +32,7 @@ i=0
 while true; do
   echo "Batch $i: launching 64 parallel runs"
   
-  for n in {1..32}; do
+  for n in {1..64}; do
     sleep 1  # Sleep for 1 second before starting each process  
     echo "  Starting process $n in batch $i"
     poetry run python optomech/multi_sa.py \
