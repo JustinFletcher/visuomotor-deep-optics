@@ -4,7 +4,7 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks=64
 #SBATCH --cpus-per-task=1
-#SBATCH --exclude=cr2arm[1-2],cr3arm[3-4],cr3cn[5-7],cr1dpu[1-2]
+#SBATCH --exclude=cr2arm[1-2],cr2cn[1-4],cr3arm[3-4],cr4arm[5-8],cr3cn[1-8],cr1dpu[1-2]
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 #SBATCH --account=MHPCC96650DAS       # 
