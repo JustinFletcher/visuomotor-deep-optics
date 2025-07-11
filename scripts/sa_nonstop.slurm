@@ -3,8 +3,8 @@
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --exclude=cr2arm[1-2],cr3arm[3-4],cr4arm[5-8],cr3cn[5-7]
-#SBATCH --output=sa.out
-#SBATCH --error=sa.err
+#SBATCH --output=/wdata/scratch/fletch/sa.out
+#SBATCH --error=/wdata/scratch/fletch/sa.err
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --time=7-00:00:00                # Maximum runtime (D-HH:MM:SS)
 
@@ -52,7 +52,7 @@ while true; do
       --num_processes=1 &  # Each subprocess uses 1 process
   done
 
-  wait  # Wait for all 16 background processes to finish
+  wait  # Wait for all background processes to finish
 
   ((i++))
 
