@@ -6,7 +6,7 @@
 #SBATCH --output=/wdata/scratch/fletch/sa.out
 #SBATCH --error=/wdata/scratch/fletch/sa.err
 #SBATCH --account=MHPCC96650DAS       # 
-#SBATCH --time=7-00:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=1-00:00:00                # Maximum runtime (D-HH:MM:SS)
 
 cd ~/visuomotor-deep-optics/
 
@@ -47,7 +47,7 @@ for n in {1..16}; do
     --model_wind_diff_motion \
     --num_envs=1 \
     --reward_function=align \
-    --max_episode_steps=1_000 \
+    --max_episode_steps=100_000 \
     --num_processes=1 &  # Each subprocess uses 1 process
 done
 
