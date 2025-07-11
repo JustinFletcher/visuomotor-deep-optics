@@ -2,7 +2,7 @@
 #SBATCH --job-name=optomech           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=64
+#SBATCH --ntasks=32
 #SBATCH --exclude=cr2arm[1-2],cr3arm[3-4],cr4arm[5-8]
 #SBATCH --cpus-per-task=1
 #SBATCH --output=/dev/null
@@ -12,8 +12,6 @@
 
 cd ~/visuomotor-deep-optics/
 
-
-#SBATCH --exclude=cr2arm[1-2],cr2cn[1-4],cr3arm[3-4],cr4arm[5-8],cr3cn[1-8],cr1dpu[1-2]
 # Get the absolute path to this script
 script_path="$(realpath "${BASH_SOURCE[0]}")"
 
@@ -30,9 +28,9 @@ short_uuid=${uuid:0:8}
 i=0
 
 while true; do
-  echo "Batch $i: launching 64 parallel runs"
+  echo "Batch $i: launching 32 parallel runs"
   
-  for n in {1..64}; do
+  for n in {1..32}; do
     sleep 1  # Sleep for 1 second before starting each process  
     echo "  Starting process $n in batch $i"
     poetry run python optomech/multi_sa.py \
