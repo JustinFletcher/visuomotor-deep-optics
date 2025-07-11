@@ -3,6 +3,7 @@
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks=64
+#SBATCH --exclude=cr2arm[1-8]
 #SBATCH --cpus-per-task=1
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
