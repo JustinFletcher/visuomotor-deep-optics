@@ -4,8 +4,8 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks=4
 #SBATCH --exclude=cr2arm[1-2],cr3arm[3-4],cr4arm[5-8],cr3cn[5-7]
-#SBATCH --output=/dev/null
-#SBATCH --error=/dev/null
+#SBATCH --output=sa.out
+#SBATCH --error=sa.err
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --time=7-00:00:00                # Maximum runtime (D-HH:MM:SS)
 
