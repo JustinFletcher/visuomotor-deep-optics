@@ -118,6 +118,8 @@ class Args:
     """The scale of the L1 regularization"""
     max_grad_norm: float = 1.0
     """The maximum gradient norm"""
+    use_q_bias: bool = True
+    """If toggled, compute q bias in the critic model."""
 
     save_model: bool = False
     """whether to save model into the `runs/{run_name}` folder"""
@@ -277,344 +279,6 @@ class Args:
 
 
 
-class VanillaCritic(nn.Module):
-
-    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True, action_scale=1.0):
-        super().__init__()
-
-
-        self.use_lstm = False
-
-        # Get the observation space shape from the environment.
-        obs_shape = envs.single_observation_space.shape
-     
-        vector_action_size = envs.single_action_space.shape[0]
-
-        # Handle channels-last environments.
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
-            input_channels = envs.single_observation_space.shape[-1]
-        else:
-            self.channels_last = False
-            input_channels = envs.single_observation_space.shape[0]
-        
-        self.visual = not(low_dim)
-
-        self.o_conv = nn.Sequential(
-                # nn.MaxPool2d(4),
-                conv_init(
-                    nn.Conv2d(
-                        input_channels, 
-                        channel_scale, 
-                        kernel_size=8, 
-                        stride=4)
-                        ),
-                nn.ReLU(),
-                conv_init(
-                    nn.Conv2d(
-                        channel_scale, 
-                        channel_scale // 2, 
-                        kernel_size=4, 
-                        stride=2)
-                        ),
-                nn.ReLU(),
-                conv_init(
-                    nn.Conv2d(
-                        channel_scale // 2,
-                        channel_scale // 4,
-                        kernel_size=3,
-                        stride=1)
-                    ),
-                nn.Flatten(),
-            )
-
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            output_dim = self.o_conv(x).shape[1]
-
-        if self.visual:
-            self.merge_fc1 = uniform_init(
-                nn.Linear(output_dim + vector_action_size, fc_scale),
-                lower_bound=-1/np.sqrt(output_dim + vector_action_size),
-                upper_bound=1/np.sqrt(output_dim + vector_action_size))
-        
-        else:
-            self.merge_fc1 = uniform_init(
-                nn.Linear(vector_action_size, fc_scale),
-                lower_bound=-1/np.sqrt(vector_action_size),
-                upper_bound=1/np.sqrt(vector_action_size))
-            
-        self.merge_fc2 = uniform_init(
-            nn.Linear(fc_scale, fc_scale // 2),
-            lower_bound=-1/np.sqrt(fc_scale),
-            upper_bound=1/np.sqrt(fc_scale))
-
-        self.merge_fc3 = uniform_init(
-            nn.Linear(fc_scale // 2, fc_scale // 4),
-            lower_bound=-1/np.sqrt(fc_scale // 2),
-            upper_bound=1/np.sqrt(fc_scale // 2))
-
-        self.fc_q = nn.Linear(fc_scale // 4, 1)
-
-    def forward(self, o, a):
-
-        # Handle channels-last environments.
-        if self.channels_last:
-            o = o.permute(0, 3, 1, 2)
-
-        if self.visual:
-            o = o / 255.0
-            x_o = F.relu(self.o_conv(o.to(torch.float32)))
-            x = torch.cat([x_o, a], 1)
-
-        else: 
-            x = a 
-
-        x = F.relu(self.merge_fc1(x))
-        x = F.relu(self.merge_fc2(x))
-        x = F.relu(self.merge_fc3(x))
-        q_vals = self.fc_q(x)
-
-        return q_vals
-
-class VanillaActor(nn.Module):
-
-    def __init__(self, envs, channel_scale=16, fc_scale=8, low_dim=True, action_scale=1.0):
-        super().__init__()
-
-        self.use_lstm = False
-        # Get the observation space shape from the environment.
-        obs_shape = envs.single_observation_space.shape
-
-        vector_action_size = envs.single_action_space.shape[0]
-
-        # Check if this is a channels-last environment
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
-            input_channels = envs.single_observation_space.shape[-1]
-        else:
-            self.channels_last = False
-            input_channels = envs.single_observation_space.shape[0]
-
-        self.visual = not(low_dim)
-
-        self.conv = nn.Sequential(
-                # nn.MaxPool2d(4),
-                conv_init(
-                    nn.Conv2d(input_channels, 
-                              channel_scale,
-                              kernel_size=8,
-                              stride=4)),
-                nn.ReLU(),
-                conv_init(nn.Conv2d(channel_scale,
-                                    channel_scale // 2,
-                                    kernel_size=4,
-                                    stride=2)),
-                nn.ReLU(),
-                conv_init(nn.Conv2d(channel_scale // 2,
-                                    channel_scale // 4,
-                                    kernel_size=3,
-                                    stride=1)),
-                nn.Flatten(),
-            )
-        
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            output_dim = self.conv(x).shape[1]
-
-        self.ones_output = torch.ones(1, output_dim)
-
-        self.fc1 = uniform_init(
-            nn.Linear(output_dim, fc_scale // 2),
-            lower_bound=-1/np.sqrt(output_dim),
-            upper_bound=1/np.sqrt(output_dim)
-            )
-        self.fc2 = uniform_init(
-            nn.Linear(fc_scale // 2, fc_scale // 4),
-            lower_bound=-1/np.sqrt(fc_scale // 2),
-            upper_bound=1/np.sqrt(fc_scale // 2)
-            )
-        # self.fc3 = uniform_init(
-        #     nn.Linear(
-        #         fc_scale,
-        #         int(np.prod(envs.single_action_space.shape))
-        #         ),
-        #     lower_bound=-3e-4,
-        #     upper_bound=3e-4
-        #     )
-        self.fc3 = uniform_init(
-            nn.Linear(fc_scale // 4, int(np.prod(envs.single_action_space.shape))),
-            lower_bound=-1/np.sqrt(fc_scale // 4),
-            upper_bound=1/np.sqrt(fc_scale // 4)
-        )
-                                
-        # action rescaling
-        self.register_buffer(
-            # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_scale", torch.tensor(action_scale, dtype=torch.float32)
-        )
-        self.register_buffer(
-            # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_bias", torch.tensor(0.0, dtype=torch.float32)
-        )
-
-    def forward(self, x):
-
-        # Handle channels-last environments.
-        if self.channels_last:
-            x = x.permute(0, 3, 1, 2)
-
-        if self.visual:
-            x = x / 255.0
-            print(x.dtype)
-            x = F.relu(self.conv(x.to(torch.float32)))
-        else:
-            x = self.ones_output
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.tanh(self.fc3(x))
-
-        # x = F.tanh(self.fc1(x))
-
-        a = (x * self.action_scale + self.action_bias)
-        return a
-    
-
-class MultiscaleActionModule(nn.Module):
-    def __init__(self, in_size, out_size, hidden_size=128):
-        super(MultiscaleActionModule, self).__init__()
-
-        self.head0 = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, out_size),
-                std=1.0
-            ),
-            nn.Tanh()
-        )
-        self.head0_logits = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, 1),
-                std=1.0
-            ),
-        )
-
-        self.head1 = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, out_size),
-                std=1.0
-            ),
-            nn.Tanh()
-        )
-        self.head1_logits = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, 1),
-                std=1.0
-            ),
-        )
-
-        self.head2 = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, out_size),
-                std=1.0
-            ),
-            nn.Tanh()
-        )
-        self.head2_logits = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, 1),
-                std=1.0
-            ),
-        )
-
-        self.head3 = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, out_size),
-                std=1.0
-            ),
-            nn.Tanh()
-        )
-        self.head3_logits = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, 1),
-                std=1.0
-            ),
-        )
-
-        self.head4 = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, out_size),
-                std=1.0
-            ),
-            nn.Tanh()
-        )
-        self.head4_logits = nn.Sequential(
-            layer_init(nn.Linear(in_size, hidden_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(nn.Linear(hidden_size, 1),
-                std=1.0
-            ),
-        )
-
-
-    def forward(self, x):
-
-        # Process input through each path
-        out0 = (1 / (10 ** 0)) * self.head0(x)
-        active0 = (self.head0_logits(x) > 0.5).float()
-
-        out1 = (1 / (10 ** 1)) * self.head1(x)
-        active1 = (self.head1_logits(x) > 0.5).float()
-
-        out2 = (1 / (10 ** 2)) * self.head2(x)
-        active2 = (self.head2_logits(x) > 0.5).float()
-
-        out3 = (1 / (10 ** 3)) * self.head3(x)
-        active3 = (self.head3_logits(x) > 0.5).float()
-
-        out4 = (1 / (10 ** 4)) * self.head4(x)
-        active4 = (self.head4_logits(x) > 0.5).float()
-
-        # Concatenate along the channel dimension
-        out = (out0 * active0) + (out1 * active1) + (out2 * active2) + (out3 * active3) + (out4 * active4)
-        return out
-
 class ImpalaActor(nn.Module):
 
     def __init__(self, envs, device, lstm_hidden_dim=128, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, use_multiscale_head=False, action_scale=1.0):
@@ -701,35 +365,26 @@ class ImpalaActor(nn.Module):
 
             pre_head_output_shape = self.lstm(x)[0].shape
 
-        if self.use_multiscale_head:
-
-            self.action_head = nn.Sequential(
-                MultiscaleActionModule(
-                        int(np.prod(pre_head_output_shape[1:])),
-                        int(np.prod(envs.single_action_space.shape)))
-                        )
-
-        else:
-            # Build the action head following the convolutional LSTM
-            self.action_head = nn.Sequential(
-                layer_init(
-                    nn.Linear(
-                        int(np.prod(pre_head_output_shape[1:])),
-                        fc_scale // 2,
-                            ),
-                    std=1e-3
-                ),
-                nn.LayerNorm(fc_scale // 2),
-                nn.Tanh(),
-                layer_init(
-                    nn.Linear(
-                        fc_scale // 2,
-                        int(np.prod(envs.single_action_space.shape))
-                            ),
-                    std=1e-3
-                ),
-                nn.Tanh()
-            )
+        # Build the action head following the convolutional LSTM
+        self.action_head = nn.Sequential(
+            layer_init(
+                nn.Linear(
+                    int(np.prod(pre_head_output_shape[1:])),
+                    fc_scale // 2,
+                        ),
+                std=1e-3
+            ),
+            nn.LayerNorm(fc_scale // 2),
+            nn.Tanh(),
+            layer_init(
+                nn.Linear(
+                    fc_scale // 2,
+                    int(np.prod(envs.single_action_space.shape))
+                        ),
+                std=1e-3
+            ),
+            nn.Tanh()
+        )
                                 
         # action rescaling
         self.register_buffer(
@@ -787,6 +442,8 @@ class ImpalaActor(nn.Module):
             c0 = c0.permute(1, 0, 2)
         hidden = (h0, c0)
         x = torch.cat([x, a_prior, r_prior], 1)
+
+
         # TODO: this will require a total refactor for BPTT
         # Add a sequence dimension to the input
         if x.dim() == 2:
@@ -813,7 +470,8 @@ class ImpalaActor(nn.Module):
 
 class ImpalaCritic(nn.Module):
     
-    def __init__(self, envs, device, lstm_hidden_dim=128, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
+    def __init__(self, envs, device, lstm_hidden_dim=128, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0,
+                 q_bias=0.0):
         
         super().__init__()
         # Initialize the shape parameters
@@ -824,6 +482,8 @@ class ImpalaCritic(nn.Module):
 
         self.lstm_hidden_dim = lstm_hidden_dim
         self.lstm_num_layers = lstm_num_layers
+
+        self.q_bias = q_bias
 
 
         vector_action_size = envs.single_action_space.shape[0]
@@ -913,10 +573,10 @@ class ImpalaCritic(nn.Module):
                 nn.Linear(fc_scale // 2,
                           1
                           ),
-                std=1.0
+                std=1.0,
+                bias=q_bias
             ),
         )
-
 
     def get_zero_hidden(self):
         """
@@ -950,11 +610,11 @@ class ImpalaCritic(nn.Module):
 
         # TODO: this will require a total refactor for BPTT
         # Add a sequence dimension to the input
-        if x.dim() == 2:
+        if not(self.bptt) and x.dim() == 2:
             x = x.unsqueeze(1)
         x, new_hidden = self.lstm(x, hidden)
         # Remove the sequence dimension if it was added
-        if x.dim() == 3:
+        if not(self.bptt) and x.dim() == 3:
             x = x.squeeze(1)
             new_hidden = (new_hidden[0].squeeze(1), new_hidden[1].squeeze(1))
 
@@ -962,402 +622,6 @@ class ImpalaCritic(nn.Module):
         q = self.q_head(x)
         return q, new_hidden
     
-
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-
-    def forward(self, x):
-        residual = x
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out += residual
-        out = self.relu(out)
-        return out
-    
-
-class ImpalaLargeActor(nn.Module):
-
-    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, use_multiscale_head=False, action_scale=1.0):
-        
-        super().__init__()
-        # Initialize the shape parameters
-
-        self.device = device
-        self.use_lstm = True
-        self.bptt = bptt
-        self.lstm_hidden_dim = fc_scale
-        self.lstm_num_layers = lstm_num_layers
-        self.use_multiscale_head = use_multiscale_head
-
-        vector_action_size = envs.single_action_space.shape[0]
-        # Seperate out the prior action and the image
-
-        obs_shape = envs.single_observation_space.shape
-
-        # Check if this is a channels-last environment
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
-            input_channels = obs_shape[-1]
-        else:
-            self.channels_last = False
-            input_channels = obs_shape[0]
-
-        # Build a visual encoder comprising two standard convs followed by two residual blocks.
-
-        encoder_block_1 = nn.Sequential(
-            conv_init(
-                nn.Conv2d(input_channels, 
-                          16,
-                          kernel_size=3,
-                          stride=1)),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.ReLU(),
-            ResidualBlock(16, 16),
-            nn.ReLU(),
-            ResidualBlock(16, 16),
-        )
-
-        encoder_block_2 = nn.Sequential(
-            conv_init(
-                nn.Conv2d(16, 
-                          32,
-                          kernel_size=3,
-                          stride=1)),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.ReLU(),
-            ResidualBlock(32, 32),
-            nn.ReLU(),
-            ResidualBlock(32, 32),
-        )
-
-
-        encoder_block_3 = nn.Sequential(
-            conv_init(
-                nn.Conv2d(32, 
-                          32,
-                          kernel_size=3,
-                          stride=1)),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.ReLU(),
-            ResidualBlock(32, 32),
-            nn.ReLU(),
-            ResidualBlock(32, 32),
-        )
-
-
-        self.visual_encoder = nn.Sequential(
-            encoder_block_1,
-            encoder_block_2,
-            encoder_block_3,
-            nn.ReLU(),
-        )
-    
-
-        # Get the output shape of the visual encoder
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            visual_output_shape = self.visual_encoder(x).shape
-    
-        mlp_output_size = fc_scale
-        self.mlp = nn.Sequential(
-            nn.Flatten(),
-            layer_init(
-                nn.Linear(
-                    int(np.prod(visual_output_shape[1:])),
-                    mlp_output_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-        )
-
-
-        self.lstm = init_lstm_weights(nn.LSTM(
-            input_size=mlp_output_size + vector_action_size + 1,
-            hidden_size=self.lstm_hidden_dim,
-            num_layers=self.lstm_num_layers,
-            batch_first=True
-        ))
-
-        # Get the output shape of the LSTM
-        with torch.inference_mode():            
-        
-            x = torch.zeros(1, mlp_output_size + vector_action_size + 1)
-
-            pre_head_output_shape = self.lstm(x)[0].shape
-
-        if self.use_multiscale_head:
-
-            self.action_head = nn.Sequential(
-                MultiscaleActionModule(
-                        int(np.prod(pre_head_output_shape[1:])),
-                        int(np.prod(envs.single_action_space.shape)))
-                        )
-
-        else:
-            # Build the action head following the convolutional LSTM
-            self.action_head = nn.Sequential(
-                layer_init(
-                    nn.Linear(
-                        int(np.prod(pre_head_output_shape[1:])),
-                        fc_scale
-                        ),
-                    std=1.0
-                ),
-                nn.Tanh(),
-                layer_init(
-                    nn.Linear(
-                        fc_scale,
-                        int(np.prod(envs.single_action_space.shape))
-                        ),
-                    std=1.0
-                ),
-                nn.Tanh()
-            )
-                                
-        # action rescaling
-        self.register_buffer(
-            # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_scale", torch.tensor(action_scale, dtype=torch.float32)
-        )
-        self.register_buffer(
-            # "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
-            "action_bias", torch.tensor(0.0, dtype=torch.float32)
-        )
-
-        # Important: Set the hidden state to None initially.
-        self.hidden = self.init_hidden()
-
-    def init_hidden(self):
-        """
-        Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
-        Shapes:
-          h, c: [num_layers=1, batch_size, hidden_dim]
-        """
-        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
-        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
-        return (h, c)
-
-    def reset_hidden(self, ):
-        """
-        Reset the agent's internal hidden state to zeros.
-        """
-        self.hidden = self.init_hidden()
-
-    def forward(self, o, a_prior, r_prior):
-
-
-        # batch_size, seq_len, channels, height, width = o.shape
-
-        # Handle channels-last environments.
-        if self.channels_last:
-            o = o.permute(0, 3, 1, 2)
-
-
-        # TODO: here, reshape the input to allow the visual encoder to apply to all images.
-        # x_reshaped = x.view(batch_size * seq_len, channels, height, width) 
-        x_o = self.visual_encoder(o)
-
-        # TODO: here, reshape is back to get a sequence again before the LSTM
-        # conv_out = conv_out.view(batch_size, seq_len, 16, height, width)
-        x = self.mlp(x_o)
-        x, new_hidden = self.lstm(torch.cat([x, a_prior, r_prior], 1), self.hidden)
-
-
-        # new_hidden is a tuple (h, c) after processing x
-        if self.bptt:
-            detached_hidden = new_hidden[0], new_hidden[1]
-        else:
-            detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
-        self.hidden = detached_hidden
-
-        # Apply action prediciton head and activation function
-        a = self.action_head(x)
-
-        a = (a * self.action_scale + self.action_bias)
-        return a
-
-
-class ImpalaLargeCritic(nn.Module):
-    
-    def __init__(self, envs, device, lstm_hidden_dim=256, lstm_num_layers=1, channel_scale=16, fc_scale=8, low_dim=True, bptt=False, action_scale=1.0):
-        
-        super().__init__()
-        # Initialize the shape parameters
-
-        self.use_lstm = True
-        self.device = device
-        self.bptt = bptt
-
-        self.lstm_hidden_dim = fc_scale
-        self.lstm_num_layers = lstm_num_layers
-
-
-        vector_action_size = envs.single_action_space.shape[0]
-        # Seperate out the prior action and the image
-
-        obs_shape = envs.single_observation_space.shape
-
-        # Check if this is a channels-last environment
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
-            input_channels = obs_shape[-1]
-        else:
-            self.channels_last = False
-            input_channels = obs_shape[0]
-
-        # Define the visual encoder, so that we know the output shape.
-        encoder_block_1 = nn.Sequential(
-            conv_init(
-                nn.Conv2d(input_channels, 
-                          16,
-                          kernel_size=3,
-                          stride=1)),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.ReLU(),
-            ResidualBlock(16, 16),
-            nn.ReLU(),
-            ResidualBlock(16, 16),
-        )
-
-        encoder_block_2 = nn.Sequential(
-            conv_init(
-                nn.Conv2d(16, 
-                          32,
-                          kernel_size=3,
-                          stride=1)),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.ReLU(),
-            ResidualBlock(32, 32),
-            nn.ReLU(),
-            ResidualBlock(32, 32),
-        )
-
-
-        encoder_block_3 = nn.Sequential(
-            conv_init(
-                nn.Conv2d(32, 
-                          32,
-                          kernel_size=3,
-                          stride=1)),
-            nn.MaxPool2d(kernel_size=3, stride=2),
-            nn.ReLU(),
-            ResidualBlock(32, 32),
-            nn.ReLU(),
-            ResidualBlock(32, 32),
-        )
-
-
-        self.visual_encoder = nn.Sequential(
-            encoder_block_1,
-            encoder_block_2,
-            encoder_block_3,
-            nn.ReLU(),
-        )
-    
-    
-        # Get the output shape of the visual encoder
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            visual_output_shape = self.visual_encoder(x).shape
-
-
-        mlp_output_size = fc_scale
-        self.mlp = nn.Sequential(
-            nn.Flatten(),
-            layer_init(
-                nn.Linear(
-                    int(np.prod(visual_output_shape[1:])),
-                    mlp_output_size),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-        )
-
-        self.lstm = init_lstm_weights(nn.LSTM(
-            input_size=mlp_output_size + vector_action_size + vector_action_size + 1,
-            hidden_size=self.lstm_hidden_dim,
-            num_layers=self.lstm_num_layers,
-            batch_first=True
-        ))
-
-        # Get the output shape of the LSTM
-        with torch.inference_mode():
-            x = torch.zeros(1, mlp_output_size + vector_action_size + vector_action_size + 1)
-            pre_head_output_shape = self.lstm(x)[0].shape
-
-        # Build the q head following the convolutional LSTM
-        self.q_head = nn.Sequential(
-            layer_init(
-                nn.Linear(int(np.prod(pre_head_output_shape[1:])), fc_scale),
-                std=np.sqrt(2)
-            ),
-            nn.ReLU(),
-            layer_init(
-                nn.Linear(fc_scale, 1),
-                std=1.0
-            ),
-        )
-
-        # Important: Set the hidden state to None initially.
-        self.hidden = self.init_hidden()
-
-    def init_hidden(self):
-        """
-        Create a fresh hidden state of zeros (h, c) for a single-layer LSTM.
-        Shapes:
-          h, c: [num_layers=1, batch_size, hidden_dim]
-        """
-        # TODO: Consider requires_grad_() here
-        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
-        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device) 
-        return (h, c)
-
-    def reset_hidden(self):
-        """
-        Reset the agent's internal hidden state to zeros.
-        """
-        self.hidden = self.init_hidden()
-
-
-    def forward(self, o, a, a_prior, r_prior):
-    
-
-        # Handle channels-last environments.
-        if self.channels_last:
-            o = o.permute(0, 3, 1, 2)
-
-        # Extract visual feature maps
-        x_o = self.visual_encoder(o)
-        x = self.mlp(x_o)
-
-        x, new_hidden = self.lstm(torch.cat([x, a, a_prior, r_prior], 1), self.hidden)
-        # new_hidden is a tuple (h, c) after processing x
-        if self.bptt:
-            detached_hidden = new_hidden[0], new_hidden[1]
-        else:
-            detached_hidden = new_hidden[0].detach().to(self.device), new_hidden[1].detach().to(self.device)
-        self.hidden = detached_hidden
-
-        # Apply action prediciton head and activation function
-        q = self.q_head(x)
-        return q
 
 
 def uniform_init(layer, lower_bound=-1e-4, upper_bound=1e-4):
@@ -1590,31 +854,18 @@ if __name__ == "__main__":
             [make_env(args.env_id, i, args.capture_video, run_name, args) for i in range(args.num_envs)],
         )
     
+
+    # Potential-based reward shaping https://arxiv.org/pdf/2502.01307
+    if args.use_q_bias:
+        expected_reward = -8.5
+        q_bias = -expected_reward * ((1 - (args.gamma ** args.max_episode_steps)) / (1 - args.gamma))
+    else:
+        q_bias = 0.0
+
     bptt = False
     
 
-    if args.actor_type == "impala" or args.actor_type == "impalalarge":
-        prior_state_models = True
-    else:
-        prior_state_models = False
-
-    if args.actor_type == "vanilla":
-    
-        # actor = Actor(envs).to(device)
-        actor = VanillaActor(envs,
-                    channel_scale=args.actor_channel_scale,
-                    fc_scale=args.actor_fc_scale,
-                    low_dim=args.low_dim_actor,
-                           action_scale=args.action_scale).to(device)
-        
-        # target_actor = Actor(envs).to(device)
-        target_actor = VanillaActor(envs,
-                            channel_scale=args.actor_channel_scale,
-                            fc_scale=args.actor_fc_scale,
-                            low_dim=args.low_dim_actor,
-                           action_scale=args.action_scale).to(device)
-        
-    elif args.actor_type == "impala":
+    if args.actor_type == "impala":
 
         actor = ImpalaActor(envs,
                             device,
@@ -1631,58 +882,7 @@ if __name__ == "__main__":
     
         
 
-    elif args.actor_type == "impalalarge":
-        
-        actor = ImpalaLargeActor(envs,
-                            device,
-                            channel_scale=args.actor_channel_scale,
-                            fc_scale=args.actor_fc_scale,
-                           action_scale=args.action_scale,
-                           use_multiscale_head=args.use_multiscale_head).to(device)
-        target_actor = ImpalaLargeActor(envs,
-                                   device,
-                                   channel_scale=args.actor_channel_scale,
-                                   fc_scale=args.actor_fc_scale,
-                           use_multiscale_head=args.use_multiscale_head,
-                           action_scale=args.action_scale).to(device)
-
-
-    else:
-
-        raise ValueError("Invalid actor type specified.")
-    
-
-    if args.critic_type == "vanilla":
-
-        torch.manual_seed(np.random.randint(0, 2**32 - 1))
-        qf1 = VanillaCritic(
-            envs,
-            channel_scale=args.qnetwork_channel_scale,
-            fc_scale=args.qnetwork_fc_scale,
-            low_dim=args.low_dim_qnetwork,
-            action_scale=args.action_scale).to(device)
-        qf1_target = VanillaCritic(
-            envs,
-            channel_scale=args.qnetwork_channel_scale,
-            fc_scale=args.qnetwork_fc_scale,
-            low_dim=args.low_dim_qnetwork,
-            action_scale=args.action_scale).to(device)
-        
-        torch.manual_seed(np.random.randint(0, 2**32 - 1))
-        qf2 = VanillaCritic(
-            envs,
-            channel_scale=args.qnetwork_channel_scale,
-            fc_scale=args.qnetwork_fc_scale,
-            low_dim=args.low_dim_qnetwork,
-            action_scale=args.action_scale).to(device)
-        qf2_target = VanillaCritic(
-            envs,
-            channel_scale=args.qnetwork_channel_scale,
-            fc_scale=args.qnetwork_fc_scale,
-            low_dim=args.low_dim_qnetwork,
-            action_scale=args.action_scale).to(device)
-
-    elif args.critic_type == "impala":
+    if args.critic_type  == "impala":
 
         torch.manual_seed(np.random.randint(0, 2**32 - 1))
         qf1 = ImpalaCritic(
@@ -1690,14 +890,16 @@ if __name__ == "__main__":
             device,
             channel_scale=args.actor_channel_scale,
             fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale).to(device
+            action_scale=args.action_scale,
+            q_bias=q_bias).to(device
         )
         qf1_target = ImpalaCritic(
             envs,
             device,
             channel_scale=args.actor_channel_scale,
             fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale).to(device
+            action_scale=args.action_scale,
+            q_bias=q_bias).to(device
         )
         
         _ = torch.randn(1000)
@@ -1708,13 +910,15 @@ if __name__ == "__main__":
             device,
             channel_scale=args.actor_channel_scale,
             fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale).to(device)
+            action_scale=args.action_scale,
+            q_bias=q_bias).to(device)
         qf2_target = ImpalaCritic(
             envs,
             device,
             channel_scale=args.actor_channel_scale,
             fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale).to(device)
+            action_scale=args.action_scale,
+            q_bias=q_bias).to(device)
         
         for p in qf2.parameters():
             p.data += 1e-3 * torch.randn_like(p)
@@ -1722,61 +926,22 @@ if __name__ == "__main__":
             p.data += 1e-3 * torch.randn_like(p)
 
         
-    elif args.critic_type == "impalalarge":
-
-        torch.manual_seed(np.random.randint(0, 2**32 - 1))
-        qf1 = ImpalaLargeCritic(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale).to(device)
-        qf1_target = ImpalaLargeCritic(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale).to(device)
-        _ = torch.randn(1000)
-        torch.manual_seed(np.random.randint(0, 2**32 - 1))
-        _ = torch.randn(1000)
-        qf2 = ImpalaLargeCritic(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale).to(device)
-        qf2_target = ImpalaLargeCritic(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale).to(device)
-
     else:
         raise ValueError("Invalid critic type specified.")
     
 
-    # if torch.cuda.device_count() > 1:
-    #     print(f"Using {torch.cuda.device_count()} GPUs!")
-    #     model = nn.DataParallel(SimpleModel())  # Wrap the model with DataParallel
-    # else:
-    #     model = SimpleModel()
     print("Actor and Critic parameter counts:")
     print(sum(p.numel() for p in actor.parameters() if p.requires_grad))
     print(sum(p.numel() for p in qf1.parameters() if p.requires_grad))
-
     summary(actor, )
     summary(qf1,)
 
-
-    # Write a test to fail if qf1 and qf2 have any identical parameters.
+    # Test if qf1 and qf2 have any identical parameters.
     any_different = False
     for p1, p2 in zip(qf1.parameters(), qf2.parameters()):
         if not(p1.data.equal(p2.data)):
             any_different = True
             break
-
 
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
@@ -1789,23 +954,12 @@ if __name__ == "__main__":
 
     if bptt:
 
-        rb = ReplayBufferLSTM2(args.buffer_size)
+        rb = ReplayBufferWithHiddenStatesBPTT(args.buffer_size)
         
-    elif prior_state_models:
+    else:
 
         rb = ReplayBufferWithHiddenStates(args.buffer_size)
 
-    else:
-
-        rb = ReplayBuffer(
-            args.buffer_size,
-            envs.single_observation_space,
-            envs.single_action_space,
-            device,
-            handle_timeout_termination=False,
-            n_envs=args.num_envs
-        )
-        
     if args.replay_buffer_load_path:
         print(f"Loading replay buffer from {args.replay_buffer_load_path}")
         # Search for replay_buffer_load_path in the current directory and its subdirectories.
@@ -1844,17 +998,14 @@ if __name__ == "__main__":
         eval_dict[eval_rollout]["random_policy_returns"] = random_policy_returns
         eval_dict[eval_rollout]["on_policy_returns"] = dict()
 
-
-
     # TODO: Add a dud check here.
 
     start_time = time.time()
+    
     # TRY NOT TO MODIFY: start the game
     print("Resetting Environments.")
     obs, info = envs.reset(seed=args.seed)
-
     print("Environments Reset.")
-
 
     # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
@@ -1862,7 +1013,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-
+    # Initialize the episode lists for bptt.
     episode_state = list()
     episode_action = list()
     episode_last_action = list()
@@ -1871,6 +1022,7 @@ if __name__ == "__main__":
     episode_next_state = list()
     episode_done = list()
 
+    # Initialize the global step and episode return lists.
     global_step = 0
     best_train_episode_return = -np.inf
     train_episodic_return_list = list()
@@ -1887,8 +1039,10 @@ if __name__ == "__main__":
     qf2_hidden = qf2.get_zero_hidden()    
     first_step_reward = None
 
+    # Initialize the actions.
     actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
 
+    # Initialize the exploration noise generator.
     noise_generator = OUNoiseTorch(
                  action_dim=envs.single_action_space.shape[0], 
                  mu=0.0, 
@@ -1899,15 +1053,19 @@ if __name__ == "__main__":
                  auto_decay=False,
                  device='cpu')
 
-    print(actions)
+    # Initialize the prior rewards.
     _, rewards, _, _, _ = envs.step(actions)
     prior_rewards = rewards
 
     for iteration in range(args.total_timesteps):
-        print("Iteration: ", iteration)
-        print("global_step: ", global_step)
 
-     
+        step_time = time.time()
+
+        if not args.silence:
+            print("Iteration: ", iteration)
+            print("global_step: ", global_step)
+
+        # First, check to see if we need to save the model.
         if args.save_model:
 
             # Check that we've complete at least one post-learning episode.
@@ -1991,90 +1149,91 @@ if __name__ == "__main__":
 
                     print(f"Mean eval episodic return: {mean_eval_episode_return}")
 
+                # If we didn't just save them model, but it's time to save the model, do so.
+                elif iteration % args.model_save_interval == 0:
 
-            if iteration % args.model_save_interval == 0:
+                    use_torchsctipt = True
+                    eval_save_path = f"runs/{run_name}/eval_{args.exp_name}_{str(iteration)}"
+                    Path(eval_save_path).mkdir(parents=True, exist_ok=True)
 
-                use_torchsctipt = True
-                eval_save_path = f"runs/{run_name}/eval_{args.exp_name}_{str(iteration)}"
-                Path(eval_save_path).mkdir(parents=True, exist_ok=True)
+                    if use_torchsctipt:
 
-                if use_torchsctipt:
+                        print("Saving model.")
+                        model_path = f"{eval_save_path}/{args.exp_name}_{str(iteration)}_policy.pt"
+                        scripted_actor = torch.jit.script(actor)
+                        scripted_actor.save(model_path)
+                        print(f"Torchscript model saved to {model_path}.")
+                    else:
 
-                    print("Saving model.")
-                    model_path = f"{eval_save_path}/{args.exp_name}_{str(iteration)}_policy.pt"
-                    scripted_actor = torch.jit.script(actor)
-                    scripted_actor.save(model_path)
-                    print(f"Torchscript model saved to {model_path}.")
-                else:
+                        model_path = f"{eval_save_path}/{args.exp_name}_{str(iteration)}_policy.pth"
+                        torch.save(actor, model_path)
+                        print(f"Pytorch model saved to {model_path}.")
 
-                    model_path = f"{eval_save_path}/{args.exp_name}_{str(iteration)}_policy.pth"
-                    torch.save(actor, model_path)
-                    print(f"Pytorch model saved to {model_path}.")
+                    print("Loading model.")
 
-                print("Loading model.")
+                    if use_torchsctipt:
+                        scripted_model = torch.jit.load(model_path)
+                        scripted_model.eval()
+                        print("Torchscript model loaded.")
 
-                if use_torchsctipt:
-                    scripted_model = torch.jit.load(model_path)
-                    scripted_model.eval()
-                    print("Torchscript model loaded.")
+                    else:
+                        
+                        model = torch.load(model_path, weights_only=False)
+                        model.eval()
+                        print("Pytorch model loaded.")
 
-                else:
-                    
-                    model = torch.load(model_path, weights_only=False)
-                    model.eval()
-                    print("Pytorch model loaded.")
+                    print("Evaluating model.")
 
-                print("Evaluating model.")
+                    eval_save_path = f"runs/{run_name}/eval_{args.exp_name}_{str(iteration)}"
+                    # ...then roll out the model, accumulating returns.
+                    episodic_returns_list = list()
+                    zero_policy_returns_list = list()
+                    random_policy_returns_list = list()
 
-                eval_save_path = f"runs/{run_name}/eval_{args.exp_name}_{str(iteration)}"
-                # ...then roll out the model, accumulating returns.
-                episodic_returns_list = list()
-                zero_policy_returns_list = list()
-                random_policy_returns_list = list()
+                    for i, eval_rollout_dict in eval_dict.items():
 
-                for i, eval_rollout_dict in eval_dict.items():
+                        print(f"Rollout episode: {i}")
 
-                    print(f"Rollout episode: {i}")
+                        env_kwargs = {"seed": eval_rollout_dict["seed"]}
+                        
+                        episodic_returns = rollout_optomech_policy(
+                            model_path,
+                            env_vars_path=args_store_path,
+                            rollout_episodes=1,
+                            exploration_noise=0.0,
+                            env_kwargs=env_kwargs,
+                        )
+                        eval_rollout_dict["on_policy_returns"][iteration] = episodic_returns
+                        episodic_returns_list.append(episodic_returns)
 
-                    env_kwargs = {"seed": eval_rollout_dict["seed"]}
-                    
-                    episodic_returns = rollout_optomech_policy(
-                        model_path,
-                        env_vars_path=args_store_path,
-                        rollout_episodes=1,
-                        exploration_noise=0.0,
-                        env_kwargs=env_kwargs,
-                    )
-                    eval_rollout_dict["on_policy_returns"][iteration] = episodic_returns
-                    episodic_returns_list.append(episodic_returns)
+                        zero_policy_returns = eval_rollout_dict["zero_policy_returns"]
+                        zero_policy_returns_list.append(zero_policy_returns)
 
-                    zero_policy_returns = eval_rollout_dict["zero_policy_returns"]
-                    zero_policy_returns_list.append(zero_policy_returns)
+                        random_policy_returns = eval_rollout_dict["random_policy_returns"]
+                        random_policy_returns_list.append(random_policy_returns)
 
-                    random_policy_returns = eval_rollout_dict["random_policy_returns"]
-                    random_policy_returns_list.append(random_policy_returns)
+                    episodic_returns_array = np.array(episodic_returns_list).flatten()
+                    zero_policy_returns_array = np.array(zero_policy_returns_list).flatten()
+                    random_policy_returns_array = np.array(random_policy_returns_list).flatten()
 
-                episodic_returns_array = np.array(episodic_returns_list).flatten()
-                zero_policy_returns_array = np.array(zero_policy_returns_list).flatten()
-                random_policy_returns_array = np.array(random_policy_returns_list).flatten()
+                    mean_eval_episode_return = np.mean(episodic_returns_array)
+                    mean_zero_return_advantage = np.mean(episodic_returns_array / zero_policy_returns_array)
+                    mean_random_return_advantage = np.mean(episodic_returns_array / random_policy_returns_array)
 
-                mean_eval_episode_return = np.mean(episodic_returns_array)
-                mean_zero_return_advantage = np.mean(episodic_returns_array / zero_policy_returns_array)
-                mean_random_return_advantage = np.mean(episodic_returns_array / random_policy_returns_array)
-
-                writer.add_scalar("eval/mean_returns", mean_eval_episode_return, iteration)
-                writer.add_scalar("eval/zero_return_advantage", mean_zero_return_advantage, iteration)
-                writer.add_scalar("eval/random_return_advantage", mean_random_return_advantage, iteration)
+                    writer.add_scalar("eval/mean_returns", mean_eval_episode_return, iteration)
+                    writer.add_scalar("eval/zero_return_advantage", mean_zero_return_advantage, iteration)
+                    writer.add_scalar("eval/random_return_advantage", mean_random_return_advantage, iteration)
                 
-        step_time = time.time()
-
+        # Copy actions prior to overwriting them so to be saved if needed.
         prior_actions = actions.copy()
 
         # ALGO LOGIC: put action logic here
         # If during prelearning, sample actions using the specified method.
         # TODO: use args.experience_sampling_delay
+        # Wait until the experience sampling delay has passed before sampling actions.
         if global_step >= args.experience_sampling_delay:
 
+            # If there is a prelearning phase, use it.
             if global_step < (args.learning_starts + args.actor_training_delay):
 
                 if args.prelearning_sample == "scales":
@@ -2102,7 +1261,6 @@ if __name__ == "__main__":
             else:
 
                 with torch.no_grad():
-
 
                     # If the obs are 8bit images, convert to float32 and rescale.
                     if torch.tensor(obs).dtype != torch.float32:
@@ -2132,9 +1290,10 @@ if __name__ == "__main__":
                         actor.action_scale.cpu().numpy() * envs.single_action_space.high)
 
             # If using BPTT, we need to store the initial hidden states.
-            # if initial_actor_hidden_in is None:
-            #     initial_actor_hidden_in = actor.get_zero_hidden()
-            #     initial_actor_hidden_out = initial_actor_hidden_in
+            if bptt:
+                if initial_actor_hidden_in is None:
+                    initial_actor_hidden_in = actor.get_zero_hidden()
+                    initial_actor_hidden_out = initial_actor_hidden_in
             
             # Store the current rewards before generating a new transition.
             # TODO: should this be a copy? 
@@ -2144,39 +1303,40 @@ if __name__ == "__main__":
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-            # Rescale the rewards.
+            # Rescale the rewards. By default, this is 1.0 and does nothing.
             rewards = args.reward_scale * rewards
 
             # If this is the first step of the episode, store the rewards.
             if first_step_reward is None:
                 first_step_reward = rewards
 
+            # If we've hit a writing interval, log the data.
             if iteration % args.writer_interval == 0 and (global_step > args.learning_starts + args.actor_training_delay):
-                writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
-                writer.add_scalar("online/action_std", actions.std().item(), global_step)
-                # writer.add_scalar("online/actions_l2", torch.norm(actions, p=2), global_step)
-                writer.add_scalar("online/reward_mean/", np.mean(rewards), global_step)
-                writer.add_scalar("online/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
-                writer.add_scalar("online/first_step_reward/", np.mean(first_step_reward), global_step)
-                writer.add_scalar("online/reward_std/", np.std(rewards), global_step)
-                writer.add_scalar("online/noise_l2/", torch.norm(noise, p=2), global_step)
-                for i, action in enumerate(actions):
-                    for j, action_element in enumerate(action):
-                        action_label = f"online/action_{i}_{j}"
-                        writer.add_scalar(action_label, action_element, global_step)
-
-            if iteration % args.writer_interval == 0 and (global_step < args.learning_starts + args.actor_training_delay):
-                writer.add_scalar("prelearning/action_mean", actions.mean().item(), global_step)
-                writer.add_scalar("prelearning/action_std", actions.std().item(), global_step)
-                # writer.add_scalar("prelearning/action_l2", torch.norm(actions, p=2), global_step)
-                writer.add_scalar("prelearning/reward_mean/", np.mean(rewards), global_step)
-                writer.add_scalar("prelearning/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
-                writer.add_scalar("prelearning/first_step_reward/", np.mean(first_step_reward), global_step)
-                writer.add_scalar("prelearning/reward_std/", np.std(rewards), global_step)
-                for i, action in enumerate(actions):
-                    for j, action_element in enumerate(action):
-                        action_label = f"prelearning/action_{i}_{j}"
-                        writer.add_scalar(action_label, action_element, global_step)
+                if global_step > args.learning_starts + args.actor_training_delay:
+                    writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
+                    writer.add_scalar("online/action_std", actions.std().item(), global_step)
+                    # writer.add_scalar("online/actions_l2", torch.norm(actions, p=2), global_step)
+                    writer.add_scalar("online/reward_mean/", np.mean(rewards), global_step)
+                    writer.add_scalar("online/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
+                    writer.add_scalar("online/first_step_reward/", np.mean(first_step_reward), global_step)
+                    writer.add_scalar("online/reward_std/", np.std(rewards), global_step)
+                    writer.add_scalar("online/noise_l2/", torch.norm(noise, p=2), global_step)
+                    for i, action in enumerate(actions):
+                        for j, action_element in enumerate(action):
+                            action_label = f"online/action_{i}_{j}"
+                            writer.add_scalar(action_label, action_element, global_step)
+                else:
+                    writer.add_scalar("prelearning/action_mean", actions.mean().item(), global_step)
+                    writer.add_scalar("prelearning/action_std", actions.std().item(), global_step)
+                    # writer.add_scalar("prelearning/action_l2", torch.norm(actions, p=2), global_step)
+                    writer.add_scalar("prelearning/reward_mean/", np.mean(rewards), global_step)
+                    writer.add_scalar("prelearning/reward_gain/", np.mean(rewards) - np.mean(first_step_reward), global_step)
+                    writer.add_scalar("prelearning/first_step_reward/", np.mean(first_step_reward), global_step)
+                    writer.add_scalar("prelearning/reward_std/", np.std(rewards), global_step)
+                    for i, action in enumerate(actions):
+                        for j, action_element in enumerate(action):
+                            action_label = f"prelearning/action_{i}_{j}"
+                            writer.add_scalar(action_label, action_element, global_step)
 
             # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
             real_next_obs = next_obs.copy()
@@ -2197,20 +1357,7 @@ if __name__ == "__main__":
                 episode_done.append(terminations)  
 
             # If not using BPTT, we push the data to the replay buffer immediately.
-            elif prior_state_models:
-
-
-
-                # Push the transition, including hidden states, to the replay buffer.
-                # rb.push(ini_hidden_in,
-                #         ini_hidden_out,
-                #         obs,
-                #         actions,
-                #         prior_actions,
-                #         rewards,
-                #         prior_rewards,
-                #         real_next_obs,
-                #         terminations)
+            else:
 
                 if actor_hidden[0].ndim == 3:
                 
@@ -2225,13 +1372,8 @@ if __name__ == "__main__":
                         real_next_obs,
                         terminations)
 
-            # If not using BPTT or prior state models, we push the data to the replay buffer immediately.
-            else: 
 
-                rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
-
-            # TRY NOT TO MODIFY: record rrewards for plotting purposes
+            # TRY NOT TO MODIFY: record rewards for plotting purposes
             if infos:
 
                 for info in infos["final_info"]:
@@ -2290,8 +1432,8 @@ if __name__ == "__main__":
             obs = next_obs
             actor_hidden = new_actor_hidden
 
-
         # ALGO LOGIC: training.
+        # If it is time to train, then train.
         if global_step > args.learning_starts:
 
             # Unpack data
@@ -2307,28 +1449,7 @@ if __name__ == "__main__":
                 next_observations_batch,
                 dones_batch) = rb.sample(args.batch_size)
 
-            elif prior_state_models:
-
-                # (hidden_ins_batch,
-                #  hidden_outs_batch,
-                #  observations_batch,
-                #  actions_batch_batch,
-                #  prior_actions_batch,
-                #  rewards_batch,
-                #  prior_rewards_batch,
-                #  next_observations_batch,
-                #  dones_batch) = rb.sample(args.batch_size)
-                
-                # hidden_ins_batch = hidden_ins_batch
-                # hidden_outs_batch = hidden_outs_batch
-                # observations_batch = torch.tensor(np.array(observations_batch), dtype=torch.float32).squeeze(1)
-                # actions_batch_batch = torch.tensor(np.array(actions_batch_batch), dtype=torch.float32).squeeze(1)
-                # prior_actions_batch = torch.tensor(np.array(prior_actions_batch), dtype=torch.float32).squeeze(1)
-                # rewards_batch = torch.tensor(np.array(rewards_batch), dtype=torch.float32).to(device)
-                # prior_rewards_batch = torch.tensor(np.array(prior_rewards_batch), dtype=torch.float32)
-                # next_observations_batch = torch.tensor(np.array(next_observations_batch), dtype=torch.float32).squeeze(1)
-                # dones_batch = torch.tensor(np.array(dones_batch), dtype=torch.float32).to(device)
-
+            else:
 
                 (actor_hidden_batch,
                  observations_batch, 
@@ -2352,110 +1473,100 @@ if __name__ == "__main__":
                 prior_rewards_batch = torch.tensor(np.array(prior_rewards_batch), dtype=torch.float32)
                 next_observations_batch = torch.tensor(np.array(next_observations_batch), dtype=torch.float32).squeeze(1)
                 dones_batch = torch.tensor(np.array(dones_batch), dtype=torch.float32).to(device)
-                
-            else:
-                
-                data = rb.sample(args.batch_size)
-
-                observations_batch = data.observations
-                actions_batch_batch = data.actions
-                rewards_batch = data.rewards
-                next_observations_batch = data.next_observations
-                dones_batch = data.dones
 
             with torch.no_grad():
 
-                if prior_state_models:
+                # if prior_state_models:
 
-                    # TODO: I belive target smoothing goes here, added to next_state_actions_batch.
-                    # TODO: Make sure the noise doesn't need to be random per-element.
+                # TODO: I belive target smoothing goes here, added to next_state_actions_batch.
+                # TODO: Make sure the noise doesn't need to be random per-element.
 
-                    next_state_actions_batch, _ = target_actor(
-                            next_observations_batch.to(device),
-                            prior_actions_batch.to(device),
-                            prior_rewards_batch.to(device),
-                            actor_hidden_batch,
-                        )
-                    policy_noise = 0.01
+                next_state_actions_batch, _ = target_actor(
+                        next_observations_batch.to(device),
+                        prior_actions_batch.to(device),
+                        prior_rewards_batch.to(device),
+                        actor_hidden_batch,
+                    )
+                policy_noise = 0.01
 
-                    noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
-                    # TODO: WARNING: This will break asymmetric action spaces.
-                    noisy_next_action = (
-                            next_state_actions_batch + noise
-                        ).clamp(
-                                float(envs.single_action_space.low[0]),
-                                float(envs.single_action_space.high[0])
-                            )
-
-                    if args.target_smoothing:
-                        next_state_actions_batch = noisy_next_action
-
-                    qf1_next_target_batch, _ = qf1_target(
-                            next_observations_batch.to(device),
-                            next_state_actions_batch.to(device),
-                            prior_actions_batch.to(device),
-                            prior_rewards_batch.to(device),
-                            actor_hidden_batch
-                        )
-                    
-                    qf2_next_target_batch, _ = qf2_target(
-                            next_observations_batch.to(device),
-                            next_state_actions_batch.to(device),
-                            prior_actions_batch.to(device),
-                            prior_rewards_batch.to(device),
-                            actor_hidden_batch
-                        )
-                    qf1_next_target_batch = torch.min(
-                            qf1_next_target_batch,
-                            qf2_next_target_batch
+                noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
+                # TODO: WARNING: This will break asymmetric action spaces.
+                noisy_next_action = (
+                        next_state_actions_batch + noise
+                    ).clamp(
+                            float(envs.single_action_space.low[0]),
+                            float(envs.single_action_space.high[0])
                         )
 
-                else:
+                if args.target_smoothing:
+                    next_state_actions_batch = noisy_next_action
 
-                    # TODO: Verify if this is the proper use of hidden states.
-                    next_state_actions_batch, _ = target_actor(
-                            next_observations_batch,
-                            actor_hidden_batch
-                        )
-                    qf1_next_target_batch, _ = qf1_target(
-                            next_observations_batch,
-                            next_state_actions_batch,
-                            actor_hidden_batch
-                        )
-                    qf2_next_target_batch = qf2_target(
-                            next_observations_batch,
-                            next_state_actions_batch,
-                            actor_hidden_batch
-                        )
-                    qf1_next_target_batch = torch.min(
-                            qf1_next_target_batch,
-                            qf2_next_target_batch
-                        )
+                qf1_next_target_batch, _ = qf1_target(
+                        next_observations_batch.to(device),
+                        next_state_actions_batch.to(device),
+                        prior_actions_batch.to(device),
+                        prior_rewards_batch.to(device),
+                        actor_hidden_batch
+                    )
+                
+                qf2_next_target_batch, _ = qf2_target(
+                        next_observations_batch.to(device),
+                        next_state_actions_batch.to(device),
+                        prior_actions_batch.to(device),
+                        prior_rewards_batch.to(device),
+                        actor_hidden_batch
+                    )
+                qf1_next_target_batch = torch.min(
+                        qf1_next_target_batch,
+                        qf2_next_target_batch
+                    )
+
+                # else:
+
+                #     # TODO: Verify if this is the proper use of hidden states.
+                #     next_state_actions_batch, _ = target_actor(
+                #             next_observations_batch,
+                #             actor_hidden_batch
+                #         )
+                #     qf1_next_target_batch, _ = qf1_target(
+                #             next_observations_batch,
+                #             next_state_actions_batch,
+                #             actor_hidden_batch
+                #         )
+                #     qf2_next_target_batch = qf2_target(
+                #             next_observations_batch,
+                #             next_state_actions_batch,
+                #             actor_hidden_batch
+                #         )
+                #     qf1_next_target_batch = torch.min(
+                #             qf1_next_target_batch,
+                #             qf2_next_target_batch
+                #         )
                 
                 next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
 
-            if prior_state_models:
+            # if prior_state_models:
 
-                qf1_a_values_batch = qf1(
-                    observations_batch.to(device),
-                    actions_batch_batch.to(device),
-                    prior_actions_batch.to(device),
-                    prior_rewards_batch.to(device),
-                    actor_hidden_batch
-                )[0].view(-1)
-                qf2_a_values_batch = qf2(
-                    observations_batch.to(device),
-                    actions_batch_batch.to(device),
-                    prior_actions_batch.to(device),
-                    prior_rewards_batch.to(device),
-                    actor_hidden_batch
-                )[0].view(-1)
+            qf1_a_values_batch = qf1(
+                observations_batch.to(device),
+                actions_batch_batch.to(device),
+                prior_actions_batch.to(device),
+                prior_rewards_batch.to(device),
+                actor_hidden_batch
+            )[0].view(-1)
+            qf2_a_values_batch = qf2(
+                observations_batch.to(device),
+                actions_batch_batch.to(device),
+                prior_actions_batch.to(device),
+                prior_rewards_batch.to(device),
+                actor_hidden_batch
+            )[0].view(-1)
 
-            else:
-                qf1_a_values_batch = qf1(
-                    observations_batch.to(device),
-                    actions_batch_batch.to(device)
-                ).view(-1)
+            # else:
+            #     qf1_a_values_batch = qf1(
+            #         observations_batch.to(device),
+            #         actions_batch_batch.to(device)
+            #     ).view(-1)
 
 
             clip_gradients = True
