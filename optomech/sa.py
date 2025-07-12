@@ -252,6 +252,7 @@ def sa(args):
     current_state = obs
 
     steps_since_acceptance = 0
+    last_action_accepted = False
     temperature_step = 0
     rb = ReplayBufferWithHiddenStates(args.max_episode_steps)
 
@@ -353,6 +354,8 @@ def sa(args):
         # Compute steps per second
         steps_per_second = iter_num / elapsed if elapsed > 0 else 0.0
 
+
+
         # Print progress if not silenced
         if not args.silence:
             print(f"Steps per second: {steps_per_second:.2f}")
@@ -402,6 +405,8 @@ def sa(args):
                 terminations,
                 advantageous=True
             )
+            last_action_accepted = True
+            
 
             # Save environment state info if required
             if (args.env_id == "optomech-v1") and args.write_env_state_info:
@@ -421,17 +426,22 @@ def sa(args):
                             pickle.dump(info, f)
         # If rejected, do not update state/action/infos
         else:
-            rb.push(
-                actor_hidden,
-                current_state,
-                actions,
-                prior_actions,
-                rewards,
-                prior_rewards,
-                real_next_obs,
-                terminations,
-                advantageous=False
-            )
+            if last_action_accepted:
+                rb.push(
+                    actor_hidden,
+                    current_state,
+                    actions,
+                    prior_actions,
+                    rewards,
+                    prior_rewards,
+                    real_next_obs,
+                    terminations,
+                    advantageous=False
+                )
+                last_action_accepted = False
+
+        # Update prior actions and rewards
+            
 
 
         prior_actions = actions
