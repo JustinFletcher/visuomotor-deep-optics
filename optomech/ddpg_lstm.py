@@ -574,7 +574,7 @@ class ImpalaCritic(nn.Module):
                           1
                           ),
                 std=1.0,
-                bias=q_bias
+                bias_const=q_bias
             ),
         )
 
