@@ -590,6 +590,13 @@ class ImpalaCritic(nn.Module):
 
     def forward(self, o, a, a_prior, r_prior, hidden=None):
 
+        # If given a hidden that is all zeros, create a new zero-valued hidden state of the correctsize
+        if hidden is None:
+            h_0 = torch.zeros(self.lstm_num_layers, o.size(0), self.lstm_hidden_dim, dtype=o.dtype, device=o.device)
+            c_0 = torch.zeros(self.lstm_num_layers, o.size(0), self.lstm_hidden_dim, dtype=o.dtype, device=o.device)
+            hidden = (h_0, c_0)
+
+
         # Handle channels-last environments.
         if self.channels_last:
             o = o.permute(0, 3, 1, 2)
