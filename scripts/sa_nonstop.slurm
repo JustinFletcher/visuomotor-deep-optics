@@ -28,7 +28,7 @@ i=0
 while true; do
   echo "Batch $i: launching 4 parallel runs"
   
-  for n in {1..1}; do
+  for n in {1..32}; do
     sleep 1  # Sleep for 1 second before starting each process  
     echo "  Starting process $n in batch $i"
     poetry run python optomech/multi_sa.py \
