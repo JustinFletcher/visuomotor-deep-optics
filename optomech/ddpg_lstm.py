@@ -1609,47 +1609,24 @@ if __name__ == "__main__":
             # If it a policy update step and we're past the actor training delay, update the actor.
             if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
 
-                if prior_state_models:
-                    # actor_loss, _ = -qf1(
-                    #     observations_batch.to(device),
-                    #     actor(
-                    #         observations_batch.to(device),
-                    #         prior_actions_batch.to(device),
-                    #         prior_rewards_batch.to(device),
-                    #         actor_hidden_batch
-                    #     )[0],
-                    #     prior_actions_batch.to(device),
-                    #     prior_rewards_batch.to(device),
-                    #     actor_hidden_batch
-                    # )[0].mean() + args.l2_reg * torch.linalg.vector_norm(
-                    #         actor(observations_batch.to(device),
-                    #               prior_actions_batch.to(device),
-                    #               prior_rewards_batch.to(device),
-                    #               actor_hidden_batch
-                    #               )[0],
-                    #         2
-                    #     )
-                    loss_actions, _ = actor(
-                            observations_batch.to(device),
-                            prior_actions_batch.to(device),
-                            prior_rewards_batch.to(device),
-                            actor_hidden_batch
-                        )
-                    loss_qvalues, _ = qf1(
+       
+    
+                loss_actions, _ = actor(
                         observations_batch.to(device),
-                        loss_actions,
                         prior_actions_batch.to(device),
                         prior_rewards_batch.to(device),
                         actor_hidden_batch
                     )
-                    actor_loss = -loss_qvalues.mean()
+                loss_qvalues, _ = qf1(
+                    observations_batch.to(device),
+                    loss_actions,
+                    prior_actions_batch.to(device),
+                    prior_rewards_batch.to(device),
+                    actor_hidden_batch
+                )
+                actor_loss = -loss_qvalues.mean()
                 
-                else:
-                    actor_loss = -qf1(
-                        observations_batch.to(device),
-                        actor(observations_batch.to(device))
-                    ).mean() + args.l2_reg * torch.linalg.vector_norm(actor(observations_batch.to(device)), 2)
-
+                
                 actor_optimizer.zero_grad()
                 actor_loss.backward(retain_graph=bptt)
 
