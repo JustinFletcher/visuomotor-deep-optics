@@ -864,7 +864,7 @@ if __name__ == "__main__":
 
     # Potential-based reward shaping https://arxiv.org/pdf/2502.01307
     if args.use_q_bias:
-        expected_reward = -8.5
+        expected_reward = -13.5
         q_bias = expected_reward * ((1 - (args.gamma ** args.max_episode_steps)) / (1 - args.gamma))
     else:
         q_bias = 0.0
