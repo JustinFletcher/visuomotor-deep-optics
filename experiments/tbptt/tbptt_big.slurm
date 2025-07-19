@@ -10,14 +10,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --max_episode_steps=256 --exp_name="tbptt-steps256""
-    "--gpu_list=1 --max_episode_steps=256 --exp_name="tbptt-steps256""
-    "--gpu_list=2 --max_episode_steps=256 --exp_name="tbptt-steps256""
-    "--gpu_list=3 --max_episode_steps=256 --exp_name="tbptt-steps256""
-    "--gpu_list=4 --max_episode_steps=512 --exp_name="tbptt-steps512""
-    "--gpu_list=5 --max_episode_steps=512 --exp_name="tbptt-steps512""
-    "--gpu_list=6 --max_episode_steps=512 --exp_name="tbptt-steps512""
-    "--gpu_list=7 --max_episode_steps=512 --exp_name="tbptt-steps512""
+    "--gpu_list=0 --max_episode_steps=256 --exp_name="tbptt-big-steps256""
+    "--gpu_list=1 --max_episode_steps=256 --exp_name="tbptt-big-steps256""
+    "--gpu_list=2 --max_episode_steps=256 --exp_name="tbptt-big-steps256""
+    "--gpu_list=3 --max_episode_steps=256 --exp_name="tbptt-big-steps256""
+    "--gpu_list=4 --max_episode_steps=512 --exp_name="tbptt-big-steps512""
+    "--gpu_list=5 --max_episode_steps=512 --exp_name="tbptt-big-steps512""
+    "--gpu_list=6 --max_episode_steps=512 --exp_name="tbptt-big-steps512""
+    "--gpu_list=7 --max_episode_steps=512 --exp_name="tbptt-big-steps512""
 
 )
 
