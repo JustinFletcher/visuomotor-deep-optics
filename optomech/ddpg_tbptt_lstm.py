@@ -461,12 +461,8 @@ class ImpalaActor(nn.Module):
 
             r_prior = r_prior.unsqueeze(-1)
 
-            # h0 = hidden[0]  # → [1,4,128]
-            # c0 = hidden[1]
-
-            h0 = torch.stack(hidden[0], dim=1)  # → [1,4,128]
-            c0 = torch.stack(hidden[1], dim=1) 
-
+            h0 = hidden[0].unsqueeze(0)  # → [1,4,128]
+            c0 = hidden[1].unsqueeze(0)
 
 
         x_o = self.visual_encoder(o)
@@ -901,7 +897,7 @@ if __name__ == "__main__":
 
     # Potential-based reward shaping https://arxiv.org/pdf/2502.01307
     if args.use_q_bias:
-        reward_sample_episodes = 4
+        reward_sample_episodes = 1
         random_rewards = list()
         # Sample some random rewards to compute the q bias.
         # This is a hacky way to get the expected reward.

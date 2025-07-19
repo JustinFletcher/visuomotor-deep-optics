@@ -864,7 +864,7 @@ if __name__ == "__main__":
 
     # Potential-based reward shaping https://arxiv.org/pdf/2502.01307
     if args.use_q_bias:
-        expected_reward = -13.5
+        expected_reward = -12.0 * args.reward_scale
         q_bias = expected_reward * ((1 - (args.gamma ** args.max_episode_steps)) / (1 - args.gamma))
     else:
         q_bias = 0.0
@@ -1069,9 +1069,8 @@ if __name__ == "__main__":
         step_time = time.time()
 
         if not args.silence:
-            print("Iteration: ", iteration)
-            print("global_step: ", global_step)
-
+            print(f"Iteration: {iteration} Global Step: {global_step}")
+            
         # First, check to see if we need to save the model.
         if args.save_model:
 
