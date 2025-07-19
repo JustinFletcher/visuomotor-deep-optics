@@ -237,8 +237,7 @@ def rollout_optomech_policy(model_path=None,
 
     # Evaluate the policy for the specified number of episodes.
     while len(episodic_returns) < rollout_episodes:
-        print("Rollout episode: ", len(episodic_returns))
-        print("Global step: ", global_step)
+        print(f"Rollout episode: {len(episodic_returns)} | Global step: {len(global_step)} ")
 
         # Create directories for each environment.
         for env_uuid in env_uuids:
@@ -316,6 +315,10 @@ def rollout_optomech_policy(model_path=None,
 
         # Step the environment forward.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+           # If the obs are 8bit images, convert to float32 and rescale.
+        if torch.tensor(obs).dtype != torch.float32:
+            obs = np.array((obs / 255.0).astype(np.float32))
+ 
         prior_actions = actions
         prior_rewards = rewards
 
