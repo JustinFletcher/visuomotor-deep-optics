@@ -461,8 +461,11 @@ class ImpalaActor(nn.Module):
 
             r_prior = r_prior.unsqueeze(-1)
 
-            h0 = hidden[0][0]  # → [1,4,128]
-            c0 = hidden[0][1]
+            # h0 = hidden[0]  # → [1,4,128]
+            # c0 = hidden[1]
+
+            h0 = torch.stack(hidden[0], dim=1)  # → [1,4,128]
+            c0 = torch.stack(hidden[1], dim=1) 
 
 
 
