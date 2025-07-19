@@ -16,8 +16,6 @@ VARIANTS=(
     "--seed=666666  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=5 --exp_name="optomech-nanoelfplus-512""
     "--seed=777777  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=6 --exp_name="optomech-nanoelfplus-512""
     "--seed=888888  --actor_fc_scale=512 --qnetwork_fc_scale=512 --gpu_list=7 --exp_name="optomech-nanoelfplus-512""
-    
-
 
 )
 
