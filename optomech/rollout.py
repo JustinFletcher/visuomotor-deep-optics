@@ -237,7 +237,7 @@ def rollout_optomech_policy(model_path=None,
 
     # Evaluate the policy for the specified number of episodes.
     while len(episodic_returns) < rollout_episodes:
-        print(f"Rollout episode: {len(episodic_returns)} | Global step: {len(global_step)} ")
+        print(f"Rollout episode: {len(episodic_returns)} | Global step: {global_step} ")
 
         # Create directories for each environment.
         for env_uuid in env_uuids:
