@@ -461,8 +461,12 @@ class ImpalaActor(nn.Module):
 
             r_prior = r_prior.unsqueeze(-1)
 
-            h0 = torch.tensor(hidden[0])  # → [1,4,128]
-            c0 = torch.tensor(hidden[1]) 
+            # h0 = torch.tensor(hidden[0])  # → [1,4,128]
+            # c0 = torch.tensor(hidden[1]) 
+
+            h0 = hidden[0]  # → [1,4,128]
+            c0 = hidden[1]
+
 
 
         x_o = self.visual_encoder(o)
