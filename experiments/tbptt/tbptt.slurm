@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=omclip50           # Job name
+#SBATCH --job-name=tbptt           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --output=/dev/null
@@ -40,7 +40,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=4 \
+        --batch_size=16 \
         --tau=0.0003 \
         --policy_frequency=1 \
         --reward_scale=1.0 \
