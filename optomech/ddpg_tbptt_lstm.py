@@ -461,8 +461,8 @@ class ImpalaActor(nn.Module):
 
             r_prior = r_prior.unsqueeze(-1)
 
-            h0 = hidden[0]
-            c0 = hidden[1]
+            h0 = hidden[0][0].unsqueeze(0)  # → [1,4,128]
+            c0 = hidden[1][0].unsqueeze(0)  # → [1,4,128]
 
         x_o = self.visual_encoder(o)
 
@@ -893,6 +893,22 @@ if __name__ == "__main__":
             [make_env(args.env_id, i, args.capture_video, run_name, args) for i in range(args.num_envs)],
         )
     
+    if args.actor_type == "impala":
+
+        actor = ImpalaActor(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            action_scale=args.action_scale,).to(device)
+        target_actor = ImpalaActor(
+            envs,
+            device,
+            channel_scale=args.actor_channel_scale,
+            fc_scale=args.actor_fc_scale,
+            action_scale=args.action_scale).to(device)
+        
+        scripted_actor = torch.jit.script(actor)
 
     # Potential-based reward shaping https://arxiv.org/pdf/2502.01307
     if args.use_q_bias:
@@ -917,20 +933,7 @@ if __name__ == "__main__":
         q_bias = 0.0
 
 
-    if args.actor_type == "impala":
 
-        actor = ImpalaActor(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale,).to(device)
-        target_actor = ImpalaActor(
-            envs,
-            device,
-            channel_scale=args.actor_channel_scale,
-            fc_scale=args.actor_fc_scale,
-            action_scale=args.action_scale).to(device)
     
     if args.critic_type  == "impala":
 
