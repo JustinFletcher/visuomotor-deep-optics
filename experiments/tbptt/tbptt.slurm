@@ -11,8 +11,8 @@
 
 
 # fdsgdfgs SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --output=$LOCALWORKDIR/tbptt.out
-#SBATCH --error=$LOCALWORKDIR/tbptt.err
+# fdsgdfgs SBATCH --output=$LOCALWORKDIR/tbptt.out
+# fdsgdfgs SBATCH --error=$LOCALWORKDIR/tbptt.err
 
 VARIANTS=(
 
