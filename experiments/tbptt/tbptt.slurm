@@ -2,8 +2,8 @@
 #SBATCH --job-name=tbptt           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --output=/dev/null
-#SBATCH --error=/dev/null
+#SBATCH --output=wdata/scratch/fletch/tbptt.out
+#SBATCH --error=wdata/scratch/fletch/tbptt.err
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=72:00:00                # Maximum runtime (D-HH:MM:SS)
