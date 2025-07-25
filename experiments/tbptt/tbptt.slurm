@@ -2,8 +2,8 @@
 #SBATCH --job-name=tbptt           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --output=wdata/scratch/fletch/tbptt.out
-#SBATCH --error=wdata/scratch/fletch/tbptt.err
+#SBATCH --output=./tbptt.out
+#SBATCH --error=./tbptt.err
 #SBATCH --ntasks-per-node=16          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-PCIe:2
