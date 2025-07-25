@@ -12,12 +12,6 @@ VARIANTS=(
 
     "--gpu_list=0 --max_episode_steps=256 --exp_name="tbptt-steps256""
     "--gpu_list=1 --max_episode_steps=256 --exp_name="tbptt-steps256""
-    "--gpu_list=2 --max_episode_steps=256 --exp_name="tbptt-steps256""
-    "--gpu_list=3 --max_episode_steps=256 --exp_name="tbptt-steps256""
-    "--gpu_list=4 --max_episode_steps=512 --exp_name="tbptt-steps512""
-    "--gpu_list=5 --max_episode_steps=512 --exp_name="tbptt-steps512""
-    "--gpu_list=6 --max_episode_steps=512 --exp_name="tbptt-steps512""
-    "--gpu_list=7 --max_episode_steps=512 --exp_name="tbptt-steps512""
 
 )
 
@@ -40,7 +34,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=16 \
+        --batch_size=32 \
         --tau=0.0003 \
         --policy_frequency=1 \
         --reward_scale=1.0 \
@@ -48,15 +42,15 @@ for VARIANT in "${VARIANTS[@]}"; do
         --buffer_size=1_000_000 \
         --learning_starts=50_000 \
         --experience_sampling_delay=0_000 \
-        --actor_training_delay=50_000 \
+        --actor_training_delay=5_000 \
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
-        --critic_learning_rate=1e-4 \
+        --critic_learning_rate=1e-3 \
         --qnetwork_channel_scale=32 \
         --actor_channel_scale=32 \
-        --actor_fc_scale=256 \
-        --qnetwork_fc_scale=256 \
+        --actor_fc_scale=512 \
+        --qnetwork_fc_scale=512 \
         --action_scale=1.0 \
         --use_q_bias \
         --exploration_noise=0.000001 \
