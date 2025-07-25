@@ -4,15 +4,17 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --output=./tbptt.out
 #SBATCH --error=./tbptt.err
-#SBATCH --ntasks-per-node=16          # Number of tasks per node
-#SBATCH --account=MHPCC96650DAS       # 
-#SBATCH --gres=gpu:A100-PCIe:8
+#SBATCH --ntasks-per-node=58          # Number of tasks per node
+#SBATCH --account=MHPCC96650DAS       #
+#SBATCH --nodelist=cr3cn[5-8]        # 
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
+
+
+# fdsgdfgs SBATCH --gres=gpu:A100-PCIe:8
 
 VARIANTS=(
 
     "--gpu_list=0 --exp_name="tbptt-steps256""
-    "--gpu_list=1 --exp_name="tbptt-steps256""
 
 )
 
