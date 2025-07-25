@@ -7,7 +7,7 @@
 #SBATCH --account=MHPCC96650DAS       #
 #SBATCH --output=./tbptt.out
 #SBATCH --error=./tbptt.err
-#SBATCH --nodelist=cr4mi1        # 
+#SBATCH --nodelist=cr4mi2        # 
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
 
@@ -34,7 +34,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --decision_interval_ms=5.0 \
         --num_atmosphere_layers=0 \
         --aperture_type=elf \
-        --focal_plane_image_size_pixels=256 \
+        --focal_plane_image_size_pixels=64 \
         --observation_mode=image_only \
         --command_secondaries \
         --init_differential_motion \
