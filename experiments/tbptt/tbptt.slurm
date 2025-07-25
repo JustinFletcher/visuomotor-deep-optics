@@ -2,7 +2,7 @@
 #SBATCH --job-name=tbptt           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks-per-node=58          # Number of tasks per node
+#SBATCH --ntasks-per-node=1          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       #
 #SBATCH --output=./tbptt.out
 #SBATCH --error=./tbptt.err
