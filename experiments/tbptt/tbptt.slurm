@@ -4,6 +4,7 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --output=wdata/scratch/fletch/tbptt.out
 #SBATCH --error=wdata/scratch/fletch/tbptt.err
+#SBATCH --ntasks-per-node=16          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=72:00:00                # Maximum runtime (D-HH:MM:SS)
@@ -39,9 +40,9 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_scale=1.0 \
         --max_grad_norm=100_000 \
         --buffer_size=1_000_000 \
-        --learning_starts=50_000 \
+        --learning_starts=5_000 \
         --experience_sampling_delay=0_000 \
-        --actor_training_delay=5_000 \
+        --actor_training_delay=1_000 \
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
