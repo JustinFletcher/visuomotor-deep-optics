@@ -2,15 +2,17 @@
 #SBATCH --job-name=tbptt           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --output=$LOCALWORKDIR/tbptt.out
-#SBATCH --error=$LOCALWORKDIR/tbptt.err
 #SBATCH --ntasks-per-node=58          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       #
+#SBATCH --output=./tbptt.out
+#SBATCH --error=./tbptt.err
 #SBATCH --nodelist=cr4mi1        # 
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
 
 # fdsgdfgs SBATCH --gres=gpu:A100-PCIe:8
+#SBATCH --output=$LOCALWORKDIR/tbptt.out
+#SBATCH --error=$LOCALWORKDIR/tbptt.err
 
 VARIANTS=(
 
