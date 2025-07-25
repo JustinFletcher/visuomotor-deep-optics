@@ -6,7 +6,7 @@
 #SBATCH --error=./tbptt.err
 #SBATCH --ntasks-per-node=58          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       #
-#SBATCH --nodelist=cr3cn[5-8]        # 
+#SBATCH --nodelist=cr3cn5        # 
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
 
