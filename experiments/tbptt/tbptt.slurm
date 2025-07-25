@@ -6,13 +6,13 @@
 #SBATCH --error=./tbptt.err
 #SBATCH --ntasks-per-node=16          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       # 
-#SBATCH --gres=gpu:A100-PCIe:2
+#SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
 
-    "--gpu_list=0 --max_episode_steps=256 --exp_name="tbptt-steps256""
-    "--gpu_list=0 --max_episode_steps=256 --exp_name="tbptt-steps256""
+    "--gpu_list=0 --exp_name="tbptt-steps256""
+    "--gpu_list=1 --exp_name="tbptt-steps256""
 
 )
 
@@ -22,6 +22,7 @@ for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_tbptt_lstm.py \
         --env-id optomech-v1 \
         --object_type=single \
+        --max_episode_steps=256 \
         --ao_interval_ms=5.0 \
         --control_interval_ms=5.0 \
         --frame_interval_ms=5.0 \
