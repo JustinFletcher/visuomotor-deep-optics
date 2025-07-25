@@ -12,10 +12,11 @@
 VARIANTS=(
 
     "--gpu_list=0 --max_episode_steps=256 --exp_name="tbptt-steps256""
+    "--gpu_list=0 --max_episode_steps=256 --exp_name="tbptt-steps256""
 
 )
 
-cd visuomotor-deep-optics/
+cd ~/visuomotor-deep-optics/
 # Run all variants in parallel
 for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_tbptt_lstm.py \
