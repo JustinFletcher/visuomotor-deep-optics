@@ -11,7 +11,6 @@
 VARIANTS=(
 
     "--gpu_list=0 --max_episode_steps=256 --exp_name="tbptt-steps256""
-    "--gpu_list=1 --max_episode_steps=256 --exp_name="tbptt-steps256""
 
 )
 
@@ -36,7 +35,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_function=align \
         --batch_size=32 \
         --tau=0.0003 \
-        --policy_frequency=1 \
+        --policy_frequency=2 \
         --reward_scale=1.0 \
         --max_grad_norm=100_000 \
         --buffer_size=1_000_000 \
@@ -46,7 +45,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
-        --critic_learning_rate=1e-3 \
+        --critic_learning_rate=3e-4 \
         --qnetwork_channel_scale=32 \
         --actor_channel_scale=32 \
         --actor_fc_scale=512 \
@@ -57,7 +56,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --decay_rate=0.998 \
         --writer_interval=100 \
         --save_model \
-        --tbptt_seq_len=16 \
+        --tbptt_seq_len=64 \
         --num_eval_rollouts=4 \
         --model_save_interval=10_000 \
         $VARIANT &  # Run in background
