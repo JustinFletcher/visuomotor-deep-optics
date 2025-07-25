@@ -2,11 +2,11 @@
 #SBATCH --job-name=tbptt           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --output=./tbptt.out
-#SBATCH --error=./tbptt.err
+#SBATCH --output=$LOCALWORKDIR/tbptt.out
+#SBATCH --error=$LOCALWORKDIR/tbptt.err
 #SBATCH --ntasks-per-node=58          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       #
-#SBATCH --nodelist=cr1dpu1        # 
+#SBATCH --nodelist=cr4mi3        # 
 #SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
 
@@ -62,7 +62,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --writer_interval=100 \
         --save_model \
         --tbptt_seq_len=64 \
-        --num_eval_rollouts=4 \
+        --num_eval_rollouts=0 \
         --model_save_interval=10_000 \
         $VARIANT &  # Run in background
 done
