@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=16          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       # 
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=72:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
 VARIANTS=(
 
