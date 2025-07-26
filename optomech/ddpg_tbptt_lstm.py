@@ -120,6 +120,8 @@ class Args:
     """The maximum gradient norm"""
     use_q_bias: bool = True
     """If toggled, compute q bias in the critic model."""
+    normalize_returns: bool = True
+    """If toggled, normalize the returns in the critic model."""
 
     save_model: bool = False
     """whether to save model into the `runs/{run_name}` folder"""
@@ -929,6 +931,11 @@ if __name__ == "__main__":
         print(f"Expected reward: {expected_reward}")
         # expected_reward = -13.5 * args.reward_scale
         q_bias = expected_reward * ((1 - (args.gamma ** args.max_episode_steps)) / (1 - args.gamma))
+        # args.normalize_returns = False
+        if args.normalize_returns:
+            # If we are normalizing returns, we need to scale the q bias.
+            args.reward_scale = 1.0 / q_bias
+            q_bias = 0.0
     else:
         q_bias = 0.0
 
