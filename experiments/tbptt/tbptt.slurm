@@ -17,11 +17,10 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name="tbptt-steps256""
-    "--gpu_list=1 --exp_name="tbptt-steps256""
-    "--gpu_list=2 --exp_name="tbptt-steps256""
-    "--gpu_list=3 --exp_name="tbptt-steps256""
-
+    "--gpu_list=0 --exp_name="tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=1 --exp_name="tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=2 --exp_name="tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=3 --exp_name="tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc
 )
 
 cd ~/visuomotor-deep-optics/
@@ -45,7 +44,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_envs=1 \
         --reward_function=align \
         --batch_size=32 \
-        --tau=0.0003 \
+        --tau=0.0005 \
         --policy_frequency=1 \
         --reward_scale=1.0 \
         --max_grad_norm=100_000 \
@@ -55,10 +54,10 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_training_delay=10_000 \
         --actor_type=impala \
         --critic_type=impala \
-        --actor_learning_rate=1e-4 \
-        --critic_learning_rate=3e-4 \
-        --qnetwork_channel_scale=32 \
-        --actor_channel_scale=32 \
+        --actor_learning_rate=3e-4 \
+        --critic_learning_rate=5e-4 \
+        --qnetwork_channel_scale=64 \
+        --actor_channel_scale=64 \
         --actor_fc_scale=512 \
         --qnetwork_fc_scale=512 \
         --action_scale=1.0 \
