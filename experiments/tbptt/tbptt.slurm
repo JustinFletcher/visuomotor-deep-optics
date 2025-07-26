@@ -68,7 +68,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --writer_interval=100 \
         --save_model \
         --tbptt_seq_len=64 \
-        --num_eval_rollouts=1 \
+        --num_eval_rollouts=0 \
         --model_save_interval=10_000 \
         $VARIANT &  # Run in background
 done
