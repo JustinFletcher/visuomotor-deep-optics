@@ -18,6 +18,9 @@
 VARIANTS=(
 
     "--gpu_list=0 --exp_name="tbptt-steps256""
+    "--gpu_list=1 --exp_name="tbptt-steps256""
+    "--gpu_list=2 --exp_name="tbptt-steps256""
+    "--gpu_list=3 --exp_name="tbptt-steps256""
 
 )
 
