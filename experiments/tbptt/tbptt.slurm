@@ -17,10 +17,10 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name="norm-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
-    "--gpu_list=1 --exp_name="norm-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
-    "--gpu_list=2 --exp_name="norm-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
-    "--gpu_list=3 --exp_name="norm-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=0 --exp_name="norm-img256-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=1 --exp_name="norm-img256-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=2 --exp_name="norm-img256-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=3 --exp_name="norm-img256-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
 
 )
 
@@ -37,35 +37,35 @@ for VARIANT in "${VARIANTS[@]}"; do
         --decision_interval_ms=5.0 \
         --num_atmosphere_layers=0 \
         --aperture_type=elf \
-        --focal_plane_image_size_pixels=64 \
+        --focal_plane_image_size_pixels=256 \
         --observation_mode=image_only \
         --command_secondaries \
         --init_differential_motion \
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=32 \
+        --batch_size=64 \
         --tau=0.0005 \
-        --policy_frequency=1 \
+        --policy_frequency=2 \
         --reward_scale=1.0 \
         --max_grad_norm=100_000 \
         --buffer_size=1_000_000 \
-        --learning_starts=20_000 \
+        --learning_starts=50_000 \
         --experience_sampling_delay=0_000 \
-        --actor_training_delay=10_000 \
+        --actor_training_delay=5_000 \
         --actor_type=impala \
         --critic_type=impala \
-        --actor_learning_rate=3e-4 \
-        --critic_learning_rate=5e-4 \
+        --actor_learning_rate=1e-3 \
+        --critic_learning_rate=1e-3 \
         --qnetwork_channel_scale=64 \
         --actor_channel_scale=64 \
-        --actor_fc_scale=512 \
-        --qnetwork_fc_scale=512 \
+        --actor_fc_scale=1024 \
+        --qnetwork_fc_scale=1024 \
         --action_scale=1.0 \
         --use_q_bias \
         --normalize_returns \
-        --exploration_noise=0.0001 \
-        --decay_rate=0.998 \
+        --exploration_noise=0.001 \
+        --decay_rate=0.99 \
         --writer_interval=100 \
         --save_model \
         --tbptt_seq_len=64 \
