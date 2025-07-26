@@ -17,10 +17,11 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name="tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
-    "--gpu_list=1 --exp_name="tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
-    "--gpu_list=2 --exp_name="tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
-    "--gpu_list=3 --exp_name="tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc
+    "--gpu_list=0 --exp_name="norm-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=1 --exp_name="norm-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=2 --exp_name="norm-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+    "--gpu_list=3 --exp_name="norm-tbptt-tau0.0005-actorlr3e-4-criticlr5e-4-channels32-fc512""
+
 )
 
 cd ~/visuomotor-deep-optics/
@@ -62,6 +63,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --qnetwork_fc_scale=512 \
         --action_scale=1.0 \
         --use_q_bias \
+        --normalize_returns \
         --exploration_noise=0.0001 \
         --decay_rate=0.998 \
         --writer_interval=100 \
