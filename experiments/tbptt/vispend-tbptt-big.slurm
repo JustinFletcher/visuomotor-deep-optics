@@ -61,7 +61,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_learning_rate=1e-4 \
         --critic_learning_rate=1e-3 \
         --qnetwork_channel_scale=64 \
-        --actor_channel_scale=1646 \
+        --actor_channel_scale=64 \
         --actor_fc_scale=1024 \
         --qnetwork_fc_scale=1024 \
         --action_scale=2.0 \
