@@ -17,14 +17,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name="vp""
-    "--gpu_list=1 --exp_name="vp""
-    "--gpu_list=2 --exp_name="vp""
-    "--gpu_list=3 --exp_name="vp""
-    "--gpu_list=4 --exp_name="vp""
-    "--gpu_list=5 --exp_name="vp""
-    "--gpu_list=6 --exp_name="vp""
-    "--gpu_list=7 --exp_name="vp""
+    "--gpu_list=0 --exp_name="vp-big""
+    "--gpu_list=1 --exp_name="vp-big""
+    "--gpu_list=2 --exp_name="vp-big""
+    "--gpu_list=3 --exp_name="vp-big""
+    "--gpu_list=4 --exp_name="vp-big""
+    "--gpu_list=5 --exp_name="vp-big""
+    "--gpu_list=6 --exp_name="vp-big""
+    "--gpu_list=7 --exp_name="vp-big""
 
 )
 
@@ -47,7 +47,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=16 \
+        --batch_size=64 \
         --tau=0.0003 \
         --policy_frequency=2 \
         --reward_scale=1.0 \
@@ -60,10 +60,10 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_type=impala \
         --actor_learning_rate=1e-3 \
         --critic_learning_rate=1e-3 \
-        --qnetwork_channel_scale=32 \
-        --actor_channel_scale=32 \
-        --actor_fc_scale=256 \
-        --qnetwork_fc_scale=256 \
+        --qnetwork_channel_scale=64 \
+        --actor_channel_scale=64 \
+        --actor_fc_scale=512 \
+        --qnetwork_fc_scale=512 \
         --action_scale=2.0 \
         --use_q_bias \
         --normalize_returns \
