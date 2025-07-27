@@ -21,10 +21,10 @@ VARIANTS=(
     "--gpu_list=1 --normalize_returns --exp_name="vp-norm""
     "--gpu_list=2 --normalize_returns --exp_name="vp-norm""
     "--gpu_list=3 --normalize_returns --exp_name="vp-norm""
-    "--gpu_list=4 --exp_name="vp-norm""
-    "--gpu_list=5 --exp_name="vp-norm""
-    "--gpu_list=6 --exp_name="vp-norm""
-    "--gpu_list=7 --exp_name="vp-norm""
+    "--gpu_list=4 --exp_name="vp""
+    "--gpu_list=5 --exp_name="vp""
+    "--gpu_list=6 --exp_name="vp""
+    "--gpu_list=7 --exp_name="vp""
 
 )
 
@@ -47,7 +47,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=256 \
+        --batch_size=16 \
         --tau=0.0001 \
         --policy_frequency=2 \
         --reward_scale=1.0 \
@@ -66,11 +66,11 @@ for VARIANT in "${VARIANTS[@]}"; do
         --qnetwork_fc_scale=64 \
         --action_scale=2.0 \
         --use_q_bias \
-        --exploration_noise=2.0 \
+        --exploration_noise=1.0 \
         --decay_rate=0.99 \
         --writer_interval=100 \
         --save_model \
-        --tbptt_seq_len=64 \
+        --tbptt_seq_len=32 \
         --num_eval_rollouts=0 \
         --model_save_interval=10_000 \
         $VARIANT &  # Run in background
