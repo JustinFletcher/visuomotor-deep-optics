@@ -17,14 +17,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --normalize_returns --exp_name="vp-norm""
-    "--gpu_list=1 --normalize_returns --exp_name="vp-norm""
-    "--gpu_list=2 --normalize_returns --exp_name="vp-norm""
-    "--gpu_list=3 --normalize_returns --exp_name="vp-norm""
-    "--gpu_list=4 --exp_name="vp-norm""
-    "--gpu_list=5 --exp_name="vp-norm""
-    "--gpu_list=6 --exp_name="vp-norm""
-    "--gpu_list=7 --exp_name="vp-norm""
+    "--gpu_list=0 --normalize_returns --exp_name="vp-norm-big""
+    "--gpu_list=1 --normalize_returns --exp_name="vp-norm-big""
+    "--gpu_list=2 --normalize_returns --exp_name="vp-norm-big""
+    "--gpu_list=3 --normalize_returns --exp_name="vp-norm-big""
+    "--gpu_list=4 --exp_name="vp-norm-big""
+    "--gpu_list=5 --exp_name="vp-norm-big""
+    "--gpu_list=6 --exp_name="vp-norm-big""
+    "--gpu_list=7 --exp_name="vp-norm-big""
 
 )
 
@@ -60,10 +60,10 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
         --critic_learning_rate=1e-3 \
-        --qnetwork_channel_scale=16 \
-        --actor_channel_scale=16 \
-        --actor_fc_scale=64 \
-        --qnetwork_fc_scale=64 \
+        --qnetwork_channel_scale=64 \
+        --actor_channel_scale=1646 \
+        --actor_fc_scale=1024 \
+        --qnetwork_fc_scale=1024 \
         --action_scale=2.0 \
         --use_q_bias \
         --exploration_noise=2.0 \
