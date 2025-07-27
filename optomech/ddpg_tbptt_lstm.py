@@ -436,7 +436,12 @@ class ImpalaActor(nn.Module):
 
         # Handle channels-last environments.
         if self.channels_last:
-            o = o.permute(0, 3, 1, 2)
+            # print(f"[o] shape before permute: {o.shape}")
+            if len(o.shape) == 4:
+                o = o.permute(0, 3, 1, 2)
+            elif len(o.shape) == 6:
+                o = o.permute(0, 1, 5, 2, 3, 4)  
+            # print(f"[o] shape after permute: {o.shape}")
 
         sequence_input = len(o.shape) == 6
         if sequence_input:
@@ -446,12 +451,14 @@ class ImpalaActor(nn.Module):
             # Reshape to [S * B, channels, height, width], assuming frame is always 1.
             o = o.view(-1, o.shape[3], o.shape[4], o.shape[5])
 
+            # print(f"[o] shape after view: {o.shape}")
+
             # h0, c0 = hidden
             
             # h0 = torch.cat(hidden[0], dim=0).unsqueeze(0)  # → [1,4,128]
             # c0 = torch.cat(hidden[1], dim=0).unsqueeze(0) 
 
-            a_prior = a_prior.squeeze()
+            a_prior = a_prior.squeeze(-2)
 
             h0 = torch.stack(hidden[0], dim=1)  # → [1,4,128]
             c0 = torch.stack(hidden[1], dim=1) 
@@ -472,6 +479,12 @@ class ImpalaActor(nn.Module):
 
         if sequence_input:
             x = x.view(batch_size, seq_len, -1)
+
+        #     print(f"[x] shape after view: {x.shape}")
+
+        # print(f"[x] shape before concat: {x.shape}")
+        # print(f"[a_prior] shape: {a_prior.shape}")
+        # print(f"[r_prior] shape: {r_prior.shape}")
 
         x = torch.cat([x, a_prior, r_prior], dim=-1)
         h0 = h0.detach()
@@ -619,8 +632,14 @@ class ImpalaCritic(nn.Module):
             hidden = (h_0, c_0)
 
         # Handle channels-last environments.
+
         if self.channels_last:
-            o = o.permute(0, 3, 1, 2)
+            # print(f"[o] shape before permute: {o.shape}")
+            if len(o.shape) == 4:
+                o = o.permute(0, 3, 1, 2)
+            elif len(o.shape) == 6:
+                o = o.permute(0, 1, 5, 2, 3, 4)  
+            # print(f"[o] shape after permute: {o.shape}")
 
         sequence_input = len(o.shape) == 6
         if sequence_input:
@@ -635,8 +654,8 @@ class ImpalaCritic(nn.Module):
             c0 = torch.cat(hidden[1], dim=0).unsqueeze(0) 
             hidden = (h0, c0)
 
-            a_prior = a_prior.squeeze()
-            a = a.squeeze()
+            a_prior = a_prior.squeeze(-2)
+            a = a.squeeze(-2)
         
         else:
 
@@ -648,6 +667,11 @@ class ImpalaCritic(nn.Module):
 
         if sequence_input:
             x = x.view(batch_size, seq_len, -1)
+
+        # print(f"[x] shape before concat: {x.shape}")
+        # print(f"[a] shape: {a.shape}")
+        # print(f"[a_prior] shape: {a_prior.shape}")
+        # print(f"[r_prior] shape: {r_prior.shape}")
 
         x = torch.cat([x, a, a_prior, r_prior], dim=-1)
 
@@ -914,7 +938,7 @@ if __name__ == "__main__":
 
     # Potential-based reward shaping https://arxiv.org/pdf/2502.01307
     if args.use_q_bias:
-        reward_sample_episodes = 1
+        reward_sample_episodes = 10
         random_rewards = list()
         # Sample some random rewards to compute the q bias.
         # This is a hacky way to get the expected reward.

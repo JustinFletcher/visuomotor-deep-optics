@@ -26,6 +26,9 @@ class VisualPendulumEnv(PendulumEnv):
         
         # Observation space for grayscale image
         self.observation_space = Box(low=0, high=255, shape=(resolution, resolution, 1), dtype=np.uint8)
+
+        # Expand the action space by one dimension to accommodate the visual observation
+        action_space = self.action_space
         
         # Define ranges for scaling the observation values in 'observation' style
         self.obs_ranges = {
