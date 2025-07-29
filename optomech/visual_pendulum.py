@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import uuid
 
 class VisualPendulumEnv(PendulumEnv):
-    def __init__(self, resolution=64, render_style='observation'):
+    def __init__(self, resolution=32, render_style='pendulum'):
         """
         Initialize the VisualPendulumEnv.
         
@@ -28,8 +28,7 @@ class VisualPendulumEnv(PendulumEnv):
         self.observation_space = Box(low=0, high=255, shape=(resolution, resolution, 1), dtype=np.uint8)
 
         # Expand the action space by one dimension to accommodate the visual observation
-        action_space = self.action_space
-        
+
         # Define ranges for scaling the observation values in 'observation' style
         self.obs_ranges = {
             0: (-1.0, 1.0),   # Cosine of the angle
@@ -107,7 +106,7 @@ class VisualPendulumEnv(PendulumEnv):
         return np.repeat(observation, 1, axis=2)  # Convert to RGB by repeating the channel
 
 
-def main(render_style='observation'):
+def main(render_style='pendulum'):
     """
     Run the VisualPendulumEnv environment with the specified render style.
     
@@ -115,7 +114,7 @@ def main(render_style='observation'):
         render_style (str): The rendering style for the environment. Options are 'observation' and 'pendulum'.
     """
     # Instantiate the environment
-    env = VisualPendulumEnv(resolution=64, render_style=render_style)
+    env = VisualPendulumEnv(resolution=16, render_style=render_style)
     
     # Reset the environment
     observation, _ = env.reset()
@@ -127,7 +126,7 @@ def main(render_style='observation'):
     plt.show()
     
     # Run the environment for a few steps
-    for _ in range(5):
+    for _ in range(20):
         action = env.action_space.sample()  # Sample a random action
         observation, _, _, _, _ = env.step(action)
         
@@ -143,7 +142,7 @@ def main(render_style='observation'):
 if __name__ == "__main__":
     # Test both render styles
     print("Running with 'observation' style:")
-    main(render_style='observation')
+    main()
 
-    print("Running with 'pendulum' style:")
-    main(render_style='pendulum')
+    # print("Running with 'pendulum' style:")
+    # main(render_style='pendulum')

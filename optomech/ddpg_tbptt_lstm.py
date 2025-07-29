@@ -315,23 +315,43 @@ class ImpalaActor(nn.Module):
             input_channels = obs_shape[0]
 
         # Define the visual encoder, so that we know the output shape.
+        # self.visual_encoder = nn.Sequential(
+        #     conv_init(
+        #         nn.Conv2d(input_channels, 
+        #                   channel_scale,
+        #                   kernel_size=8,
+        #                   stride=4)),
+        #     nn.ReLU(),
+        #     conv_init(
+        #         nn.Conv2d(channel_scale,
+        #                   channel_scale * 2,
+        #                   kernel_size=4,
+        #                   stride=2)),
+        #     nn.ReLU(),
+        #     conv_init(
+        #         nn.Conv2d(channel_scale * 2,
+        #                   channel_scale * 4,
+        #                   kernel_size=2,
+        #                   stride=2)),
+        #     nn.ReLU(),
+        # )
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
                           channel_scale,
-                          kernel_size=8,
-                          stride=4)),
+                          kernel_size=3,
+                          stride=2)),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(channel_scale,
                           channel_scale * 2,
-                          kernel_size=4,
+                          kernel_size=3,
                           stride=2)),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(channel_scale * 2,
                           channel_scale * 4,
-                          kernel_size=2,
+                          kernel_size=3,
                           stride=2)),
             nn.ReLU(),
         )
@@ -534,25 +554,46 @@ class ImpalaCritic(nn.Module):
             input_channels = obs_shape[0]
 
         # Define the visual encoder, so that we know the output shape.
+        # self.visual_encoder = nn.Sequential(
+        #     conv_init(
+        #         nn.Conv2d(input_channels, 
+        #                   channel_scale,
+        #                   kernel_size=8,
+        #                   stride=4),
+        #         ),
+        #     nn.ReLU(),
+        #     conv_init(
+        #         nn.Conv2d(channel_scale,
+        #                   channel_scale * 2,
+        #                   kernel_size=4,
+        #                   stride=2)
+        #         ),
+        #     nn.ReLU(),
+        #     conv_init(
+        #         nn.Conv2d(channel_scale * 2,
+        #                   channel_scale * 4,
+        #                   kernel_size=2,
+        #                   stride=2)),
+        #     nn.ReLU(),
+        # )
+
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
                           channel_scale,
-                          kernel_size=8,
-                          stride=4),
-                ),
+                          kernel_size=3,
+                          stride=2)),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(channel_scale,
                           channel_scale * 2,
-                          kernel_size=4,
-                          stride=2)
-                ),
+                          kernel_size=3,
+                          stride=2)),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(channel_scale * 2,
                           channel_scale * 4,
-                          kernel_size=2,
+                          kernel_size=3,
                           stride=2)),
             nn.ReLU(),
         )
@@ -1539,16 +1580,17 @@ if __name__ == "__main__":
                 episode_done = list()
 
                 # Set the initial hidden states to the current value.
-                initial_actor_hidden = (new_actor_hidden[0].detach().clone(), new_actor_hidden[1].detach().clone())
-                initial_qf1_hidden = (new_qf1_hidden[0].detach().clone(), new_qf1_hidden[1].detach().clone())
-                initial_qf2_hidden = (new_qf2_hidden[0].detach().clone(), new_qf2_hidden[1].detach().clone())
+                initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
+                                        new_actor_hidden[1].detach().clone())
+                initial_qf1_hidden = (new_qf1_hidden[0].detach().clone(),
+                                      new_qf1_hidden[1].detach().clone())
+                initial_qf2_hidden = (new_qf2_hidden[0].detach().clone(),
+                                      new_qf2_hidden[1].detach().clone())
                 
-
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             if infos:
 
                 for info in infos["final_info"]:
-
 
                     print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
                     writer.add_scalar("episode/episodic_return", info["episode"]["r"], global_step)
@@ -1596,17 +1638,20 @@ if __name__ == "__main__":
                     episode_done = list()
 
                     # Set the initial hidden states to the current value.
-                    initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
-                                            new_actor_hidden[1].detach().clone())
-                    initial_qf1_hidden = (qf1_hidden[0].detach().clone(),
-                                        qf1_hidden[1].detach().clone())
-                    initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
-                                        qf2_hidden[1].detach().clone())
+                    # initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
+                    #                         new_actor_hidden[1].detach().clone())
+                    # initial_qf1_hidden = (qf1_hidden[0].detach().clone(),
+                    #                     qf1_hidden[1].detach().clone())
+                    # initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
+                    #                     qf2_hidden[1].detach().clone())
 
                     print("Resetting Model Hidden State")
                     actor_hidden = actor.get_zero_hidden()
                     qf1_hidden = qf1.get_zero_hidden()
                     qf2_hidden = qf2.get_zero_hidden()
+                    initial_actor_hidden = actor_hidden
+                    initial_qf1_hidden = qf1_hidden
+                    initial_qf2_hidden = qf2_hidden
 
                     noise_generator.reset()
                     if global_step > args.learning_starts:
@@ -1617,12 +1662,12 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
             obs = next_obs
-            initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
-                                    new_actor_hidden[1].detach().clone())
-            initial_qf1_hidden = (qf1_hidden[0].detach().clone(),
-                                  qf1_hidden[1].detach().clone())
-            initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
-                                  qf2_hidden[1].detach().clone())
+            # initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
+            #                         new_actor_hidden[1].detach().clone())
+            # initial_qf1_hidden = (qf1_hidden[0].detach().clone(),
+            #                       qf1_hidden[1].detach().clone())
+            # initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
+            #                       qf2_hidden[1].detach().clone())
 
         # ALGO LOGIC: training.
         # If it is time to train, then train.
@@ -1665,7 +1710,7 @@ if __name__ == "__main__":
                         prior_rewards_batch.to(device),
                         actor_hidden_batch,
                     )
-                policy_noise = 0.01
+                policy_noise = 0.2
 
                 noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
                 # TODO: WARNING: This will break asymmetric action spaces.
@@ -1723,7 +1768,8 @@ if __name__ == "__main__":
             if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
             qf1_optimizer.zero_grad()
-            qf1_loss.backward(retain_graph=True)
+            # qf1_loss.backward(retain_graph=True)
+            qf1_loss.backward(retain_graph=False)
             if clip_gradients:
                 torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=args.max_grad_norm)
             if iteration % args.writer_interval == 0:
@@ -1737,7 +1783,8 @@ if __name__ == "__main__":
             if iteration % args.writer_interval == 0:
                 qf2_grad = get_grad_norm(qf2)
             qf2_optimizer.zero_grad()
-            qf2_loss.backward(retain_graph=True)
+            qf2_loss.backward(retain_graph=False)
+            # qf2_loss.backward(retain_graph=True)
             if clip_gradients:
                 torch.nn.utils.clip_grad_norm_(qf2.parameters(), max_norm=args.max_grad_norm)
             if iteration % args.writer_interval == 0:
@@ -1766,7 +1813,7 @@ if __name__ == "__main__":
                 actor_loss = -loss_qvalues.mean()
                 
                 actor_optimizer.zero_grad()
-                actor_loss.backward(retain_graph=True)
+                actor_loss.backward(retain_graph=False)
 
                 if iteration % args.writer_interval == 0:
                     actor_grad = get_grad_norm(actor)
