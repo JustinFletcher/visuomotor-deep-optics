@@ -275,7 +275,7 @@ def rollout_optomech_policy(model_path=None,
                     actions, hidden = actor(
                         torch.Tensor(obs).to(device),
                         torch.Tensor(prior_actions).to(device),
-                        torch.Tensor(prior_rewards).unsqueeze(0).to(device),
+                        torch.Tensor(prior_rewards).to(device),
                         (hidden[0].to(device), hidden[1].to(device)),)
                 else:
                     actions = actor(torch.Tensor(obs).to(device))
