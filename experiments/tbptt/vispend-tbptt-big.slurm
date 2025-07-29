@@ -2,8 +2,8 @@
 #SBATCH --job-name=tbptt           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=8
-#SBATCH --ntasks-per-node=8          # Number of tasks per node
+#SBATCH --ntasks=16
+#SBATCH --ntasks-per-node=16          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       #
 #SBATCH --output=./tbptt.out
 #SBATCH --error=./tbptt.err
@@ -54,9 +54,9 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_scale=0.1 \
         --max_grad_norm=1.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=50_000 \
+        --learning_starts=10_000 \
         --experience_sampling_delay=0_000 \
-        --actor_training_delay=10_000 \
+        --actor_training_delay=1_000 \
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
