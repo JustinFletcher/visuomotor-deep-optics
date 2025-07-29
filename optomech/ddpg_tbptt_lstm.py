@@ -147,6 +147,8 @@ class Args:
     """The scale of the QNetwork model channels."""
     qnetwork_fc_scale: int = 64
     """The scale of the QNetwork model fully connected layers."""
+    lstm_hidden_dim: int = 128
+    """The scale of the QNetwork model fully connected layers."""
     low_dim_qnetwork: bool = False
     """Whether the qnetwork model is visual."""
 
@@ -967,12 +969,14 @@ if __name__ == "__main__":
             device,
             channel_scale=args.actor_channel_scale,
             fc_scale=args.actor_fc_scale,
+            lstm_hidden_dim=args.lstm_hidden_dim,
             action_scale=args.action_scale,).to(device)
         target_actor = ImpalaActor(
             envs,
             device,
             channel_scale=args.actor_channel_scale,
             fc_scale=args.actor_fc_scale,
+            lstm_hidden_dim=args.lstm_hidden_dim,
             action_scale=args.action_scale).to(device)
         
         scripted_actor = torch.jit.script(actor)
@@ -1015,6 +1019,7 @@ if __name__ == "__main__":
             device,
             channel_scale=args.qnetwork_channel_scale,
             fc_scale=args.qnetwork_fc_scale,
+            lstm_hidden_dim=args.lstm_hidden_dim,
             q_bias=q_bias).to(device
         )
         qf1_target = ImpalaCritic(
@@ -1022,6 +1027,7 @@ if __name__ == "__main__":
             device,
             channel_scale=args.qnetwork_channel_scale,
             fc_scale=args.qnetwork_fc_scale,
+            lstm_hidden_dim=args.lstm_hidden_dim,
             q_bias=q_bias).to(device
         )
         
@@ -1033,12 +1039,14 @@ if __name__ == "__main__":
             device,
             channel_scale=args.qnetwork_channel_scale,
             fc_scale=args.actor_fc_scale,
+            lstm_hidden_dim=args.lstm_hidden_dim,
             q_bias=q_bias).to(device)
         qf2_target = ImpalaCritic(
             envs,
             device,
             channel_scale=args.qnetwork_channel_scale,
             fc_scale=args.qnetwork_fc_scale,
+            lstm_hidden_dim=args.lstm_hidden_dim,
             q_bias=q_bias).to(device)
         
         for p in qf2.parameters():

@@ -222,7 +222,7 @@ def rollout_optomech_policy(model_path=None,
     if model_path is not None:
         # Load our actor model.
         actor = torch.load(model_path, weights_only=False, map_location=device)
-        hidden = get_zero_hidden(lstm_num_layers=1, lstm_hidden_dim=args.actor_fc_scale)
+        hidden = get_zero_hidden(lstm_num_layers=1, lstm_hidden_dim=args.lstm_hidden_dim)
 
     #
     # Reset the global step counter.
