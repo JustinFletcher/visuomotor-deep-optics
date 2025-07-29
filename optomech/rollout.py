@@ -224,6 +224,7 @@ def rollout_optomech_policy(model_path=None,
         actor = torch.load(model_path, weights_only=False, map_location=device)
         hidden = get_zero_hidden(lstm_num_layers=1, lstm_hidden_dim=args.actor_fc_scale)
 
+    #
     # Reset the global step counter.
     global_step = 0
     env_uuid_attrs = envs.get_attr("uuid")
