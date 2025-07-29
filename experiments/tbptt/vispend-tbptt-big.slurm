@@ -14,17 +14,18 @@
 # fdsgdfgs #SBATCH --nodelist=cr4mi2        # 
 # fdsgdfgs #SBATCH --output=$LOCALWORKDIR/tbptt.out
 # fdsgdfgs #SBATCH --error=$LOCALWORKDIR/tbptt.err
+# This is a change git
 
 VARIANTS=(
 
-    "--gpu_list=0 --normalize_returns --exp_name="vp-norm-big""
-    "--gpu_list=1 --normalize_returns --exp_name="vp-norm-big""
-    "--gpu_list=2 --normalize_returns --exp_name="vp-norm-big""
-    "--gpu_list=3 --normalize_returns --exp_name="vp-norm-big""
-    "--gpu_list=4 --exp_name="vp-norm-big""
-    "--gpu_list=5 --exp_name="vp-norm-big""
-    "--gpu_list=6 --exp_name="vp-norm-big""
-    "--gpu_list=7 --exp_name="vp-norm-big""
+    "--gpu_list=0 --exp_name="vp-big""
+    "--gpu_list=1 --exp_name="vp-big""
+    "--gpu_list=2 --exp_name="vp-big""
+    "--gpu_list=3 --exp_name="vp-big""
+    "--gpu_list=4 --exp_name="vp-big""
+    "--gpu_list=5 --exp_name="vp-big""
+    "--gpu_list=6 --exp_name="vp-big""
+    "--gpu_list=7 --exp_name="vp-big""
 
 )
 
@@ -48,9 +49,9 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_envs=1 \
         --reward_function=align \
         --batch_size=16 \
-        --tau=0.0001 \
+        --tau=0.0005 \
         --policy_frequency=2 \
-        --reward_scale=1.0 \
+        --reward_scale=0.1 \
         --max_grad_norm=1.0 \
         --buffer_size=1_000_000 \
         --learning_starts=50_000 \
@@ -64,15 +65,14 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_channel_scale=64 \
         --actor_fc_scale=1024 \
         --qnetwork_fc_scale=1024 \
-        --action_scale=2.0 \
-        --use_q_bias \
-        --exploration_noise=1.0 \
-        --decay_rate=0.995 \
+        --action_scale=1.0 \
+        --exploration_noise=0.5 \
+        --decay_rate=0.93 \
         --writer_interval=100 \
         --save_model \
-        --tbptt_seq_len=32 \
-        --num_eval_rollouts=0 \
-        --model_save_interval=10_000 \
+        --tbptt_seq_len=16 \
+        --num_eval_rollouts=10 \
+        --model_save_interval=100_000 \
         $VARIANT &  # Run in background
 done
 
