@@ -49,10 +49,10 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_envs=1 \
         --reward_function=align \
         --batch_size=16 \
-        --tau=0.0005 \
+        --tau=0.0001 \
         --policy_frequency=2 \
         --reward_scale=0.1 \
-        --max_grad_norm=1.0 \
+        --max_grad_norm=100.0 \
         --buffer_size=1_000_000 \
         --learning_starts=10_000 \
         --experience_sampling_delay=0_000 \
@@ -60,14 +60,14 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
-        --critic_learning_rate=1e-3 \
+        --critic_learning_rate=3e-4 \
         --qnetwork_channel_scale=64 \
         --actor_channel_scale=64 \
         --actor_fc_scale=1024 \
         --qnetwork_fc_scale=1024 \
         --action_scale=1.0 \
         --exploration_noise=0.5 \
-        --decay_rate=0.93 \
+        --decay_rate=0.995 \
         --writer_interval=100 \
         --save_model \
         --tbptt_seq_len=16 \
