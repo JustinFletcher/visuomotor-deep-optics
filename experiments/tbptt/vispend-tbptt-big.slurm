@@ -35,7 +35,7 @@ for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_tbptt_lstm.py \
         --env-id VisualPendulum-v1 \
         --object_type=single \
-        --max_episode_steps=256 \
+        --max_episode_steps=512 \
         --ao_interval_ms=5.0 \
         --control_interval_ms=5.0 \
         --frame_interval_ms=5.0 \
@@ -54,7 +54,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_scale=0.1 \
         --max_grad_norm=100.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=10_000 \
+        --learning_starts=100_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=1_000 \
         --actor_type=impala \

@@ -53,7 +53,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_scale=0.1 \
         --max_grad_norm=100.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=5_000 \
+        --learning_starts=100_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=1_000 \
         --actor_type=impala \
