@@ -205,6 +205,8 @@ def rollout_optomech_policy(model_path=None,
 
     # Reset the environments, and create a list to hold the returns.
     obs, _ = envs.reset()
+    if torch.tensor(obs).dtype != torch.float32:
+        obs = np.array((obs / 255.0).astype(np.float32))
     episodic_returns = list()
 
 

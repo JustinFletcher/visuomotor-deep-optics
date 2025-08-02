@@ -64,7 +64,7 @@ class VisualPendulumEnv(PendulumEnv):
         img = np.zeros((self.resolution, self.resolution), dtype=np.uint8)
         
         # Define the width of each observation section
-        section_width = self.resolution // 3
+        section_width = self.resolution // 2
         
         # Tile each scaled observation across its section of the image
         for i in range(3):
@@ -98,6 +98,14 @@ class VisualPendulumEnv(PendulumEnv):
         
         # Convert to grayscale and then expand dimensions to make it a single-channel image
         img = np.array(img.convert("L"))[:, :, np.newaxis]
+        img = img.astype(np.uint8)  # Ensure the image is in uint8 format
+        # Plot a historgram of the pixel values
+        # plt.hist(img.flatten(), color='gray', alpha=0.7)
+        # plt.title('Pixel Value Histogram')
+        # plt.xlabel('Pixel Value')
+        # plt.ylabel('Frequency')
+        # plt.show()
+
         return img
 
     def render(self):
@@ -114,7 +122,7 @@ def main(render_style='pendulum'):
         render_style (str): The rendering style for the environment. Options are 'observation' and 'pendulum'.
     """
     # Instantiate the environment
-    env = VisualPendulumEnv(resolution=16, render_style=render_style)
+    env = VisualPendulumEnv(resolution=32, render_style=render_style)
     
     # Reset the environment
     observation, _ = env.reset()
@@ -141,7 +149,7 @@ def main(render_style='pendulum'):
 
 if __name__ == "__main__":
     # Test both render styles
-    print("Running with 'observation' style:")
+    # print("Running with 'observation' style:")
     main()
 
     # print("Running with 'pendulum' style:")

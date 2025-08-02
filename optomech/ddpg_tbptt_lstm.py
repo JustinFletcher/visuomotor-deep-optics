@@ -341,19 +341,13 @@ class ImpalaActor(nn.Module):
             conv_init(
                 nn.Conv2d(input_channels, 
                           channel_scale,
-                          kernel_size=3,
-                          stride=2)),
+                          kernel_size=8,
+                          stride=4)),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(channel_scale,
                           channel_scale * 2,
-                          kernel_size=3,
-                          stride=2)),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(channel_scale * 2,
-                          channel_scale * 4,
-                          kernel_size=3,
+                          kernel_size=4,
                           stride=2)),
             nn.ReLU(),
         )
@@ -376,7 +370,7 @@ class ImpalaActor(nn.Module):
                     mlp_output_size),
                 std=np.sqrt(2.0)
             ),
-            nn.LayerNorm(mlp_output_size),
+            # nn.LayerNorm(mlp_output_size),
             nn.ReLU(),
         )
 
@@ -397,15 +391,15 @@ class ImpalaActor(nn.Module):
 
         # Build the action head following the convolutional LSTM
         self.action_head = nn.Sequential(
-            layer_init(
-                nn.Linear(
-                    int(np.prod(pre_head_output_shape[1:])),
-                    fc_scale // 2,
-                        ),
-                std=1e-3
-            ),
-            nn.LayerNorm(fc_scale // 2),
-            nn.Tanh(),
+            # layer_init(
+            #     nn.Linear(
+            #         int(np.prod(pre_head_output_shape[1:])),
+            #         fc_scale // 2,
+            #             ),
+            #     std=1e-3
+            # ),
+            # nn.LayerNorm(fc_scale // 2),
+            # nn.Tanh(),
             layer_init(
                 nn.Linear(
                     fc_scale // 2,
@@ -513,6 +507,12 @@ class ImpalaActor(nn.Module):
         c0 = c0.detach()
         x, new_hidden = self.lstm(x, (h0, c0))
 
+
+        # Get the last step output from the LSTM
+        # if sequence_input:
+        #     # print(f"[x] shape before slicing: {x.shape}") 
+        #     x = x[:, -1, :]
+
         # Apply action prediciton head and activation function
         a = self.action_head(x)
 
@@ -583,19 +583,13 @@ class ImpalaCritic(nn.Module):
             conv_init(
                 nn.Conv2d(input_channels, 
                           channel_scale,
-                          kernel_size=3,
-                          stride=2)),
+                          kernel_size=8,
+                          stride=4)),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(channel_scale,
                           channel_scale * 2,
-                          kernel_size=3,
-                          stride=2)),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(channel_scale * 2,
-                          channel_scale * 4,
-                          kernel_size=3,
+                          kernel_size=4,
                           stride=2)),
             nn.ReLU(),
         )
@@ -618,7 +612,7 @@ class ImpalaCritic(nn.Module):
                     mlp_output_size),
                 std=np.sqrt(2)
             ),
-            nn.LayerNorm(mlp_output_size),
+            # nn.LayerNorm(mlp_output_size),
             nn.ReLU(),
         )
 
@@ -639,15 +633,15 @@ class ImpalaCritic(nn.Module):
 
         # Build the q head following the convolutional LSTM
         self.q_head = nn.Sequential(
-            layer_init(
-                nn.Linear(
-                    int(np.prod(pre_head_output_shape[1:])),
-                    fc_scale // 2
-                    ),
-                std=1.0
-            ),
-            nn.LayerNorm(fc_scale // 2),
-            nn.Tanh(),
+            # layer_init(
+            #     nn.Linear(
+            #         int(np.prod(pre_head_output_shape[1:])),
+            #         fc_scale // 2
+            #         ),
+            #     std=1.0
+            # ),
+            # # nn.LayerNorm(fc_scale // 2),
+            # nn.Tanh(),
             layer_init(
                 nn.Linear(fc_scale // 2,
                           1
@@ -668,11 +662,6 @@ class ImpalaCritic(nn.Module):
         return (h, c)
 
     def forward(self, o, a, a_prior, r_prior, hidden=None):
-        
-        if hidden is None:
-            h_0 = torch.zeros(self.lstm_num_layers, o.size(0), self.lstm_hidden_dim, dtype=o.dtype, device=o.device)
-            c_0 = torch.zeros(self.lstm_num_layers, o.size(0), self.lstm_hidden_dim, dtype=o.dtype, device=o.device)
-            hidden = (h_0, c_0)
 
         # Handle channels-last environments.
 
@@ -711,10 +700,10 @@ class ImpalaCritic(nn.Module):
         if sequence_input:
             x = x.view(batch_size, seq_len, -1)
 
-        # print(f"[x] shape before concat: {x.shape}")
-        # print(f"[a] shape: {a.shape}")
-        # print(f"[a_prior] shape: {a_prior.shape}")
-        # print(f"[r_prior] shape: {r_prior.shape}")
+        print(f"[x] shape before concat: {x.shape}")
+        print(f"[a] shape: {a.shape}")
+        print(f"[a_prior] shape: {a_prior.shape}")
+        print(f"[r_prior] shape: {r_prior.shape}")
 
         x = torch.cat([x, a, a_prior, r_prior], dim=-1)
 
@@ -726,8 +715,16 @@ class ImpalaCritic(nn.Module):
 
         x, new_hidden = self.lstm(x, hidden)
 
+        # Get the last step output from the LSTM
+        # if sequence_input:
+        #     # print(f"[x] shape before slicing: {x.shape}") 
+        #     x = x[:, -1, :]
+        print(f"[x] shape after LSTM: {x.shape}")
+
         # Apply action prediciton head and activation function
         q = self.q_head(x)
+
+        print(f"[q] shape: {q.shape}")
         return q, new_hidden
     
 
@@ -772,7 +769,7 @@ def log_gradients_in_model(model, logger, step):
 
 def log_weights_in_model(model, logger, step):
     for tag, value in model.named_parameters():
-            logger.add_histogram(tag + "/grad", value.cpu(), step)
+        logger.add_histogram(tag + "/weight", value.cpu(), step)
 
 
 def sample_normal_action(action_space, std_dev=0.1):
@@ -984,19 +981,20 @@ if __name__ == "__main__":
     # Potential-based reward shaping https://arxiv.org/pdf/2502.01307
     if args.use_q_bias:
         reward_sample_episodes = 10
-        random_rewards = list()
+        episode_rewards = []
         # Sample some random rewards to compute the q bias.
         # This is a hacky way to get the expected reward.
         # We sample 10 episodes of random actions and average the rewards.
         print("Sampling random rewards to compute q bias...")
         for _ in range(reward_sample_episodes):
+            obs, _ = envs.reset(seed=args.seed)
+            episode_reward_sum = 0.0
             for t in range(args.max_episode_steps):
-                if t == 0:
-                    # Reset the environment at the start of each episode.
-                    envs.reset(seed=args.seed)
-                first_actions = np.array([(envs.single_action_space.sample()) for _ in range(envs.num_envs)])
+                first_actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
                 _, rewards, _, _, _ = envs.step(first_actions)
-        expected_reward = np.mean(rewards) * args.reward_scale
+                episode_reward_sum += np.mean(rewards)
+            episode_rewards.append(episode_reward_sum)
+        expected_reward = np.mean(episode_rewards) * args.reward_scale
         print(f"Expected reward: {expected_reward}")
         # expected_reward = -13.5 * args.reward_scale
         q_bias = expected_reward * ((1 - (args.gamma ** args.max_episode_steps)) / (1 - args.gamma))
@@ -1038,7 +1036,7 @@ if __name__ == "__main__":
             envs,
             device,
             channel_scale=args.qnetwork_channel_scale,
-            fc_scale=args.actor_fc_scale,
+            fc_scale=args.qnetwork_fc_scale,
             lstm_hidden_dim=args.lstm_hidden_dim,
             q_bias=q_bias).to(device)
         qf2_target = ImpalaCritic(
@@ -1175,17 +1173,17 @@ if __name__ == "__main__":
     # Note to humans: ChatGPT made ^^^this^^^ joke, unprompted. -jrf
     qf1_a_values, qf1_hidden = qf1(
         torch.tensor(obs).to(device),
-        torch.tensor(actions).to(device),
+        actions.to(device),
         torch.tensor(first_actions).to(device),
         torch.tensor(rewards.astype(np.float32)).to(device),
         qf1.get_zero_hidden()
     )
     qf2_a_values, qf2_hidden = qf2(
         torch.tensor(obs).to(device),
-        torch.tensor(actions).to(device),
+        actions.to(device),
         torch.tensor(first_actions).to(device),
         torch.tensor(rewards.astype(np.float32)).to(device),
-        qf1.get_zero_hidden()
+        qf2.get_zero_hidden()
     )
 
     # Store the initial hidden states for the actor and critics for the first step.
@@ -1373,9 +1371,18 @@ if __name__ == "__main__":
                     writer.add_scalar("eval/zero_return_advantage", mean_zero_return_advantage, iteration)
                     writer.add_scalar("eval/random_return_advantage", mean_random_return_advantage, iteration)
                 
-        # Copy actions prior to overwriting them so to be saved if needed.
-        prior_actions = actions
+        # Actions are about to be replaced, so now we make the current actions the prior actions.
+        if isinstance(actions, torch.Tensor):
+            prior_actions = actions.detach().clone().cpu().numpy()
+        else:
+            prior_actions = actions.copy()
 
+        # if isinstance(prior_actions, torch.Tensor):
+        #     prior_actions = prior_actions.cpu().numpy()
+        # else:
+        #     prior_actions = prior_actions.copy()
+
+    
         # ALGO LOGIC: put action logic here
         # If during prelearning, sample actions using the specified method.
 
@@ -1475,9 +1482,7 @@ if __name__ == "__main__":
             #     initial_actor_hidden_out = initial_actor_hidden_in
             
             # Store the current rewards before generating a new transition.
-            # TODO: should this be a copy? 
-            # TODO: Can this samely be done with prior actions?
-            prior_rewards = rewards
+            prior_rewards = rewards.copy()
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
@@ -1540,7 +1545,7 @@ if __name__ == "__main__":
             if isinstance(obs, torch.Tensor):
                 obs = obs.cpu().detach().numpy()
             if isinstance(next_obs, torch.Tensor):
-                next_obs = next_obs.cpu().detach().numpy()
+                real_next_obs = real_next_obs.cpu().detach().numpy()
             if isinstance(actions, torch.Tensor):
                 actions = actions.cpu().detach().numpy()
             if isinstance(prior_actions, torch.Tensor):
@@ -1552,7 +1557,7 @@ if __name__ == "__main__":
 
             # Convert the observations, actions, and rewards to numpy arrays.
             obs = np.array(obs, dtype=np.float32)
-            next_obs = np.array(real_next_obs, dtype=np.float32)
+            real_next_obs = np.array(real_next_obs, dtype=np.float32)
             actions = np.array(actions, dtype=np.float32)
             prior_actions = np.array(prior_actions, dtype=np.float32)
             rewards = np.array(rewards, dtype=np.float32)
@@ -1564,7 +1569,7 @@ if __name__ == "__main__":
             episode_last_action.append(prior_actions)
             episode_reward.append(rewards)
             episode_last_reward.append(prior_rewards)
-            episode_next_state.append(next_obs)
+            episode_next_state.append(real_next_obs)
             episode_done.append(terminations)
             if len(episode_state) == args.tbptt_seq_len:
 
@@ -1578,6 +1583,8 @@ if __name__ == "__main__":
                         episode_last_reward,
                         episode_next_state,
                         episode_done)
+                
+
 
                 episode_state = list()
                 episode_action = list()
@@ -1616,26 +1623,26 @@ if __name__ == "__main__":
                     if len(train_episodic_return_list) > 100:
                         train_episodic_return_list.pop(0)
 
-                    while len(episode_state) < args.tbptt_seq_len:
-                         # If the episode is shorter than the TBPTT sequence length, pad it with the last transition.
-                        episode_state.append(obs)
-                        episode_action.append(actions)
-                        episode_last_action.append(prior_actions)
-                        episode_reward.append(rewards)
-                        episode_last_reward.append(prior_rewards)
-                        episode_next_state.append(real_next_obs)
-                        episode_done.append(terminations)
+                    # while len(episode_state) < args.tbptt_seq_len:
+                    #      # If the episode is shorter than the TBPTT sequence length, pad it with the last transition.
+                    #     episode_state.append(obs)
+                    #     episode_action.append(actions)
+                    #     episode_last_action.append(prior_actions)
+                    #     episode_reward.append(rewards)
+                    #     episode_last_reward.append(prior_rewards)
+                    #     episode_next_state.append(real_next_obs)
+                    #     episode_done.append(terminations)
 
-                    rb.push(initial_actor_hidden,
-                            initial_qf1_hidden,
-                            initial_qf2_hidden,
-                            episode_state,
-                            episode_action,
-                            episode_last_action,
-                            episode_reward,
-                            episode_last_reward,
-                            episode_next_state,
-                            episode_done)
+                    # rb.push(initial_actor_hidden,
+                    #         initial_qf1_hidden,
+                    #         initial_qf2_hidden,
+                    #         episode_state,
+                    #         episode_action,
+                    #         episode_last_action,
+                    #         episode_reward,
+                    #         episode_last_reward,
+                    #         episode_next_state,
+                    #         episode_done)
 
                     episode_state = list()
                     episode_action = list()
@@ -1718,10 +1725,10 @@ if __name__ == "__main__":
                         prior_rewards_batch.to(device),
                         actor_hidden_batch,
                     )
-                policy_noise = 0.2
+                policy_noise = 0.01
 
                 noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
-                # TODO: WARNING: This will break asymmetric action spaces.
+
                 noisy_next_action = (
                         next_state_actions_batch + noise
                     ).clamp(
@@ -1751,27 +1758,46 @@ if __name__ == "__main__":
                         qf1_next_target_batch,
                         qf2_next_target_batch
                     )
+                
+                # next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
+                print("rewards_batch shape:", rewards_batch.shape)
+                print("dones_batch shape:", dones_batch.shape)
+                print("qf1_next_target_batch shape:", qf1_next_target_batch.shape)
+                # Take the last reward and done from the batch, since we are using TBPTT.
+                # TODO: If this doens't work, try using the full sequence - it was definitely broken before becuase of the silent broadcasting.
+                # next_q_value_batch = rewards_batch[:, -1, :].flatten() + (1 - dones_batch[:, -1, :].flatten()) * args.gamma * (qf1_next_target_batch[:, -1, :].flatten())
+                next_q_value_batch = rewards_batch + (1 - dones_batch) * args.gamma * (qf1_next_target_batch)
 
-                next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
+                # rewards_batch shape: torch.Size([8, 2, 1])
+                # dones_batch shape: torch.Size([8, 2, 1])
+                # qf1_next_target_batch shape: torch.Size([8, 2, 1])
+                # next_q_value_batch shape: torch.Size([8, 2, 16])
 
-            qf1_a_values_batch = qf1(
+            # TODO: Should I remove the view here?
+            print("next_q_value_batch shape:", next_q_value_batch.shape)
+
+            qf1_a_values_batch, _ = qf1(
                 observations_batch.to(device),
                 actions_batch_batch.to(device),
                 prior_actions_batch.to(device),
                 prior_rewards_batch.to(device),
                 qf1_hidden_batch
-            )[0].view(-1)
-            qf2_a_values_batch = qf2(
+            )
+            qf2_a_values_batch, _ = qf2(
                 observations_batch.to(device),
                 actions_batch_batch.to(device),
                 prior_actions_batch.to(device),
                 prior_rewards_batch.to(device),
                 qf2_hidden_batch
-            )[0].view(-1)
+            )
 
             clip_gradients = True
             
             # Compute and apply the critic losses.
+            # (input, target)
+            # [16,], [8,2,16]
+
+            print("qf1_a_values_batch shape:", qf1_a_values_batch.shape)
             qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
             if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
@@ -1821,7 +1847,13 @@ if __name__ == "__main__":
                 actor_loss = -loss_qvalues.mean()
                 
                 actor_optimizer.zero_grad()
+
+                for p in qf1.parameters():
+                    p.requires_grad = False
                 actor_loss.backward(retain_graph=False)
+
+                for p in qf1.parameters():
+                    p.requires_grad = True
 
                 if iteration % args.writer_interval == 0:
                     actor_grad = get_grad_norm(actor)
@@ -1871,3 +1903,5 @@ if __name__ == "__main__":
     envs.close()
     writer.close()
     print("Done.")
+
+
