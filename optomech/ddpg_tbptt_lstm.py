@@ -118,9 +118,9 @@ class Args:
     """The scale of the L1 regularization"""
     max_grad_norm: float = 1.0
     """The maximum gradient norm"""
-    use_q_bias: bool = True
+    use_q_bias: bool = False
     """If toggled, compute q bias in the critic model."""
-    normalize_returns: bool = True
+    normalize_returns: bool = False
     """If toggled, normalize the returns in the critic model."""
 
     save_model: bool = False
