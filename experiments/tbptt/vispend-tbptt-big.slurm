@@ -51,7 +51,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --batch_size=16 \
         --tau=0.0001 \
         --policy_frequency=2 \
-        --reward_scale=10.0 \
+        --reward_scale=0.1 \
         --max_grad_norm=100.0 \
         --buffer_size=1_000_000 \
         --learning_starts=100_000 \
