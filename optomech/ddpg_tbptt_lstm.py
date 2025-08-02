@@ -370,7 +370,7 @@ class ImpalaActor(nn.Module):
                     mlp_output_size),
                 std=np.sqrt(2.0)
             ),
-            # nn.LayerNorm(mlp_output_size),
+            nn.LayerNorm(mlp_output_size),
             nn.ReLU(),
         )
 
@@ -391,18 +391,18 @@ class ImpalaActor(nn.Module):
 
         # Build the action head following the convolutional LSTM
         self.action_head = nn.Sequential(
-            # layer_init(
-            #     nn.Linear(
-            #         int(np.prod(pre_head_output_shape[1:])),
-            #         fc_scale // 2,
-            #             ),
-            #     std=1e-3
-            # ),
-            # nn.LayerNorm(fc_scale // 2),
-            # nn.Tanh(),
             layer_init(
                 nn.Linear(
-                    fc_scale // 2,
+                    int(np.prod(pre_head_output_shape[1:])),
+                    fc_scale,
+                        ),
+                std=1e-3
+            ),
+            nn.LayerNorm(fc_scale),
+            nn.Tanh(),
+            layer_init(
+                nn.Linear(
+                    fc_scale,
                     int(np.prod(envs.single_action_space.shape))
                         ),
                 std=1e-3
@@ -612,7 +612,7 @@ class ImpalaCritic(nn.Module):
                     mlp_output_size),
                 std=np.sqrt(2)
             ),
-            # nn.LayerNorm(mlp_output_size),
+            nn.LayerNorm(mlp_output_size),
             nn.ReLU(),
         )
 
@@ -633,17 +633,17 @@ class ImpalaCritic(nn.Module):
 
         # Build the q head following the convolutional LSTM
         self.q_head = nn.Sequential(
-            # layer_init(
-            #     nn.Linear(
-            #         int(np.prod(pre_head_output_shape[1:])),
-            #         fc_scale // 2
-            #         ),
-            #     std=1.0
-            # ),
-            # # nn.LayerNorm(fc_scale // 2),
-            # nn.Tanh(),
             layer_init(
-                nn.Linear(fc_scale // 2,
+                nn.Linear(
+                    int(np.prod(pre_head_output_shape[1:])),
+                    fc_scale
+                    ),
+                std=1.0
+            ),
+            nn.LayerNorm(fc_scale),
+            nn.Tanh(),
+            layer_init(
+                nn.Linear(fc_scale,
                           1
                           ),
                 std=1.0,
@@ -700,10 +700,10 @@ class ImpalaCritic(nn.Module):
         if sequence_input:
             x = x.view(batch_size, seq_len, -1)
 
-        print(f"[x] shape before concat: {x.shape}")
-        print(f"[a] shape: {a.shape}")
-        print(f"[a_prior] shape: {a_prior.shape}")
-        print(f"[r_prior] shape: {r_prior.shape}")
+        # print(f"[x] shape before concat: {x.shape}")
+        # print(f"[a] shape: {a.shape}")
+        # print(f"[a_prior] shape: {a_prior.shape}")
+        # print(f"[r_prior] shape: {r_prior.shape}")
 
         x = torch.cat([x, a, a_prior, r_prior], dim=-1)
 
@@ -719,12 +719,12 @@ class ImpalaCritic(nn.Module):
         # if sequence_input:
         #     # print(f"[x] shape before slicing: {x.shape}") 
         #     x = x[:, -1, :]
-        print(f"[x] shape after LSTM: {x.shape}")
+        # print(f"[x] shape after LSTM: {x.shape}")
 
         # Apply action prediciton head and activation function
         q = self.q_head(x)
 
-        print(f"[q] shape: {q.shape}")
+        # print(f"[q] shape: {q.shape}")
         return q, new_hidden
     
 
@@ -1760,9 +1760,9 @@ if __name__ == "__main__":
                     )
                 
                 # next_q_value_batch = rewards_batch.flatten() + (1 - dones_batch.flatten()) * args.gamma * (qf1_next_target_batch).view(-1)
-                print("rewards_batch shape:", rewards_batch.shape)
-                print("dones_batch shape:", dones_batch.shape)
-                print("qf1_next_target_batch shape:", qf1_next_target_batch.shape)
+                # print("rewards_batch shape:", rewards_batch.shape)
+                # print("dones_batch shape:", dones_batch.shape)
+                # print("qf1_next_target_batch shape:", qf1_next_target_batch.shape)
                 # Take the last reward and done from the batch, since we are using TBPTT.
                 # TODO: If this doens't work, try using the full sequence - it was definitely broken before becuase of the silent broadcasting.
                 # next_q_value_batch = rewards_batch[:, -1, :].flatten() + (1 - dones_batch[:, -1, :].flatten()) * args.gamma * (qf1_next_target_batch[:, -1, :].flatten())
@@ -1774,7 +1774,7 @@ if __name__ == "__main__":
                 # next_q_value_batch shape: torch.Size([8, 2, 16])
 
             # TODO: Should I remove the view here?
-            print("next_q_value_batch shape:", next_q_value_batch.shape)
+            # print("next_q_value_batch shape:", next_q_value_batch.shape)
 
             qf1_a_values_batch, _ = qf1(
                 observations_batch.to(device),
