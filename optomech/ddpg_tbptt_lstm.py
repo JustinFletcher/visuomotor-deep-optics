@@ -1720,12 +1720,12 @@ if __name__ == "__main__":
 
                 # print(actor_hidden_batch)
                 # print(len(actor_hidden_batch), len(actor_hidden_batch[0]), len(actor_hidden_batch[1]))
-
+                # TODO: investigate the time-ordering of inputs herte. Should actions, not prior actions. Might not matter
                 # Introduce target smoothing by adding noise to the next state actions.
                 next_state_actions_batch, _ = target_actor(
                         next_observations_batch.to(device),
-                        prior_actions_batch.to(device),
-                        prior_rewards_batch.to(device),
+                        actions_batch_batch.to(device),
+                        rewards_batch.to(device),
                         actor_hidden_batch,
                     )
                 policy_noise = 0.2
@@ -1745,16 +1745,16 @@ if __name__ == "__main__":
                 qf1_next_target_batch, _ = qf1_target(
                         next_observations_batch.to(device),
                         next_state_actions_batch.to(device),
-                        prior_actions_batch.to(device),
-                        prior_rewards_batch.to(device),
+                        actions_batch_batch.to(device),
+                        rewards_batch.to(device),
                         qf1_hidden_batch
                     )
                 
                 qf2_next_target_batch, _ = qf2_target(
                         next_observations_batch.to(device),
                         next_state_actions_batch.to(device),
-                        prior_actions_batch.to(device),
-                        prior_rewards_batch.to(device),
+                        actions_batch_batch.to(device),
+                        rewards_batch.to(device),
                         qf2_hidden_batch
                     )
                 qf1_next_target_batch = torch.min(

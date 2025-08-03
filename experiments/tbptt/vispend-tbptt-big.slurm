@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name=vp"
-    "--gpu_list=1 --exp_name=vp"
-    "--gpu_list=2 --exp_name=vp"
-    "--gpu_list=3 --exp_name=vp"
-    "--gpu_list=4 --exp_name=vp"
-    "--gpu_list=5 --exp_name=vp"
-    "--gpu_list=6 --exp_name=vp"
-    "--gpu_list=7 --exp_name=vp"
+    "--gpu_list=0 --exp_name=vp-faster-notd"
+    "--gpu_list=1 --exp_name=vp-faster-notd"
+    "--gpu_list=2 --exp_name=vp-faster-notd"
+    "--gpu_list=3 --exp_name=vp-faster-notd"
+    "--gpu_list=4 --exp_name=vp-faster-notd"
+    "--gpu_list=5 --exp_name=vp-faster-notd"
+    "--gpu_list=6 --exp_name=vp-faster-notd"
+    "--gpu_list=7 --exp_name=vp-faster-notd"
 
 )
 
@@ -50,17 +50,17 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_function=align \
         --batch_size=64 \
         --tau=0.0004 \
-        --policy_frequency=4 \
+        --policy_frequency=2 \
         --reward_scale=1.0 \
         --max_grad_norm=100000.0 \
         --buffer_size=1_000_000 \
         --learning_starts=20_000 \
         --experience_sampling_delay=0_000 \
-        --actor_training_delay=0_000 \
+        --actor_training_delay=10_000 \
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
-        --critic_learning_rate=1e-4 \
+        --critic_learning_rate=3e-4 \
         --qnetwork_channel_scale=4 \
         --actor_channel_scale=4 \
         --actor_fc_scale=256 \
