@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name=vp-faster-withtd"
-    "--gpu_list=1 --exp_name=vp-faster-withtd"
-    "--gpu_list=2 --exp_name=vp-faster-withtd"
-    "--gpu_list=3 --exp_name=vp-faster-withtd"
-    "--gpu_list=4 --exp_name=vp-faster-withtd"
-    "--gpu_list=5 --exp_name=vp-faster-withtd"
-    "--gpu_list=6 --exp_name=vp-faster-withtd"
-    "--gpu_list=7 --exp_name=vp-faster-withtd"
+    "--gpu_list=0 --exp_name=vp-faster-withtd-nonoise"
+    "--gpu_list=1 --exp_name=vp-faster-withtd-nonoise"
+    "--gpu_list=2 --exp_name=vp-faster-withtd-nonoise"
+    "--gpu_list=3 --exp_name=vp-faster-withtd-nonoise"
+    "--gpu_list=4 --exp_name=vp-faster-withtd-nonoise"
+    "--gpu_list=5 --exp_name=vp-faster-withtd-nonoise"
+    "--gpu_list=6 --exp_name=vp-faster-withtd-nonoise"
+    "--gpu_list=7 --exp_name=vp-faster-withtd-nonoise"
 
 )
 

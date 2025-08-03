@@ -1728,7 +1728,7 @@ if __name__ == "__main__":
                         rewards_batch.to(device),
                         actor_hidden_batch,
                     )
-                policy_noise = 0.2
+                policy_noise = 0.0
 
                 noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
 
