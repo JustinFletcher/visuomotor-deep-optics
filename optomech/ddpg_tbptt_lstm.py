@@ -1403,8 +1403,6 @@ if __name__ == "__main__":
                 else:
                     
                     actions = np.array([(actor.action_scale.cpu() * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
-                
-                noisy_actions = actions.copy()
 
                 # Now we'll get the hidden states for the actor and critics, but ignore the outputs.
                 with torch.no_grad():
@@ -1448,21 +1446,21 @@ if __name__ == "__main__":
                     
                     # Sample and add noise to the actions, then clip to action space bounds.
                     noise = noise_generator.sample().to(device)
-                    noisy_actions += noise
-                    noisy_actions = noisy_actions.cpu().numpy().clip(
+                    actions += noise
+                    actions = actions.cpu().numpy().clip(
                         actor.action_scale.cpu().numpy() * envs.single_action_space.low,
                         actor.action_scale.cpu().numpy() * envs.single_action_space.high)
                     
                     qf1_a_values, new_qf1_hidden = qf1(
                         torch.tensor(obs).to(device),
-                        torch.tensor(noisy_actions).to(device),
+                        torch.tensor(actions).to(device),
                         torch.tensor(prior_actions).to(device),
                         torch.tensor(prior_rewards).to(torch.float32).to(device),
                         qf1_hidden
                     )
                     qf2_a_values, new_qf2_hidden = qf2(
                         torch.tensor(obs).to(device),
-                        torch.tensor(noisy_actions).to(device),
+                        torch.tensor(actions).to(device),
                         torch.tensor(prior_actions).to(device),
                         torch.tensor(prior_rewards).to(torch.float32).to(device),
                         qf2_hidden
@@ -1478,7 +1476,7 @@ if __name__ == "__main__":
             prior_rewards = rewards.copy()
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, rewards, terminations, truncations, infos = envs.step(noisy_actions)
+            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
             # If the obs are 8bit images, convert to float32 and rescale.
             if torch.tensor(obs).dtype != torch.float32:
@@ -1496,8 +1494,7 @@ if __name__ == "__main__":
             # If we've hit a writing interval, log the data.
             if iteration % args.writer_interval == 0 and (global_step > args.learning_starts + args.actor_training_delay):
                 if global_step > args.learning_starts + args.actor_training_delay:
-                    writer.add_scalar("online/clean_action_mean", actions.mean().item(), global_step)
-                    writer.add_scalar("online/noisy_action_mean", noisy_actions.mean().item(), global_step)
+                    writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
                     writer.add_scalar("online/action_std", actions.std().item(), global_step)
                     # writer.add_scalar("online/actions_l2", torch.norm(actions, p=2), global_step)
                     writer.add_scalar("online/reward_mean/", np.mean(rewards), global_step)
