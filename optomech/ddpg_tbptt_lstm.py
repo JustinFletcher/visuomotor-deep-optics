@@ -442,12 +442,6 @@ class ImpalaActor(nn.Module):
                 hidden: Tuple[Tuple[torch.Tensor], Tuple[torch.Tensor]]
         ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
 
-        # if hidden is None:
-        #     die
-        #     h_0 = torch.zeros(self.lstm_num_layers, o.size(0), self.lstm_hidden_dim, dtype=o.dtype, device=o.device)
-        #     c_0 = torch.zeros(self.lstm_num_layers, o.size(0), self.lstm_hidden_dim, dtype=o.dtype, device=o.device)
-        #     hidden = (h_0, c_0)
-
         # batch_size, seq_len, channels, height, width = o.shape
 
         # Handle channels-last environments.
@@ -641,7 +635,7 @@ class ImpalaCritic(nn.Module):
                 std=1.0
             ),
             nn.LayerNorm(fc_scale),
-            nn.Tanh(),
+            nn.ReLU(),
             layer_init(
                 nn.Linear(fc_scale,
                           1
@@ -684,7 +678,6 @@ class ImpalaCritic(nn.Module):
             h0, c0 = hidden
             h0 = torch.cat(hidden[0], dim=0).unsqueeze(0)  # → [1,4,128]
             c0 = torch.cat(hidden[1], dim=0).unsqueeze(0) 
-            hidden = (h0, c0)
 
             a_prior = a_prior.squeeze(-2)
             a = a.squeeze(-2)
@@ -692,6 +685,8 @@ class ImpalaCritic(nn.Module):
         else:
 
             r_prior = r_prior.unsqueeze(-1)
+            h0 = hidden[0][0].unsqueeze(0)  # → [1,4,128]
+            c0 = hidden[1][0].unsqueeze(0)  # → [1,4,128]
 
         # Extract visual feature maps
         x_o = self.visual_encoder(o)
@@ -706,14 +701,9 @@ class ImpalaCritic(nn.Module):
         # print(f"[r_prior] shape: {r_prior.shape}")
 
         x = torch.cat([x, a, a_prior, r_prior], dim=-1)
-
-        if hidden is None:
-            hidden = self.get_zero_hidden()
-        h0, c0 = hidden
-        h0, c0 = h0.detach(), c0.detach()
-
-
-        x, new_hidden = self.lstm(x, hidden)
+        h0 = h0.detach()
+        c0 = c0.detach()
+        x, new_hidden = self.lstm(x, (h0, c0))
 
         # Get the last step output from the LSTM
         # if sequence_input:
@@ -980,7 +970,7 @@ if __name__ == "__main__":
 
     # Potential-based reward shaping https://arxiv.org/pdf/2502.01307
     if args.use_q_bias:
-        reward_sample_episodes = 10
+        reward_sample_episodes = 32
         episode_rewards = []
         # Sample some random rewards to compute the q bias.
         # This is a hacky way to get the expected reward.
