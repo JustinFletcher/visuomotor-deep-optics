@@ -505,6 +505,8 @@ class ImpalaActor(nn.Module):
         h0 = h0.detach()
         c0 = c0.detach()
         x, new_hidden = self.lstm(x, (h0, c0))
+        # Detach hidden state to prevent gradient leakage across TBPTT segments
+        new_hidden = (new_hidden[0].detach(), new_hidden[1].detach())
 
 
         # Get the last step output from the LSTM
@@ -714,6 +716,8 @@ class ImpalaCritic(nn.Module):
         h0 = h0.detach()
         c0 = c0.detach()
         x, new_hidden = self.lstm(x, (h0, c0))
+        # Detach hidden state to prevent gradient leakage across TBPTT segments
+        new_hidden = (new_hidden[0].detach(), new_hidden[1].detach())
 
         # Get the last step output from the LSTM
         # if sequence_input:
@@ -1798,7 +1802,8 @@ if __name__ == "__main__":
             # [16,], [8,2,16]
 
             print("qf1_a_values_batch shape:", qf1_a_values_batch.shape)
-            qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
+            # qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
+            qf1_loss = F.mse_loss(qf1_a_values_batch.view(-1), next_q_value_batch.view(-1))
             if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
             qf1_optimizer.zero_grad()
@@ -1813,7 +1818,8 @@ if __name__ == "__main__":
             # Step the critic optimizers.
             qf1_optimizer.step()
 
-            qf2_loss = F.mse_loss(qf2_a_values_batch, next_q_value_batch)
+            # qf2_loss = F.mse_loss(qf2_a_values_batch, next_q_value_batch)
+            qf2_loss = F.mse_loss(qf2_a_values_batch.view(-1), next_q_value_batch.view(-1))
             if iteration % args.writer_interval == 0:
                 qf2_grad = get_grad_norm(qf2)
             qf2_optimizer.zero_grad()
