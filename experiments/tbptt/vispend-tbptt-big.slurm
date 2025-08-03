@@ -71,7 +71,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --writer_interval=100 \
         --save_model \
         --num_eval_rollouts=10 \
-        --model_save_interval=100_000 \
+        --model_save_interval=20_000 \
         $VARIANT &  # Run in background
 done
 
