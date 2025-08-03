@@ -1403,6 +1403,8 @@ if __name__ == "__main__":
                 else:
                     
                     actions = np.array([(actor.action_scale.cpu() * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
+                
+                noisy_actions = actions.copy()
 
                 # Now we'll get the hidden states for the actor and critics, but ignore the outputs.
                 with torch.no_grad():
