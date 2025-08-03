@@ -20,12 +20,12 @@ VARIANTS=(
 
     "--gpu_list=0 --tbptt_seq_len=2 --use_q_bias --exp_name=vp-qbias-short"
     "--gpu_list=1 --tbptt_seq_len=2 --use_q_bias --exp_name=vp-qbias-short"
-    "--gpu_list=2 --tbptt_seq_len=16 --use_q_bias --exp_name=vp-qbias-long"
-    "--gpu_list=3 --tbptt_seq_len=16 --use_q_bias --exp_name=vp-qbias-long"
+    "--gpu_list=2 --tbptt_seq_len=32 --use_q_bias --exp_name=vp-qbias-long"
+    "--gpu_list=3 --tbptt_seq_len=32 --use_q_bias --exp_name=vp-qbias-long"
     "--gpu_list=4 --tbptt_seq_len=2 --exp_name=vp-noqbias-short"
     "--gpu_list=5 --tbptt_seq_len=2 --exp_name=vp-noqbias-short"
-    "--gpu_list=6 --tbptt_seq_len=16 --exp_name=vp-noqbias-long"
-    "--gpu_list=7 --tbptt_seq_len=16 --exp_name=vp-noqbias-long"
+    "--gpu_list=6 --tbptt_seq_len=32 --exp_name=vp-noqbias-long"
+    "--gpu_list=7 --tbptt_seq_len=32 --exp_name=vp-noqbias-long"
 
 )
 
@@ -71,7 +71,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --writer_interval=100 \
         --save_model \
         --num_eval_rollouts=10 \
-        --model_save_interval=20_000 \
+        --model_save_interval=10_000 \
         $VARIANT &  # Run in background
 done
 
