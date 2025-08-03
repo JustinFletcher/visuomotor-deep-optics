@@ -52,21 +52,21 @@ for VARIANT in "${VARIANTS[@]}"; do
         --tau=0.0001 \
         --policy_frequency=2 \
         --reward_scale=0.1 \
-        --max_grad_norm=100.0 \
+        --max_grad_norm=1.0 \
         --buffer_size=10_000 \
         --learning_starts=10_000 \
         --experience_sampling_delay=0_000 \
-        --actor_training_delay=40_000 \
+        --actor_training_delay=10_000 \
         --actor_type=impala \
         --critic_type=impala \
-        --actor_learning_rate=1e-3 \
-        --critic_learning_rate=1e-3 \
+        --actor_learning_rate=1e-5 \
+        --critic_learning_rate=1e-4 \
         --qnetwork_channel_scale=32 \
         --actor_channel_scale=32 \
         --actor_fc_scale=256 \
         --qnetwork_fc_scale=256 \
         --action_scale=2.0 \
-        --exploration_noise=0.1 \
+        --exploration_noise=0.01 \
         --decay_rate=0.995 \
         --writer_interval=100 \
         --save_model \
