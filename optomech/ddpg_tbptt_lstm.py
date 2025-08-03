@@ -317,26 +317,6 @@ class ImpalaActor(nn.Module):
             input_channels = obs_shape[0]
 
         # Define the visual encoder, so that we know the output shape.
-        # self.visual_encoder = nn.Sequential(
-        #     conv_init(
-        #         nn.Conv2d(input_channels, 
-        #                   channel_scale,
-        #                   kernel_size=8,
-        #                   stride=4)),
-        #     nn.ReLU(),
-        #     conv_init(
-        #         nn.Conv2d(channel_scale,
-        #                   channel_scale * 2,
-        #                   kernel_size=4,
-        #                   stride=2)),
-        #     nn.ReLU(),
-        #     conv_init(
-        #         nn.Conv2d(channel_scale * 2,
-        #                   channel_scale * 4,
-        #                   kernel_size=2,
-        #                   stride=2)),
-        #     nn.ReLU(),
-        # )
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
@@ -350,7 +330,27 @@ class ImpalaActor(nn.Module):
                           kernel_size=4,
                           stride=2)),
             nn.ReLU(),
+            conv_init(
+                nn.Conv2d(channel_scale * 2,
+                          channel_scale * 4,
+                          kernel_size=2,
+                          stride=2)),
+            nn.ReLU(),
         )
+        # self.visual_encoder = nn.Sequential(
+        #     conv_init(
+        #         nn.Conv2d(input_channels, 
+        #                   channel_scale,
+        #                   kernel_size=8,
+        #                   stride=4)),
+        #     nn.ReLU(),
+        #     conv_init(
+        #         nn.Conv2d(channel_scale,
+        #                   channel_scale * 2,
+        #                   kernel_size=4,
+        #                   stride=2)),
+        #     nn.ReLU(),
+        # )
 
         # Get the output shape of the visual encoder
         with torch.inference_mode():
@@ -556,43 +556,43 @@ class ImpalaCritic(nn.Module):
             input_channels = obs_shape[0]
 
         # Define the visual encoder, so that we know the output shape.
-        # self.visual_encoder = nn.Sequential(
-        #     conv_init(
-        #         nn.Conv2d(input_channels, 
-        #                   channel_scale,
-        #                   kernel_size=8,
-        #                   stride=4),
-        #         ),
-        #     nn.ReLU(),
-        #     conv_init(
-        #         nn.Conv2d(channel_scale,
-        #                   channel_scale * 2,
-        #                   kernel_size=4,
-        #                   stride=2)
-        #         ),
-        #     nn.ReLU(),
-        #     conv_init(
-        #         nn.Conv2d(channel_scale * 2,
-        #                   channel_scale * 4,
-        #                   kernel_size=2,
-        #                   stride=2)),
-        #     nn.ReLU(),
-        # )
-
         self.visual_encoder = nn.Sequential(
             conv_init(
                 nn.Conv2d(input_channels, 
                           channel_scale,
                           kernel_size=8,
-                          stride=4)),
+                          stride=4),
+                ),
             nn.ReLU(),
             conv_init(
                 nn.Conv2d(channel_scale,
                           channel_scale * 2,
                           kernel_size=4,
+                          stride=2)
+                ),
+            nn.ReLU(),
+            conv_init(
+                nn.Conv2d(channel_scale * 2,
+                          channel_scale * 4,
+                          kernel_size=2,
                           stride=2)),
             nn.ReLU(),
         )
+
+        # self.visual_encoder = nn.Sequential(
+        #     conv_init(
+        #         nn.Conv2d(input_channels, 
+        #                   channel_scale,
+        #                   kernel_size=8,
+        #                   stride=4)),
+        #     nn.ReLU(),
+        #     conv_init(
+        #         nn.Conv2d(channel_scale,
+        #                   channel_scale * 2,
+        #                   kernel_size=4,
+        #                   stride=2)),
+        #     nn.ReLU(),
+        # )
 
         # Get the output shape of the visual encoder
         with torch.inference_mode():
@@ -1725,7 +1725,7 @@ if __name__ == "__main__":
                         prior_rewards_batch.to(device),
                         actor_hidden_batch,
                     )
-                policy_noise = 0.01
+                policy_noise = 0.2
 
                 noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
 
