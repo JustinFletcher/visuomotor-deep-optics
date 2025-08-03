@@ -435,8 +435,8 @@ class ImpalaActor(nn.Module):
         Shapes:
           h, c: [num_layers=1, batch_size, hidden_dim]
         """
-        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
-        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
+        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).detach().to(self.device)
+        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).detach().to(self.device)
         return (h, c)
 
 
@@ -663,8 +663,8 @@ class ImpalaCritic(nn.Module):
         Shapes:
           h, c: [num_layers=1, batch_size, hidden_dim]
         """
-        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
-        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).to(self.device)
+        h = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).detach().to(self.device)
+        c = torch.zeros(self.lstm_num_layers, self.lstm_hidden_dim,).detach().to(self.device)
         return (h, c)
 
     def forward(self, o, a, a_prior, r_prior, hidden=None):
@@ -1705,7 +1705,6 @@ if __name__ == "__main__":
              dones_batch) = rb.sample(args.batch_size,
                                       device=device,)
             
-            # Print the size od the hiddens
             
                         
             observations_batch =      torch.tensor(np.array(observations_batch), dtype=torch.float32, device=device)
@@ -1800,10 +1799,13 @@ if __name__ == "__main__":
             # Compute and apply the critic losses.
             # (input, target)
             # [16,], [8,2,16]
+            # TODO: Try just using the last action in the sequence.
+            # TODO: Try not bootstrapping the next q value batch.
 
             print("qf1_a_values_batch shape:", qf1_a_values_batch.shape)
             # qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
-            qf1_loss = F.mse_loss(qf1_a_values_batch.view(-1), next_q_value_batch.view(-1))
+            # qf1_loss = F.mse_loss(qf1_a_values_batch.view(-1), next_q_value_batch.view(-1))
+            qf1_loss = F.mse_loss(qf1_a_values_batch[:, -1, :], next_q_value_batch[:, -1, :])
             if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
             qf1_optimizer.zero_grad()
