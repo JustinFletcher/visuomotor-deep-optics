@@ -71,7 +71,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --decay_rate=0.995 \
         --writer_interval=100 \
         --target_smoothing \
-        --tbptt_seq_len=256 \
+        --tbptt_seq_len=16 \
         --save_model \
         --num_eval_rollouts=10 \
         --model_save_interval=10_000 \
