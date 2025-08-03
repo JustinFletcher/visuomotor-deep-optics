@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --tbptt_seq_len=2 --use_q_bias --exp_name=vp-qbias-short"
-    "--gpu_list=1 --tbptt_seq_len=2 --use_q_bias --exp_name=vp-qbias-short"
-    "--gpu_list=2 --tbptt_seq_len=32 --use_q_bias --exp_name=vp-qbias-long"
-    "--gpu_list=3 --tbptt_seq_len=32 --use_q_bias --exp_name=vp-qbias-long"
-    "--gpu_list=4 --tbptt_seq_len=2 --exp_name=vp-noqbias-short"
-    "--gpu_list=5 --tbptt_seq_len=2 --exp_name=vp-noqbias-short"
-    "--gpu_list=6 --tbptt_seq_len=32 --exp_name=vp-noqbias-long"
-    "--gpu_list=7 --tbptt_seq_len=32 --exp_name=vp-noqbias-long"
+    "--gpu_list=0 --exp_name=vp"
+    "--gpu_list=1 --exp_name=vp"
+    "--gpu_list=2 --exp_name=vp"
+    "--gpu_list=3 --exp_name=vp"
+    "--gpu_list=4 --exp_name=vp"
+    "--gpu_list=5 --exp_name=vp"
+    "--gpu_list=6 --exp_name=vp"
+    "--gpu_list=7 --exp_name=vp"
 
 )
 
@@ -48,27 +48,30 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=32 \
-        --tau=0.0001 \
-        --policy_frequency=2 \
+        --batch_size=64 \
+        --tau=0.0004 \
+        --policy_frequency=4 \
         --reward_scale=1.0 \
-        --max_grad_norm=10000.0 \
-        --buffer_size=100_000 \
-        --learning_starts=50_000 \
+        --max_grad_norm=100000.0 \
+        --buffer_size=1_000_000 \
+        --learning_starts=256 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=0_000 \
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
         --critic_learning_rate=1e-4 \
-        --qnetwork_channel_scale=32 \
-        --actor_channel_scale=32 \
-        --actor_fc_scale=256 \
-        --qnetwork_fc_scale=256 \
+        --qnetwork_channel_scale=4 \
+        --actor_channel_scale=4 \
+        --actor_fc_scale=64 \
+        --qnetwork_fc_scale=64 \
+        --lstm_hidden_dim=16 \
         --action_scale=2.0 \
         --exploration_noise=0.1 \
         --decay_rate=0.995 \
         --writer_interval=100 \
+        --target_smoothing \
+        --tbptt_seq_len=256 \
         --save_model \
         --num_eval_rollouts=10 \
         --model_save_interval=10_000 \
