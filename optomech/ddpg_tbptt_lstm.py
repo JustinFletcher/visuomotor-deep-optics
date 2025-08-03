@@ -374,7 +374,7 @@ class ImpalaActor(nn.Module):
                     mlp_output_size),
                 std=np.sqrt(2.0)
             ),
-            nn.LayerNorm(mlp_output_size),
+            # nn.LayerNorm(mlp_output_size),
             nn.ReLU(),
         )
 
@@ -402,7 +402,7 @@ class ImpalaActor(nn.Module):
                         ),
                 std=1e-3
             ),
-            nn.LayerNorm(fc_scale),
+            # nn.LayerNorm(fc_scale),
             nn.ReLU(),
             uniform_init(
                 nn.Linear(
@@ -618,7 +618,7 @@ class ImpalaCritic(nn.Module):
                     mlp_output_size),
                 std=np.sqrt(2)
             ),
-            nn.LayerNorm(mlp_output_size),
+            # nn.LayerNorm(mlp_output_size),
             nn.ReLU(),
         )
 
@@ -646,7 +646,7 @@ class ImpalaCritic(nn.Module):
                     ),
                 std=1.0
             ),
-            nn.LayerNorm(fc_scale),
+            # nn.LayerNorm(fc_scale),
             nn.ReLU(),
             layer_init(
                 nn.Linear(fc_scale,
