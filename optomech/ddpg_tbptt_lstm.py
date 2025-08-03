@@ -337,6 +337,10 @@ class ImpalaActor(nn.Module):
                           stride=2)),
             nn.ReLU(),
         )
+
+        self.visual_encoder = nn.Sequential(
+            nn.Flatten(),
+        )
         # self.visual_encoder = nn.Sequential(
         #     conv_init(
         #         nn.Conv2d(input_channels, 
@@ -573,6 +577,11 @@ class ImpalaCritic(nn.Module):
                           stride=2)),
             nn.ReLU(),
         )
+
+        self.visual_encoder = nn.Sequential(
+            nn.Flatten(),
+        )
+
 
         # self.visual_encoder = nn.Sequential(
         #     conv_init(
