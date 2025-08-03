@@ -1769,8 +1769,8 @@ if __name__ == "__main__":
                 # Take the last reward and done from the batch, since we are using TBPTT.
                 # TODO: If this doens't work, try using the full sequence - it was definitely broken before becuase of the silent broadcasting.
                 # next_q_value_batch = rewards_batch[:, -1, :].flatten() + (1 - dones_batch[:, -1, :].flatten()) * args.gamma * (qf1_next_target_batch[:, -1, :].flatten())
-                # next_q_value_batch = rewards_batch + (1 - dones_batch) * args.gamma * (qf1_next_target_batch)
-                next_q_value_batch = rewards_batch
+                next_q_value_batch = rewards_batch + (1 - dones_batch) * args.gamma * (qf1_next_target_batch)
+                # next_q_value_batch = rewards_batch
 
 
                 # rewards_batch shape: torch.Size([8, 2, 1])
