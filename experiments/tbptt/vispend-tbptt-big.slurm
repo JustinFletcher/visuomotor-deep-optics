@@ -56,7 +56,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --buffer_size=10_000 \
         --learning_starts=10_000 \
         --experience_sampling_delay=0_000 \
-        --actor_training_delay=100_000 \
+        --actor_training_delay=0_000 \
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-5 \
