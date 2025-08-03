@@ -1769,7 +1769,9 @@ if __name__ == "__main__":
                 # Take the last reward and done from the batch, since we are using TBPTT.
                 # TODO: If this doens't work, try using the full sequence - it was definitely broken before becuase of the silent broadcasting.
                 # next_q_value_batch = rewards_batch[:, -1, :].flatten() + (1 - dones_batch[:, -1, :].flatten()) * args.gamma * (qf1_next_target_batch[:, -1, :].flatten())
-                next_q_value_batch = rewards_batch + (1 - dones_batch) * args.gamma * (qf1_next_target_batch)
+                # next_q_value_batch = rewards_batch + (1 - dones_batch) * args.gamma * (qf1_next_target_batch)
+                next_q_value_batch = rewards_batch
+
 
                 # rewards_batch shape: torch.Size([8, 2, 1])
                 # dones_batch shape: torch.Size([8, 2, 1])
@@ -1803,9 +1805,9 @@ if __name__ == "__main__":
             # TODO: Try not bootstrapping the next q value batch.
 
             print("qf1_a_values_batch shape:", qf1_a_values_batch.shape)
-            # qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
+            qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
             # qf1_loss = F.mse_loss(qf1_a_values_batch.view(-1), next_q_value_batch.view(-1))
-            qf1_loss = F.mse_loss(qf1_a_values_batch[:, -1, :], next_q_value_batch[:, -1, :])
+            # qf1_loss = F.mse_loss(qf1_a_values_batch[:, -1, :], next_q_value_batch[:, -1, :])
             if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
             qf1_optimizer.zero_grad()
