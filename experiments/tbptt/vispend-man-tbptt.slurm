@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name=vpm"
-    "--gpu_list=1 --exp_name=vpm"
-    "--gpu_list=2 --exp_name=vpm"
-    "--gpu_list=3 --exp_name=vpm"
-    "--gpu_list=4 --exp_name=vpm"
-    "--gpu_list=5 --exp_name=vpm"
-    "--gpu_list=6 --exp_name=vpm"
-    "--gpu_list=7 --exp_name=vpm"
+    "--gpu_list=0 --exp_name=vp-smaller"
+    "--gpu_list=1 --exp_name=vp-smaller"
+    "--gpu_list=2 --exp_name=vp-smaller"
+    "--gpu_list=3 --exp_name=vp-smaller"
+    "--gpu_list=4 --exp_name=vp-smaller"
+    "--gpu_list=5 --exp_name=vp-smaller"
+    "--gpu_list=6 --exp_name=vp-smaller"
+    "--gpu_list=7 --exp_name=vp-smaller"
 
 )
 
@@ -72,6 +72,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --writer_interval=100 \
         --target_smoothing \
         --tbptt_seq_len=8 \
+        --use_q_bias \
+        --normalize_returns \
         --save_model \
         --num_eval_rollouts=10 \
         --model_save_interval=10_000 \
