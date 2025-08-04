@@ -48,7 +48,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=64 \
+        --batch_size=32 \
         --tau=0.0004 \
         --policy_frequency=2 \
         --reward_scale=1.0 \
@@ -63,15 +63,15 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_learning_rate=3e-4 \
         --qnetwork_channel_scale=16 \
         --actor_channel_scale=16 \
-        --actor_fc_scale=512 \
-        --qnetwork_fc_scale=512 \
+        --actor_fc_scale=256 \
+        --qnetwork_fc_scale=256 \
         --lstm_hidden_dim=128 \
         --action_scale=2.0 \
         --exploration_noise=0.1 \
         --decay_rate=0.995 \
         --writer_interval=100 \
         --target_smoothing \
-        --tbptt_seq_len=16 \
+        --tbptt_seq_len=8 \
         --save_model \
         --num_eval_rollouts=10 \
         --model_save_interval=10_000 \
