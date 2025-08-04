@@ -1889,8 +1889,8 @@ if __name__ == "__main__":
                         qf1_hidden_batch
                     )
                     actor_loss = -loss_qvalues.mean()
-                    actor_loss_total += actor_loss
-                    
+                    actor_loss_total = actor_loss_total + actor_loss
+        
 
 
             clip_gradients = True
