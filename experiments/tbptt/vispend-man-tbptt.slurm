@@ -18,21 +18,21 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name=vp-faster-withtd-nonoise"
-    "--gpu_list=1 --exp_name=vp-faster-withtd-nonoise"
-    "--gpu_list=2 --exp_name=vp-faster-withtd-nonoise"
-    "--gpu_list=3 --exp_name=vp-faster-withtd-nonoise"
-    "--gpu_list=4 --exp_name=vp-faster-withtd-nonoise"
-    "--gpu_list=5 --exp_name=vp-faster-withtd-nonoise"
-    "--gpu_list=6 --exp_name=vp-faster-withtd-nonoise"
-    "--gpu_list=7 --exp_name=vp-faster-withtd-nonoise"
+    "--gpu_list=0 --exp_name=vpm"
+    "--gpu_list=1 --exp_name=vpm"
+    "--gpu_list=2 --exp_name=vpm"
+    "--gpu_list=3 --exp_name=vpm"
+    "--gpu_list=4 --exp_name=vpm"
+    "--gpu_list=5 --exp_name=vpm"
+    "--gpu_list=6 --exp_name=vpm"
+    "--gpu_list=7 --exp_name=vpm"
 
 )
 
 cd ~/visuomotor-deep-optics/
 # Run all variants in parallel
 for VARIANT in "${VARIANTS[@]}"; do
-    poetry run python ./optomech/ddpg_tbptt_lstm.py \
+    poetry run python ./optomech/ddpg_manual_tbptt_lstm.py \
         --env-id VisualPendulum-v1 \
         --object_type=single \
         --max_episode_steps=256 \
@@ -54,18 +54,18 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_scale=1.0 \
         --max_grad_norm=100000.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=20_000 \
+        --learning_starts=50_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=0_000 \
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
         --critic_learning_rate=3e-4 \
-        --qnetwork_channel_scale=4 \
-        --actor_channel_scale=4 \
-        --actor_fc_scale=256 \
-        --qnetwork_fc_scale=256 \
-        --lstm_hidden_dim=64 \
+        --qnetwork_channel_scale=16 \
+        --actor_channel_scale=16 \
+        --actor_fc_scale=512 \
+        --qnetwork_fc_scale=512 \
+        --lstm_hidden_dim=128 \
         --action_scale=2.0 \
         --exploration_noise=0.1 \
         --decay_rate=0.995 \
