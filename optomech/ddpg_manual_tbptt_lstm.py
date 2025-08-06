@@ -312,109 +312,131 @@ class ImpalaActor(nn.Module):
         if obs_shape[-1] < obs_shape[0]:
             self.channels_last = True
             input_channels = obs_shape[-1]
+            input_shape = obs_shape[:-1]
         else:
             self.channels_last = False
             input_channels = obs_shape[0]
-
-        # Define the visual encoder, so that we know the output shape.
-        self.visual_encoder = nn.Sequential(
-            conv_init(
-                nn.Conv2d(input_channels, 
-                          channel_scale,
-                          kernel_size=8,
-                          stride=4)),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(channel_scale,
-                          channel_scale * 2,
-                          kernel_size=4,
-                          stride=2)),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(channel_scale * 2,
-                          channel_scale * 4,
-                          kernel_size=2,
-                          stride=2)),
-            nn.ReLU(),
-        )
-
-        # self.visual_encoder = nn.Sequential(
-        #     nn.Flatten(),
-        # )
-        # self.visual_encoder = nn.Sequential(
-        #     conv_init(
-        #         nn.Conv2d(input_channels, 
-        #                   channel_scale,
-        #                   kernel_size=8,
-        #                   stride=4)),
-        #     nn.ReLU(),
-        #     conv_init(
-        #         nn.Conv2d(channel_scale,
-        #                   channel_scale * 2,
-        #                   kernel_size=4,
-        #                   stride=2)),
-        #     nn.ReLU(),
-        # )
-
-        # Get the output shape of the visual encoder
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            visual_output_shape = self.visual_encoder(x).shape
-    
-        mlp_output_size = fc_scale
-        self.mlp = nn.Sequential(
-            nn.Flatten(),
-            layer_init(
-                nn.Linear(
-                    int(np.prod(visual_output_shape[1:])),
-                    mlp_output_size),
-                std=np.sqrt(2)
-            ),
-            # nn.LayerNorm(mlp_output_size),
-            nn.ReLU(),
-        )
+            input_shape = obs_shape[1:]
 
 
-        self.lstm = init_lstm_weights(nn.LSTM(
-            input_size=mlp_output_size + vector_action_size + 1,
-            hidden_size=self.lstm_hidden_dim,
-            num_layers=self.lstm_num_layers,
-            batch_first=True
-        ))
+        self.debug = True
 
-        # Get the output shape of the LSTM
-        with torch.inference_mode():            
+
+
+        if self.debug:
+
+            self.debugnet = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(int(np.prod(input_shape)), fc_scale),
+                nn.ReLU(),
+                nn.Linear(fc_scale, fc_scale // 2),
+                nn.ReLU(),
+                nn.Linear(fc_scale // 2, int(np.prod(envs.single_action_space.shape))),
+                nn.Tanh(),
+            )
+
+
+        else:
+
+            # Define the visual encoder, so that we know the output shape.
+            self.visual_encoder = nn.Sequential(
+                conv_init(
+                    nn.Conv2d(input_channels, 
+                            channel_scale,
+                            kernel_size=8,
+                            stride=4)),
+                nn.ReLU(),
+                conv_init(
+                    nn.Conv2d(channel_scale,
+                            channel_scale * 2,
+                            kernel_size=4,
+                            stride=2)),
+                nn.ReLU(),
+                conv_init(
+                    nn.Conv2d(channel_scale * 2,
+                            channel_scale * 4,
+                            kernel_size=2,
+                            stride=2)),
+                nn.ReLU(),
+            )
+
+            # self.visual_encoder = nn.Sequential(
+            #     nn.Flatten(),
+            # )
+            # self.visual_encoder = nn.Sequential(
+            #     conv_init(
+            #         nn.Conv2d(input_channels, 
+            #                   channel_scale,
+            #                   kernel_size=8,
+            #                   stride=4)),
+            #     nn.ReLU(),
+            #     conv_init(
+            #         nn.Conv2d(channel_scale,
+            #                   channel_scale * 2,
+            #                   kernel_size=4,
+            #                   stride=2)),
+            #     nn.ReLU(),
+            # )
+
+            # Get the output shape of the visual encoder
+            with torch.inference_mode():
+
+                # Handle channels-last environments.
+                x = torch.zeros(1, *obs_shape)
+                if self.channels_last:
+                    x = x.permute(0, 3, 1, 2)
+                visual_output_shape = self.visual_encoder(x).shape
         
-            x = torch.zeros(1, mlp_output_size + vector_action_size + 1)
+            mlp_output_size = fc_scale
+            self.mlp = nn.Sequential(
+                nn.Flatten(),
+                layer_init(
+                    nn.Linear(
+                        int(np.prod(visual_output_shape[1:])),
+                        mlp_output_size),
+                    std=np.sqrt(2)
+                ),
+                # nn.LayerNorm(mlp_output_size),
+                nn.ReLU(),
+            )
 
-            pre_head_output_shape = self.lstm(x)[0].shape
 
-        # Build the action head following the convolutional LSTM
-        self.action_head = nn.Sequential(
-            layer_init(
-                nn.Linear(
-                    int(np.prod(pre_head_output_shape[1:])),
-                    fc_scale,
-                        ),
-                std=np.sqrt(2)
-            ),
-            # nn.LayerNorm(fc_scale),
-            nn.ReLU(),
-            uniform_init(
-                nn.Linear(
-                    fc_scale,
-                    int(np.prod(envs.single_action_space.shape))
-                        ),
-                lower_bound=-1e-4,
-                upper_bound=1e-4
-            ),
-            nn.Tanh()
-        )
-                                
+            self.lstm = init_lstm_weights(nn.LSTM(
+                input_size=mlp_output_size + vector_action_size + 1,
+                hidden_size=self.lstm_hidden_dim,
+                num_layers=self.lstm_num_layers,
+                batch_first=True
+            ))
+
+            # Get the output shape of the LSTM
+            with torch.inference_mode():            
+            
+                x = torch.zeros(1, mlp_output_size + vector_action_size + 1)
+
+                pre_head_output_shape = self.lstm(x)[0].shape
+
+            # Build the action head following the convolutional LSTM
+            self.action_head = nn.Sequential(
+                layer_init(
+                    nn.Linear(
+                        int(np.prod(pre_head_output_shape[1:])),
+                        fc_scale,
+                            ),
+                    std=np.sqrt(2)
+                ),
+                # nn.LayerNorm(fc_scale),
+                nn.ReLU(),
+                uniform_init(
+                    nn.Linear(
+                        fc_scale,
+                        int(np.prod(envs.single_action_space.shape))
+                            ),
+                    lower_bound=-1e-4,
+                    upper_bound=1e-4
+                ),
+                nn.Tanh()
+            )
+                                    
         # action rescaling
         self.register_buffer(
             # "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
@@ -425,9 +447,6 @@ class ImpalaActor(nn.Module):
             "action_bias", torch.tensor(0.0, dtype=torch.float32)
         )
 
-        # Important: Set the hidden state to None initially.
-
-        # self.hidden = self.init_hidden()
 
     def get_zero_hidden(self):
         """
@@ -446,6 +465,7 @@ class ImpalaActor(nn.Module):
                 r_prior,
                 hidden: Tuple[torch.Tensor, torch.Tensor]
         ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+
 
         batch_input = len(o.shape) == 5
 
@@ -468,25 +488,31 @@ class ImpalaActor(nn.Module):
             # print(f"[o] shape after permute: {o.shape}")
 
 
-        x_o = self.visual_encoder(o)
-        x = self.mlp(x_o)
+
+        a = self.debugnet(o)
+        new_hidden = self.get_zero_hidden()
+
+        # else:
+
+        #     x_o = self.visual_encoder(o)
+        #     x = self.mlp(x_o)
 
 
-        # print(f"[x] shape before concat: {x.shape}")
-        # print(f"[a_prior] shape: {a_prior.shape}")
-        # print(f"[r_prior] shape: {r_prior.shape}")
-        x = torch.cat([x, a_prior, r_prior], dim=-1)
-        
-        if batch_input:
-            x = x.unsqueeze(1)  # Add sequence dimension
+        #     # print(f"[x] shape before concat: {x.shape}")
+        #     # print(f"[a_prior] shape: {a_prior.shape}")
+        #     # print(f"[r_prior] shape: {r_prior.shape}")
+        #     x = torch.cat([x, a_prior, r_prior], dim=-1)
+            
+        #     if batch_input:
+        #         x = x.unsqueeze(1)  # Add sequence dimension
 
-        h0 = hidden[0]
-        c0 = hidden[1]
-        x, new_hidden = self.lstm(x, (h0, c0))
+        #     h0 = hidden[0]
+        #     c0 = hidden[1]
+        #     x, new_hidden = self.lstm(x, (h0, c0))
 
-        a = self.action_head(x)
+        #     a = self.action_head(x)
 
-        a = (a * self.action_scale + self.action_bias)
+        #     a = (a * self.action_scale + self.action_bias)
 
         return a, new_hidden
 
@@ -518,113 +544,133 @@ class ImpalaCritic(nn.Module):
         obs_shape = envs.single_observation_space.shape
 
         # Check if this is a channels-last environment
+
+        # Check if this is a channels-last environment
         if obs_shape[-1] < obs_shape[0]:
             self.channels_last = True
             input_channels = obs_shape[-1]
+            input_shape = obs_shape[:-1]
         else:
             self.channels_last = False
             input_channels = obs_shape[0]
+            input_shape = obs_shape[1:]
 
-        # Define the visual encoder, so that we know the output shape.
-        self.visual_encoder = nn.Sequential(
-            conv_init(
-                nn.Conv2d(input_channels, 
-                          channel_scale,
-                          kernel_size=8,
-                          stride=4),
-                ),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(channel_scale,
-                          channel_scale * 2,
-                          kernel_size=4,
-                          stride=2)
-                ),
-            nn.ReLU(),
-            conv_init(
-                nn.Conv2d(channel_scale * 2,
-                          channel_scale * 4,
-                          kernel_size=2,
-                          stride=2)),
-            nn.ReLU(),
-        )
+        self.debug = True
 
-        # self.visual_encoder = nn.Sequential(
-        #     nn.Flatten(),
-        # )
+        if self.debug:
 
-
-        # self.visual_encoder = nn.Sequential(
-        #     conv_init(
-        #         nn.Conv2d(input_channels, 
-        #                   channel_scale,
-        #                   kernel_size=8,
-        #                   stride=4)),
-        #     nn.ReLU(),
-        #     conv_init(
-        #         nn.Conv2d(channel_scale,
-        #                   channel_scale * 2,
-        #                   kernel_size=4,
-        #                   stride=2)),
-        #     nn.ReLU(),
-        # )
-
-        # Get the output shape of the visual encoder
-        with torch.inference_mode():
-
-            # Handle channels-last environments.
-            x = torch.zeros(1, *obs_shape)
-            if self.channels_last:
-                x = x.permute(0, 3, 1, 2)
-            visual_output_shape = self.visual_encoder(x).shape
-
-        mlp_output_size = fc_scale
-        self.mlp = nn.Sequential(
-            nn.Flatten(),
-            layer_init(
-                nn.Linear(
-                    int(np.prod(visual_output_shape[1:])),
-                    mlp_output_size),
-                std=np.sqrt(2)
-            ),
-            # nn.LayerNorm(mlp_output_size),
-            nn.ReLU(),
-        )
-
-        self.lstm = init_lstm_weights(nn.LSTM(
-            input_size=mlp_output_size + vector_action_size + vector_action_size + 1,
-            hidden_size=self.lstm_hidden_dim,
-            num_layers=self.lstm_num_layers,
-            batch_first=True
-        ))
-
-        # Get the output shape of the LSTM
-        with torch.inference_mode():
-            x = torch.zeros(
-                1,
-                mlp_output_size + vector_action_size + vector_action_size + 1
+            self.debugnet = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(int(np.prod(input_shape)), fc_scale),
+                nn.ReLU(),
+                nn.Linear(fc_scale, fc_scale // 2),
+                nn.ReLU(),
+                nn.Linear(fc_scale // 2, 1),
             )
-            pre_head_output_shape = self.lstm(x)[0].shape
 
-        # Build the q head following the convolutional LSTM
-        self.q_head = nn.Sequential(
-            layer_init(
-                nn.Linear(
-                    int(np.prod(pre_head_output_shape[1:])),
-                    fc_scale
+        else:
+
+
+            # Define the visual encoder, so that we know the output shape.
+            self.visual_encoder = nn.Sequential(
+                conv_init(
+                    nn.Conv2d(input_channels, 
+                            channel_scale,
+                            kernel_size=8,
+                            stride=4),
                     ),
-                std=1.0
-            ),
-            # nn.LayerNorm(fc_scale),
-            nn.ReLU(),
-            layer_init(
-                nn.Linear(fc_scale,
-                          1
-                          ),
-                std=1.0,
-                bias_const=q_bias
-            ),
-        )
+                nn.ReLU(),
+                conv_init(
+                    nn.Conv2d(channel_scale,
+                            channel_scale * 2,
+                            kernel_size=4,
+                            stride=2)
+                    ),
+                nn.ReLU(),
+                conv_init(
+                    nn.Conv2d(channel_scale * 2,
+                            channel_scale * 4,
+                            kernel_size=2,
+                            stride=2)),
+                nn.ReLU(),
+            )
+
+            # self.visual_encoder = nn.Sequential(
+            #     nn.Flatten(),
+            # )
+
+
+            # self.visual_encoder = nn.Sequential(
+            #     conv_init(
+            #         nn.Conv2d(input_channels, 
+            #                   channel_scale,
+            #                   kernel_size=8,
+            #                   stride=4)),
+            #     nn.ReLU(),
+            #     conv_init(
+            #         nn.Conv2d(channel_scale,
+            #                   channel_scale * 2,
+            #                   kernel_size=4,
+            #                   stride=2)),
+            #     nn.ReLU(),
+            # )
+
+            # Get the output shape of the visual encoder
+            with torch.inference_mode():
+
+                # Handle channels-last environments.
+                x = torch.zeros(1, *obs_shape)
+                if self.channels_last:
+                    x = x.permute(0, 3, 1, 2)
+                visual_output_shape = self.visual_encoder(x).shape
+
+            mlp_output_size = fc_scale
+            self.mlp = nn.Sequential(
+                nn.Flatten(),
+                layer_init(
+                    nn.Linear(
+                        int(np.prod(visual_output_shape[1:])),
+                        mlp_output_size),
+                    std=np.sqrt(2)
+                ),
+                # nn.LayerNorm(mlp_output_size),
+                nn.ReLU(),
+            )
+
+            self.lstm = init_lstm_weights(nn.LSTM(
+                input_size=mlp_output_size + vector_action_size + vector_action_size + 1,
+                hidden_size=self.lstm_hidden_dim,
+                num_layers=self.lstm_num_layers,
+                batch_first=True
+            ))
+
+            # Get the output shape of the LSTM
+            with torch.inference_mode():
+                x = torch.zeros(
+                    1,
+                    mlp_output_size + vector_action_size + vector_action_size + 1
+                )
+                pre_head_output_shape = self.lstm(x)[0].shape
+
+            # Build the q head following the convolutional LSTM
+            self.q_head = nn.Sequential(
+                layer_init(
+                    nn.Linear(
+                        int(np.prod(pre_head_output_shape[1:])),
+                        fc_scale
+                        ),
+                    std=1.0
+                ),
+                # nn.LayerNorm(fc_scale),
+                nn.ReLU(),
+                layer_init(
+                    nn.Linear(fc_scale,
+                            1
+                            ),
+                    std=1.0,
+                    bias_const=q_bias
+                ),
+            )
 
     def get_zero_hidden(self):
         """
@@ -664,29 +710,34 @@ class ImpalaCritic(nn.Module):
                 o = o.permute(0, 1, 5, 2, 3, 4)  
             # print(f"[o] shape after permute: {o.shape}")
 
-
-        x_o = self.visual_encoder(o)
-        x = self.mlp(x_o)
-
-
-        # print(f"[x] shape before concat: {x.shape}")
-        # print(f"[a] shape: {a.shape}")
-        # print(f"[a_prior] shape: {a_prior.shape}")
-        # print(f"[r_prior] shape: {r_prior.shape}")
-        x = torch.cat([x, a, a_prior, r_prior], dim=-1)
+            
+        q = self.debugnet(o).unsqueeze(-1)  # Add a dimension for the q value
+        new_hidden = self.get_zero_hidden()
         
-        if batch_input:
-            x = x.unsqueeze(1)  # Add sequence dimension
+        # else:
 
-        h0 = hidden[0]
-        c0 = hidden[1]
+        #     x_o = self.visual_encoder(o)
+        #     x = self.mlp(x_o)
 
-        x, new_hidden = self.lstm(x, (h0, c0))
 
-        # Apply action prediciton head and activation function
-        q = self.q_head(x)
+        #     # print(f"[x] shape before concat: {x.shape}")
+        #     # print(f"[a] shape: {a.shape}")
+        #     # print(f"[a_prior] shape: {a_prior.shape}")
+        #     # print(f"[r_prior] shape: {r_prior.shape}")
+        #     x = torch.cat([x, a, a_prior, r_prior], dim=-1)
+            
+        #     if batch_input:
+        #         x = x.unsqueeze(1)  # Add sequence dimension
 
-        # print(f"[q] shape: {q.shape}")
+        #     h0 = hidden[0]
+        #     c0 = hidden[1]
+
+        #     x, new_hidden = self.lstm(x, (h0, c0))
+
+        #     # Apply action prediciton head and activation function
+        #     q = self.q_head(x)
+
+        #     # print(f"[q] shape: {q.shape}")
         return q, new_hidden
     
 
@@ -743,8 +794,8 @@ def log_gradients_in_model(model, logger, step):
     for name, param in model.named_parameters():
         if param.grad is not None:
             grad_norm = param.grad.data.norm(2).item()
-            logger.add_scalar(f"grads/{name}_grad_norm", grad_norm, step)
-            logger.add_histogram(f"grads/{name}_hist", param.grad.data.cpu().numpy(), step)
+            logger.add_scalar(f"layer_grads/{name}_grad_norm", grad_norm, step)
+            logger.add_histogram(f"layer_grads/{name}_hist", param.grad.data.cpu().numpy(), step)
         else:
             logger.add_scalar(f"grads/{name}_grad_norm", 0.0, step)
 
