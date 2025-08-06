@@ -338,9 +338,9 @@ class ImpalaActor(nn.Module):
             nn.ReLU(),
         )
 
-        self.visual_encoder = nn.Sequential(
-            nn.Flatten(),
-        )
+        # self.visual_encoder = nn.Sequential(
+        #     nn.Flatten(),
+        # )
         # self.visual_encoder = nn.Sequential(
         #     conv_init(
         #         nn.Conv2d(input_channels, 
@@ -372,19 +372,19 @@ class ImpalaActor(nn.Module):
                 nn.Linear(
                     int(np.prod(visual_output_shape[1:])),
                     mlp_output_size),
-                std=np.sqrt(2.0)
+                std=np.sqrt(2)
             ),
             # nn.LayerNorm(mlp_output_size),
             nn.ReLU(),
         )
 
 
-        self.lstm = nn.LSTM(
+        self.lstm = init_lstm_weights(nn.LSTM(
             input_size=mlp_output_size + vector_action_size + 1,
             hidden_size=self.lstm_hidden_dim,
             num_layers=self.lstm_num_layers,
             batch_first=True
-        )
+        ))
 
         # Get the output shape of the LSTM
         with torch.inference_mode():            
@@ -400,7 +400,7 @@ class ImpalaActor(nn.Module):
                     int(np.prod(pre_head_output_shape[1:])),
                     fc_scale,
                         ),
-                std=1e-3
+                std=np.sqrt(2)
             ),
             # nn.LayerNorm(fc_scale),
             nn.ReLU(),
@@ -462,6 +462,7 @@ class ImpalaActor(nn.Module):
                 o = o.permute(0, 3, 1, 2)
             elif len(o.shape) == 5:
                 o = o.permute(0, 1, 4, 2, 3)
+                o = o.squeeze(1)  # Remove the sequence dimension
             elif len(o.shape) == 6:
                 o = o.permute(0, 1, 5, 2, 3, 4)  
             # print(f"[o] shape after permute: {o.shape}")
@@ -548,9 +549,9 @@ class ImpalaCritic(nn.Module):
             nn.ReLU(),
         )
 
-        self.visual_encoder = nn.Sequential(
-            nn.Flatten(),
-        )
+        # self.visual_encoder = nn.Sequential(
+        #     nn.Flatten(),
+        # )
 
 
         # self.visual_encoder = nn.Sequential(
@@ -590,12 +591,12 @@ class ImpalaCritic(nn.Module):
             nn.ReLU(),
         )
 
-        self.lstm = nn.LSTM(
+        self.lstm = init_lstm_weights(nn.LSTM(
             input_size=mlp_output_size + vector_action_size + vector_action_size + 1,
             hidden_size=self.lstm_hidden_dim,
             num_layers=self.lstm_num_layers,
             batch_first=True
-        )
+        ))
 
         # Get the output shape of the LSTM
         with torch.inference_mode():
@@ -658,6 +659,7 @@ class ImpalaCritic(nn.Module):
                 o = o.permute(0, 3, 1, 2)
             elif len(o.shape) == 5:
                 o = o.permute(0, 1, 4, 2, 3)
+                o = o.squeeze(1)  # Remove the sequence dimension
             elif len(o.shape) == 6:
                 o = o.permute(0, 1, 5, 2, 3, 4)  
             # print(f"[o] shape after permute: {o.shape}")
@@ -721,15 +723,36 @@ def init_lstm_weights(lstm):
     return lstm
 
 
-def log_gradients_in_model(model, logger, step):
-    for tag, value in model.named_parameters():
-        if value.grad is not None:
-            logger.add_histogram(tag + "/grad", value.grad.cpu(), step)
 
+def weight_regularization(model: torch.nn.Module, l1_scale=0.0, l2_scale=0.0):
+    l1_loss = 0.0
+    l2_loss = 0.0
+    for name, param in model.named_parameters():
+        if param.requires_grad and "bias" not in name:
+            if l1_scale > 0:
+                l1_loss += torch.sum(torch.abs(param))
+            if l2_scale > 0:
+                l2_loss += torch.sum(param ** 2)
+    return l1_scale * l1_loss + l2_scale * l2_loss
+
+
+def log_gradients_in_model(model, logger, step):
+    """
+    Log the gradients of all parameters in the actor model to TensorBoard.
+    """
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_norm = param.grad.data.norm(2).item()
+            logger.add_scalar(f"grads/{name}_grad_norm", grad_norm, step)
+            logger.add_histogram(f"grads/{name}_hist", param.grad.data.cpu().numpy(), step)
+        else:
+            logger.add_scalar(f"grads/{name}_grad_norm", 0.0, step)
 
 def log_weights_in_model(model, logger, step):
     for tag, value in model.named_parameters():
         logger.add_histogram(tag + "/weight", value.cpu(), step)
+
+
 
 
 def sample_normal_action(action_space, std_dev=0.1):
@@ -938,9 +961,11 @@ if __name__ == "__main__":
         
         scripted_actor = torch.jit.script(actor)
 
+
+
     # Potential-based reward shaping https://arxiv.org/pdf/2502.01307
     if args.use_q_bias:
-        reward_sample_episodes = 32
+        reward_sample_episodes = 100
         episode_rewards = []
         # Sample some random rewards to compute the q bias.
         # This is a hacky way to get the expected reward.
@@ -1769,7 +1794,7 @@ if __name__ == "__main__":
 
                     # Next state action batch comes out without a sequence dimension, so we need to add it.
                     # next_state_actions_batch = next_state_actions_batch.unsqueeze(1)
-                    policy_noise = 0.2
+                    policy_noise = 0.5
 
                     noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
 
@@ -1810,7 +1835,8 @@ if __name__ == "__main__":
                     # Take the last reward and done from the batch, since we are using TBPTT.
                     # TODO: If this doens't work, try using the full sequence - it was definitely broken before becuase of the silent broadcasting.
                     # next_q_value_batch = rewards_batch[:, -1, :].flatten() + (1 - dones_batch[:, -1, :].flatten()) * args.gamma * (qf1_next_target_batch[:, -1, :].flatten())
-                    next_q_value_batch = rewards_batch + (1 - dones_batch) * args.gamma * (qf1_next_target_batch)
+                    # Unsqueeze the last dim of rewards and dones to add a length-1 sequence dim.
+                    next_q_value_batch = rewards_batch.unsqueeze(-1) + (1 - dones_batch.unsqueeze(-1)) * args.gamma * (qf1_next_target_batch)
                     # next_q_value_batch = rewards_batch
 
 
@@ -1848,6 +1874,7 @@ if __name__ == "__main__":
                 )
 
                 # print("qf1_a_values_batch shape:", qf1_a_values_batch.shape)
+
                 # print("qf2_a_values_batch shape:", qf2_a_values_batch.shape)
                 # print("next_q_value_batch shape:", next_q_value_batch.shape)
 
@@ -1855,6 +1882,16 @@ if __name__ == "__main__":
                 # print("qf2_a_values_batch:", qf2_a_values_batch)
                 # print("next_q_value_batch:", next_q_value_batch)
                 # TODO: There is an unresoelved broadcatcasting issue here.
+
+
+                # Test that the loss inputs are the same shape, throw an error if they are not.
+                if qf1_a_values_batch.shape != next_q_value_batch.shape:
+                    raise ValueError(f"qf1_a_values_batch shape {qf1_a_values_batch.shape} does not match next_q_value_batch shape {next_q_value_batch.shape}")
+                if qf2_a_values_batch.shape != next_q_value_batch.shape:
+                    raise ValueError(f"qf2_a_values_batch shape {qf2_a_values_batch.shape} does not match next_q_value_batch shape {next_q_value_batch.shape}")
+
+
+
                 qf1_loss = F.mse_loss(qf1_a_values_batch, next_q_value_batch)
                 qf1_loss_total = qf1_loss_total + qf1_loss
                 # qf1_loss = F.mse_loss(qf1_a_values_batch.view(-1), next_q_value_batch.view(-1))
@@ -1888,6 +1925,8 @@ if __name__ == "__main__":
                         prior_rewards_batch.to(device),
                         qf1_hidden_batch
                     )
+
+                    # actor_loss = -loss_qvalues.mean() + torch.linalg.vector_norm(loss_actions).item()
                     actor_loss = -loss_qvalues.mean()
                     actor_loss_total = actor_loss_total + actor_loss
         
@@ -1896,8 +1935,20 @@ if __name__ == "__main__":
             clip_gradients = True
 
 
-            # ACTOR OPTIMIZATION BLOCK
+            # Measure the time taken for this step.
+            update_time = time.time()
+
+           # ACTOR OPTIMIZATION BLOCK
             if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
+
+                for p in qf1.parameters():
+                    p.requires_grad = False
+                reg = weight_regularization(actor, l2_scale=1e-3)
+                total_actor_loss = actor_loss_total + reg
+                actor_loss_total.backward(retain_graph=True)
+                log_gradients_in_model(actor, writer, global_step)
+                for p in qf1.parameters():
+                    p.requires_grad = True
                 if iteration % args.writer_interval == 0:
                     actor_grad = get_grad_norm(actor)
                     writer.add_scalar("grads/actor_grad", actor_grad, global_step)
@@ -1906,11 +1957,6 @@ if __name__ == "__main__":
                     if iteration % args.writer_interval == 0:
                         actor_grad_clipped = get_grad_norm(actor)
                         writer.add_scalar("grads/actor_grad_clipped", actor_grad_clipped, global_step)
-                for p in qf1.parameters():
-                    p.requires_grad = False
-                actor_loss_total.backward(retain_graph=True)
-                for p in qf1.parameters():
-                    p.requires_grad = True
                 actor_optimizer.step()
                 for param, target_param in zip(actor.parameters(), target_actor.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
@@ -1948,21 +1994,29 @@ if __name__ == "__main__":
             qf1_hidden_batch = (qf1_hidden_batch[0].detach(), qf1_hidden_batch[1].detach())
             qf2_hidden_batch = (qf2_hidden_batch[0].detach(), qf2_hidden_batch[1].detach())
 
+            # Log the time taken for this step.
+            update_time = time.time() - update_time
+
+            if iteration % args.writer_interval == 0:
+                writer.add_scalar("charts/update_time", update_time, global_step)
 
             # LOSS LOGGING BLOCK
             if iteration % args.writer_interval == 0:
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/qf1_loss_total", qf1_loss_total.item(), global_step)
                 writer.add_scalar("losses/qf2_loss_total", qf2_loss_total.item(), global_step)
-                writer.add_scalar("losses/actor_loss_total", actor_loss_total.item(), global_step)
+
+                if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
+                    writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
+                    writer.add_scalar("losses/actor_loss_total", actor_loss_total.item(), global_step)
 
 
         # STEP TIME LOGGING BLOCK
         if iteration % args.writer_interval == 0:
             print("Step time:", (time.time() - step_time) / args.num_envs)
             writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)
+            # writer.add_scalar("charts/update_time", update_time, global_step)
             writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
             writer.add_scalar("charts/step_SPS", (args.num_envs / (time.time() - step_time)), global_step)
 

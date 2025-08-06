@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name=vp-smaller"
-    "--gpu_list=1 --exp_name=vp-smaller"
-    "--gpu_list=2 --exp_name=vp-smaller"
-    "--gpu_list=3 --exp_name=vp-smaller"
-    "--gpu_list=4 --exp_name=vp-smaller"
-    "--gpu_list=5 --exp_name=vp-smaller"
-    "--gpu_list=6 --exp_name=vp-smaller"
-    "--gpu_list=7 --exp_name=vp-smaller"
+    "--gpu_list=0 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0"
+    "--gpu_list=1 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0"
+    "--gpu_list=2 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1"
+    "--gpu_list=3 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1"
+    "--gpu_list=4 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0"
+    "--gpu_list=5 --exploration_noise=1.0 --exp_name=vp-smaller-noise1.0"
+    "--gpu_list=6 --exploration_noise=0.1 --exp_name=vp-smaller-noise0.1"
+    "--gpu_list=7 --exploration_noise=0.1 --exp_name=vp-smaller-noise0.1"
 
 )
 
@@ -48,12 +48,13 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=32 \
+        --batch_size=16 \
+        --gamma=0.9 \
         --tau=0.0004 \
-        --policy_frequency=2 \
+        --policy_frequency=1 \
         --reward_scale=1.0 \
         --max_grad_norm=100000.0 \
-        --buffer_size=1_000_000 \
+        --buffer_size=100_000 \
         --learning_starts=50_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=0_000 \
@@ -65,18 +66,15 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_channel_scale=16 \
         --actor_fc_scale=256 \
         --qnetwork_fc_scale=256 \
-        --lstm_hidden_dim=128 \
+        --lstm_hidden_dim=64 \
         --action_scale=2.0 \
-        --exploration_noise=0.1 \
         --decay_rate=0.995 \
-        --writer_interval=100 \
+        --writer_interval=10 \
         --target_smoothing \
-        --tbptt_seq_len=8 \
-        --use_q_bias \
-        --normalize_returns \
+        --tbptt_seq_len=2 \
         --save_model \
         --num_eval_rollouts=10 \
-        --model_save_interval=10_000 \
+        --model_save_interval=1_000 \
         $VARIANT &  # Run in background
 done
 
