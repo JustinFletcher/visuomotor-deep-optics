@@ -47,6 +47,8 @@ from replay_buffers import *
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
+    save_dir: str = "./runs/"
+    """the directory to save the experiment results"""
     seed: int = np.random.randint(0, 10000)
     """seed of the experiment"""
     torch_deterministic: bool = True
@@ -936,7 +938,7 @@ if __name__ == "__main__":
     )
 
 
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.env_id}____{args.seed}__{int(time.time())}"
 
 
     if args.track:
@@ -953,14 +955,14 @@ if __name__ == "__main__":
         )
 
     # Add a summary writer.
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"{args.save_dir}/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     # Write the arguements of this run to a file.
-    args_store_path = f"./runs/{run_name}/args.json"
+    args_store_path = f"{args.save_dir}/{run_name}/args.json"
     with open(args_store_path, "w") as f:
         json.dump(vars(args), f)
 
@@ -1261,7 +1263,7 @@ if __name__ == "__main__":
                     best_train_episode_return = np.mean(train_episodic_return_list)
 
                     # First, delete the prior best model if it exists...
-                    best_models_save_path = f"./runs/{run_name}/best_models"
+                    best_models_save_path = f"{args.save_dir}/{run_name}/best_models"
                     model_path = f"{best_models_save_path}/best_train_policy.pt"
                     if os.path.exists(model_path):
                         os.remove(model_path)
@@ -1336,7 +1338,7 @@ if __name__ == "__main__":
                 elif iteration % args.model_save_interval == 0:
 
                     use_torchsctipt = True
-                    eval_save_path = f"runs/{run_name}/eval_{args.exp_name}_{str(iteration)}"
+                    eval_save_path = f"{args.save_dir}/{run_name}/eval_{args.exp_name}_{str(iteration)}"
                     Path(eval_save_path).mkdir(parents=True, exist_ok=True)
 
                     if use_torchsctipt:
@@ -1367,7 +1369,7 @@ if __name__ == "__main__":
 
                     print("Evaluating model.")
 
-                    eval_save_path = f"runs/{run_name}/eval_{args.exp_name}_{str(iteration)}"
+                    eval_save_path = f"{args.save_dir}/{run_name}/eval_{args.exp_name}_{str(iteration)}"
                     # ...then roll out the model, accumulating returns.
                     episodic_returns_list = list()
                     zero_policy_returns_list = list()
@@ -1994,7 +1996,7 @@ if __name__ == "__main__":
 
                 for p in qf1.parameters():
                     p.requires_grad = False
-                reg = weight_regularization(actor, l2_scale=1e-3)
+                reg = weight_regularization(actor, l2_scale=args.l2_reg, l1_scale=args.l1_reg)
                 total_actor_loss = actor_loss_total + reg
                 actor_loss_total.backward(retain_graph=True)
                 log_gradients_in_model(actor, writer, global_step)
