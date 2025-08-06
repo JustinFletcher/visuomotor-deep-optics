@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --policy_frequency=2 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0-pf2"
-    "--gpu_list=1 --policy_frequency=4 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0-pf4"
-    "--gpu_list=2 --policy_frequency=2 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1-pf2"
-    "--gpu_list=3 --policy_frequency=4 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1-pf4"
-    "--gpu_list=4 --policy_frequency=2 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0-pf4"
-    "--gpu_list=5 --policy_frequency=4 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0-pf2"
-    "--gpu_list=6 --policy_frequency=2 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1-pf2"
-    "--gpu_list=7 --policy_frequency=4 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1-pf4"
+    "--gpu_list=0 --policy_frequency=2 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0-pf2-500kstart"
+    "--gpu_list=1 --policy_frequency=4 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0-pf4-500kstart"
+    "--gpu_list=2 --policy_frequency=2 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1-pf2-500kstart"
+    "--gpu_list=3 --policy_frequency=4 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1-pf4-500kstart"
+    "--gpu_list=4 --policy_frequency=2 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0-pf4-500kstart"
+    "--gpu_list=5 --policy_frequency=4 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0-pf2-500kstart"
+    "--gpu_list=6 --policy_frequency=2 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1-pf2-500kstart"
+    "--gpu_list=7 --policy_frequency=4 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1-pf4-500kstart"
 
 )
 
@@ -49,29 +49,28 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_envs=1 \
         --reward_function=align \
         --batch_size=16 \
-        --gamma=0.9 \
-        --tau=0.0003 \
-        --policy_frequency=4 \
-        --reward_scale=1.0 \
+        --gamma=0.99 \
+        --tau=0.0001 \
+        --reward_scale=0.1 \
         --max_grad_norm=1.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=50_000 \
+        --learning_starts=200_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=0_000 \
         --actor_type=impala \
         --critic_type=impala \
         --actor_learning_rate=1e-4 \
-        --critic_learning_rate=1e-4 \
+        --critic_learning_rate=3e-4 \
         --qnetwork_channel_scale=16 \
         --actor_channel_scale=16 \
-        --actor_fc_scale=256 \
-        --qnetwork_fc_scale=256 \
+        --actor_fc_scale=512 \
+        --qnetwork_fc_scale=512 \
         --lstm_hidden_dim=64 \
         --action_scale=2.0 \
         --decay_rate=0.995 \
         --writer_interval=100 \
         --target_smoothing \
-        --tbptt_seq_len=2 \
+        --tbptt_seq_len=1 \
         --save_model \
         --num_eval_rollouts=10 \
         --model_save_interval=10_000 \
