@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --policy_frequency=2 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0-pf2-500kstart"
-    "--gpu_list=1 --policy_frequency=4 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0-pf4-500kstart"
-    "--gpu_list=2 --policy_frequency=2 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1-pf2-500kstart"
-    "--gpu_list=3 --policy_frequency=4 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1-pf4-500kstart"
-    "--gpu_list=4 --policy_frequency=2 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0-pf4-500kstart"
-    "--gpu_list=5 --policy_frequency=4 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0-pf2-500kstart"
-    "--gpu_list=6 --policy_frequency=2 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1-pf2-500kstart"
-    "--gpu_list=7 --policy_frequency=4 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1-pf4-500kstart"
+    "--gpu_list=0 --policy_frequency=2 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0-pf2-200kstart"
+    "--gpu_list=1 --policy_frequency=4 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise1.0-pf4-200kstart"
+    "--gpu_list=2 --policy_frequency=2 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1-pf2-200kstart"
+    "--gpu_list=3 --policy_frequency=4 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1-pf4-200kstart"
+    "--gpu_list=4 --policy_frequency=2 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0-pf4-200kstart"
+    "--gpu_list=5 --policy_frequency=4 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0-pf2-200kstart"
+    "--gpu_list=6 --policy_frequency=2 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1-pf2-200kstart"
+    "--gpu_list=7 --policy_frequency=4 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1-pf4-200kstart"
 
 )
 
@@ -34,6 +34,7 @@ cd ~/visuomotor-deep-optics/
 for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_manual_tbptt_lstm.py \
         --env-id VisualPendulum-v1 \
+        --save_dir=./runs/test \
         --object_type=single \
         --max_episode_steps=256 \
         --ao_interval_ms=5.0 \
