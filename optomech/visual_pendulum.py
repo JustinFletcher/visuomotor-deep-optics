@@ -64,7 +64,7 @@ class VisualPendulumEnv(PendulumEnv):
         img = np.zeros((self.resolution, self.resolution), dtype=np.uint8)
         
         # Define the width of each observation section
-        section_width = self.resolution // 2
+        section_width = self.resolution // 3
         
         # Tile each scaled observation across its section of the image
         for i in range(3):
