@@ -938,7 +938,7 @@ if __name__ == "__main__":
     )
 
 
-    run_name = f"{args.env_id}____{args.seed}__{int(time.time())}"
+    run_name = f"{args.env_id}__{args.experiment_name}__{args.seed}__{int(time.time())}"
 
 
     if args.track:
@@ -1996,7 +1996,8 @@ if __name__ == "__main__":
 
                 for p in qf1.parameters():
                     p.requires_grad = False
-                reg = weight_regularization(actor, l2_scale=args.l2_reg, l1_scale=args.l1_reg)
+                # reg = weight_regularization(actor, l2_scale=args.l2_reg, l1_scale=args.l1_reg)
+                reg = 0.0
                 total_actor_loss = actor_loss_total + reg
                 actor_loss_total.backward(retain_graph=True)
                 log_gradients_in_model(actor, writer, global_step)
