@@ -1662,12 +1662,12 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
             obs = next_obs
-            # initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
-            #                         new_actor_hidden[1].detach().clone())
-            # initial_qf1_hidden = (qf1_hidden[0].detach().clone(),
-            #                       qf1_hidden[1].detach().clone())
-            # initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
-            #                       qf2_hidden[1].detach().clone())
+            initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
+                                    new_actor_hidden[1].detach().clone())
+            initial_qf1_hidden = (qf1_hidden[0].detach().clone(),
+                                  qf1_hidden[1].detach().clone())
+            initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
+                                  qf2_hidden[1].detach().clone())
 
         # ALGO LOGIC: training.
         # If it is time to train, then train.
@@ -1794,7 +1794,7 @@ if __name__ == "__main__":
 
                     # Next state action batch comes out without a sequence dimension, so we need to add it.
                     # next_state_actions_batch = next_state_actions_batch.unsqueeze(1)
-                    policy_noise = 0.5
+                    policy_noise = 0.2
 
                     noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
 
