@@ -50,6 +50,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_function=align \
         --batch_size=16 \
         --gamma=0.99 \
+        --l2_reg=0.0 \
+        --l1_reg=0.0 \
         --tau=0.0001 \
         --reward_scale=0.1 \
         --max_grad_norm=1.0 \
