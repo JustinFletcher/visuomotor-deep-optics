@@ -75,7 +75,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --target_smoothing \
         --tbptt_seq_len=1 \
         --save_model \
-        --num_eval_rollouts=10 \
+        --num_eval_rollouts=1 \
         --model_save_interval=10_000 \
         $VARIANT &  # Run in background
 done
