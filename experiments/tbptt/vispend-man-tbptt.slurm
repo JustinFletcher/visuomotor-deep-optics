@@ -23,9 +23,9 @@ VARIANTS=(
     "--gpu_list=2 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1"
     "--gpu_list=3 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=vp-biasnorm-noise0.1"
     "--gpu_list=4 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0"
-    "--gpu_list=5 --exploration_noise=1.0 --exp_name=vp-smaller-noise1.0"
-    "--gpu_list=6 --exploration_noise=0.1 --exp_name=vp-smaller-noise0.1"
-    "--gpu_list=7 --exploration_noise=0.1 --exp_name=vp-smaller-noise0.1"
+    "--gpu_list=5 --exploration_noise=1.0 --exp_name=vp-nobiasnorm-noise1.0"
+    "--gpu_list=6 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1"
+    "--gpu_list=7 --exploration_noise=0.1 --exp_name=vp-nobiasnorm-noise0.1"
 
 )
 
@@ -50,10 +50,10 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_function=align \
         --batch_size=16 \
         --gamma=0.9 \
-        --tau=0.0004 \
+        --tau=0.0003 \
         --policy_frequency=1 \
         --reward_scale=1.0 \
-        --max_grad_norm=100000.0 \
+        --max_grad_norm=1.0 \
         --buffer_size=1_000_000 \
         --learning_starts=50_000 \
         --experience_sampling_delay=0_000 \
@@ -69,12 +69,12 @@ for VARIANT in "${VARIANTS[@]}"; do
         --lstm_hidden_dim=64 \
         --action_scale=2.0 \
         --decay_rate=0.995 \
-        --writer_interval=10 \
+        --writer_interval=100 \
         --target_smoothing \
         --tbptt_seq_len=2 \
         --save_model \
         --num_eval_rollouts=10 \
-        --model_save_interval=1_000 \
+        --model_save_interval=10_000 \
         $VARIANT &  # Run in background
 done
 
