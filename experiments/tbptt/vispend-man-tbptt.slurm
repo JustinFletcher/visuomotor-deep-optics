@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --actor_training_delay=10_000 --tbptt_seq_len=16 --exp_name=vp_actor-td-10k-tbptt-16-seq-len"
-    "--gpu_list=1 --actor_training_delay=10_000 --tbptt_seq_len=32 --exp_name=vp_actor-td-10k-tbptt-32-seq-len"
-    "--gpu_list=2 --actor_training_delay=10_000 --tbptt_seq_len=64 --exp_name=vp_actor-td-10k-tbptt-64-seq-len"
-    "--gpu_list=3 --actor_training_delay=10_000 --tbptt_seq_len=128 --exp_name=vp_actor-td-10k-tbptt-128-seq-len"
-    "--gpu_list=4 --actor_training_delay=0_000 --tbptt_seq_len=16 --exp_name=vp_actor-td-10k-tbptt-16-seq-len"
-    "--gpu_list=5 --actor_training_delay=0_000 --tbptt_seq_len=32 --exp_name=vp_actor-td-10k-tbptt-32-seq-len"
-    "--gpu_list=6 --actor_training_delay=0_000 --tbptt_seq_len=64 --exp_name=vp_actor-td-10k-tbptt-64-seq-len"
-    "--gpu_list=7 --actor_training_delay=0_000 --tbptt_seq_len=128 --exp_name=vp_actor-td-10k-tbptt-128-seq-len"
+    "--gpu_list=0 --actor_training_delay=10_000 --tbptt_seq_len=16 --exp_name="nvp_actor-td-10k-tbptt-16-seq-len""
+    "--gpu_list=1 --actor_training_delay=10_000 --tbptt_seq_len=32 --exp_name="nvp_actor-td-10k-tbptt-32-seq-len""
+    "--gpu_list=2 --actor_training_delay=10_000 --tbptt_seq_len=64 --exp_name="nvp_actor-td-10k-tbptt-64-seq-len""
+    "--gpu_list=3 --actor_training_delay=10_000 --tbptt_seq_len=128 --exp_name="nvp_actor-td-10k-tbptt-128-seq-len""
+    "--gpu_list=4 --actor_training_delay=0 --tbptt_seq_len=16 --exp_name="nvp_actor-td-0k-tbptt-16-seq-len""
+    "--gpu_list=5 --actor_training_delay=0 --tbptt_seq_len=32 --exp_name="nvp_actor-td-0k-tbptt-32-seq-len""
+    "--gpu_list=6 --actor_training_delay=0 --tbptt_seq_len=64 --exp_name="nvp_actor-td-0k-tbptt-64-seq-len""
+    "--gpu_list=7 --actor_training_delay=0 --tbptt_seq_len=128 --exp_name="nvp_actor-td-0k-tbptt-128-seq-len""
 
 )
 
