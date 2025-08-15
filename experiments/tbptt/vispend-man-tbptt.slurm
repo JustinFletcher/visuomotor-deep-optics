@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --policy_frequency=2 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=noreg_vp-biasnorm-noise1.0-pf2-200kstart"
-    "--gpu_list=1 --policy_frequency=4 --exploration_noise=1.0 --use_q_bias --normalize_returns --exp_name=noreg_vp-biasnorm-noise1.0-pf4-200kstart"
-    "--gpu_list=2 --policy_frequency=2 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=noreg_vp-biasnorm-noise0.1-pf2-200kstart"
-    "--gpu_list=3 --policy_frequency=4 --exploration_noise=0.1 --use_q_bias --normalize_returns --exp_name=noreg_vp-biasnorm-noise0.1-pf4-200kstart"
-    "--gpu_list=4 --policy_frequency=2 --exploration_noise=1.0 --exp_name=noreg_vp-nobiasnorm-noise1.0-pf4-200kstart"
-    "--gpu_list=5 --policy_frequency=4 --exploration_noise=1.0 --exp_name=noreg_vp-nobiasnorm-noise1.0-pf2-200kstart"
-    "--gpu_list=6 --policy_frequency=2 --exploration_noise=0.1 --exp_name=noreg_vp-nobiasnorm-noise0.1-pf2-200kstart"
-    "--gpu_list=7 --policy_frequency=4 --exploration_noise=0.1 --exp_name=noreg_vp-nobiasnorm-noise0.1-pf4-200kstart"
+    "--gpu_list=0 --actor_training_delay=10_000 --tbptt_seq_len=16 --exp_name=vp_actor-td-10k-tbptt-16-seq-len"
+    "--gpu_list=1 --actor_training_delay=10_000 --tbptt_seq_len=32 --exp_name=vp_actor-td-10k-tbptt-32-seq-len"
+    "--gpu_list=2 --actor_training_delay=10_000 --tbptt_seq_len=64 --exp_name=vp_actor-td-10k-tbptt-64-seq-len"
+    "--gpu_list=3 --actor_training_delay=10_000 --tbptt_seq_len=128 --exp_name=vp_actor-td-10k-tbptt-128-seq-len"
+    "--gpu_list=4 --actor_training_delay=0_000 --tbptt_seq_len=16 --exp_name=vp_actor-td-10k-tbptt-16-seq-len"
+    "--gpu_list=5 --actor_training_delay=0_000 --tbptt_seq_len=32 --exp_name=vp_actor-td-10k-tbptt-32-seq-len"
+    "--gpu_list=6 --actor_training_delay=0_000 --tbptt_seq_len=64 --exp_name=vp_actor-td-10k-tbptt-64-seq-len"
+    "--gpu_list=7 --actor_training_delay=0_000 --tbptt_seq_len=128 --exp_name=vp_actor-td-10k-tbptt-128-seq-len"
 
 )
 
@@ -33,8 +33,9 @@ cd ~/visuomotor-deep-optics/
 # Run all variants in parallel
 for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_manual_tbptt_lstm.py \
+        --seed=9758 \
+        --exp_name=debug_td\
         --env-id VisualPendulum-v1 \
-        --save_dir=./runs/test \
         --object_type=single \
         --max_episode_steps=256 \
         --ao_interval_ms=5.0 \
@@ -49,31 +50,31 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=16 \
-        --gamma=0.99 \
-        --l2_reg=0.0 \
-        --l1_reg=0.0 \
+        --batch_size=512 \
+        --gamma=0.9 \
         --tau=0.0001 \
+        --policy_frequency=4 \
         --reward_scale=0.1 \
-        --max_grad_norm=1.0 \
+        --clip_gradients \
+        --max_grad_norm=10000.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=200_000 \
+        --learning_starts=20_000 \
         --experience_sampling_delay=0_000 \
-        --actor_training_delay=0_000 \
         --actor_type=impala \
         --critic_type=impala \
-        --actor_learning_rate=1e-4 \
-        --critic_learning_rate=3e-4 \
-        --qnetwork_channel_scale=16 \
-        --actor_channel_scale=16 \
-        --actor_fc_scale=512 \
-        --qnetwork_fc_scale=512 \
-        --lstm_hidden_dim=64 \
+        --actor_learning_rate=3e-4 \
+        --critic_learning_rate=1e-3 \
+        --qnetwork_channel_scale=4 \
+        --actor_channel_scale=4 \
+        --actor_fc_scale=1024 \
+        --qnetwork_fc_scale=1024 \
+        --lstm_hidden_dim=256 \
         --action_scale=2.0 \
+        --exploration_noise=0.000005 \
         --decay_rate=0.995 \
         --writer_interval=100 \
         --target_smoothing \
-        --tbptt_seq_len=1 \
+        --tbptt_seq_len=32 \
         --save_model \
         --num_eval_rollouts=1 \
         --model_save_interval=10_000 \
