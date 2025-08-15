@@ -124,6 +124,8 @@ class Args:
     """If toggled, compute q bias in the critic model."""
     normalize_returns: bool = False
     """If toggled, normalize the returns in the critic model."""
+    clip_gradients: bool = True
+    """If toggled, clip gradients during training."""
 
     save_model: bool = False
     """whether to save model into the `runs/{run_name}` folder"""
@@ -2049,9 +2051,6 @@ if __name__ == "__main__":
         
 
 
-            clip_gradients = False
-
-
             # Measure the time taken for this step.
             update_time = time.time()
 
@@ -2070,7 +2069,7 @@ if __name__ == "__main__":
                 if iteration % args.writer_interval == 0:
                     actor_grad = get_grad_norm(actor)
                     writer.add_scalar("grads/actor_grad", actor_grad, global_step)
-                if clip_gradients:
+                if args.clip_gradients:
                     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.max_grad_norm)
                     if iteration % args.writer_interval == 0:
                         actor_grad_clipped = get_grad_norm(actor)
@@ -2084,7 +2083,7 @@ if __name__ == "__main__":
             if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
                 writer.add_scalar("grads/qf1_grad", qf1_grad, global_step)
-            if clip_gradients:
+            if args.clip_gradients:
                 torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=args.max_grad_norm)
                 if iteration % args.writer_interval == 0:
                     qf1_grad_clipped = get_grad_norm(qf1)
@@ -2099,7 +2098,7 @@ if __name__ == "__main__":
                 qf2_grad = get_grad_norm(qf2)
                 writer.add_scalar("grads/qf2_grad", qf2_grad, global_step)
 
-            if clip_gradients:
+            if args.clip_gradients:
                 torch.nn.utils.clip_grad_norm_(qf2.parameters(), max_norm=args.max_grad_norm)
                 if iteration % args.writer_interval == 0:
                     qf2_grad_clipped = get_grad_norm(qf2)
