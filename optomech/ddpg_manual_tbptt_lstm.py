@@ -311,12 +311,11 @@ class ImpalaActor(nn.Module):
         obs_shape = envs.single_observation_space.shape
 
         # Check if this is a channels-last environment
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
+        self.channels_last = obs_shape[-1] == 1
+        if self.channels_last:
             input_channels = obs_shape[-1]
             input_shape = obs_shape[:-1]
         else:
-            self.channels_last = False
             input_channels = obs_shape[0]
             input_shape = obs_shape[1:]
 
@@ -332,6 +331,18 @@ class ImpalaActor(nn.Module):
                 nn.Linear(int(np.prod(input_shape)), fc_scale),
                 nn.ReLU(),
                 nn.Linear(fc_scale, fc_scale // 2),
+                nn.ReLU(),
+            )
+
+            self.lstm = nn.LSTM(
+                input_size=fc_scale // 2,
+                hidden_size=self.lstm_hidden_dim,
+                num_layers=self.lstm_num_layers,
+                batch_first=True
+            )   
+
+            self.action_head = nn.Sequential(
+                nn.Linear(fc_scale // 2 + self.lstm_hidden_dim, fc_scale // 2),
                 nn.ReLU(),
                 nn.Linear(fc_scale // 2, int(np.prod(envs.single_action_space.shape))),
                 nn.Tanh(),
@@ -490,8 +501,9 @@ class ImpalaActor(nn.Module):
             # print(f"[o] shape after permute: {o.shape}")
 
 
-
         a = self.debugnet(o)
+        if batch_input:
+            a = a.unsqueeze(1)
         new_hidden = self.get_zero_hidden()
 
         # else:
@@ -548,12 +560,12 @@ class ImpalaCritic(nn.Module):
         # Check if this is a channels-last environment
 
         # Check if this is a channels-last environment
-        if obs_shape[-1] < obs_shape[0]:
-            self.channels_last = True
+        # Check if this is a channels-last environment
+        self.channels_last = obs_shape[-1] == 1
+        if self.channels_last:
             input_channels = obs_shape[-1]
             input_shape = obs_shape[:-1]
         else:
-            self.channels_last = False
             input_channels = obs_shape[0]
             input_shape = obs_shape[1:]
 
@@ -561,14 +573,44 @@ class ImpalaCritic(nn.Module):
 
         if self.debug:
 
+            # Debug only
+            # self.debugnet = nn.Sequential(
+            #     nn.Flatten(),
+            #     nn.Linear(int(np.prod(input_shape)), fc_scale),
+            #     nn.ReLU(),
+            #     nn.Linear(fc_scale, fc_scale // 2),
+            #     nn.ReLU(),
+            # )
+            # self.q_head = nn.Sequential(
+
+            #     nn.Linear((fc_scale // 2) + 1, fc_scale // 2),
+            #     nn.ReLU(),
+            #     nn.Linear(fc_scale // 2, 1),
+            # )
+
+            # Debug LSTM
             self.debugnet = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(int(np.prod(input_shape)), fc_scale),
                 nn.ReLU(),
                 nn.Linear(fc_scale, fc_scale // 2),
                 nn.ReLU(),
-                nn.Linear(fc_scale // 2, 1),
             )
+            self.debuglstm = nn.LSTM(
+                input_size=fc_scale // 2,
+                hidden_size=self.lstm_hidden_dim,
+                num_layers=self.lstm_num_layers,
+                batch_first=True
+            )
+            
+            self.q_head = nn.Sequential(
+
+                nn.Linear((fc_scale // 2) + self.lstm_hidden_dim + 1, fc_scale // 2),
+                nn.ReLU(),
+                nn.Linear(fc_scale // 2, 1),
+
+            )
+
 
         else:
 
@@ -697,6 +739,7 @@ class ImpalaCritic(nn.Module):
         if batch_input:
             a_prior = a_prior.squeeze(1)
             a = a.squeeze(1)
+            # die
         else:
             r_prior = r_prior.unsqueeze(-1)
 
@@ -712,34 +755,49 @@ class ImpalaCritic(nn.Module):
                 o = o.permute(0, 1, 5, 2, 3, 4)  
             # print(f"[o] shape after permute: {o.shape}")
 
-            
-        q = self.debugnet(o).unsqueeze(-1)  # Add a dimension for the q value
-        new_hidden = self.get_zero_hidden()
+
+        # Debug only
+        # x = self.debugnet(o)  # Add a dimension for the q value
+        # x = torch.cat([x, a], dim=-1)
+        # q = self.q_head(x).unsqueeze(-1)
+        # new_hidden = self.get_zero_hidden()
+
+        # Debug LSTM
+        x = self.debugnet(o)  # Add a dimension for the q value
+        if batch_input:
+            x = x.unsqueeze(1)
+            a = a.unsqueeze(1)
+        x_lstm, new_hidden = self.debuglstm(x, hidden)
+        print(f"[x] shape before concat: {x.shape}")
+        print(f"[a] shape: {a.shape}")
+        print(f"[x_lstm] shape before concat: {x_lstm.shape}")
+        x = torch.cat([x, x_lstm, a], dim=-1)
+        q = self.q_head(x)
         
-        # else:
 
-        #     x_o = self.visual_encoder(o)
-        #     x = self.mlp(x_o)
+        # x_o = self.visual_encoder(o)
+        # x = self.mlp(x_o)
 
 
-        #     # print(f"[x] shape before concat: {x.shape}")
-        #     # print(f"[a] shape: {a.shape}")
-        #     # print(f"[a_prior] shape: {a_prior.shape}")
-        #     # print(f"[r_prior] shape: {r_prior.shape}")
-        #     x = torch.cat([x, a, a_prior, r_prior], dim=-1)
-            
-        #     if batch_input:
-        #         x = x.unsqueeze(1)  # Add sequence dimension
+        # print(f"[x] shape before concat: {x.shape}")
+        # print(f"[a] shape: {a.shape}")
+        # print(f"[a_prior] shape: {a_prior.shape}")
+        # print(f"[r_prior] shape: {r_prior.shape}")
+        # x = torch.cat([x, a, a_prior, r_prior], dim=-1)
 
-        #     h0 = hidden[0]
-        #     c0 = hidden[1]
+        
+        # if batch_input:
+        #     x = x.unsqueeze(1)  # Add sequence dimension
 
-        #     x, new_hidden = self.lstm(x, (h0, c0))
+        # h0 = hidden[0]
+        # c0 = hidden[1]
 
-        #     # Apply action prediciton head and activation function
-        #     q = self.q_head(x)
+        # x, new_hidden = self.lstm(x, (h0, c0))
 
-        #     # print(f"[q] shape: {q.shape}")
+        # # Apply action prediciton head and activation function
+        # q = self.q_head(x)
+
+        # # print(f"[q] shape: {q.shape}")
         return q, new_hidden
     
 
@@ -938,7 +996,7 @@ if __name__ == "__main__":
     )
 
 
-    run_name = f"{args.env_id}__{args.experiment_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
 
     if args.track:
@@ -1810,7 +1868,7 @@ if __name__ == "__main__":
                 # print(f"qf2_hidden_batch shape: {len(qf2_hidden_batch)}, {qf2_hidden_batch[0][0].shape}, {qf2_hidden_batch[0][1].shape}")
 
             
-                retain_graph = (seq_idx < (len(seq_of_observations_batchs) - 1))
+                # retain_graph = (seq_idx < (len(seq_of_observations_batchs) - 1))
 
 
                 # Convert to tensors and unsqueeze to add a sequence dimension.
@@ -1985,7 +2043,7 @@ if __name__ == "__main__":
         
 
 
-            clip_gradients = True
+            clip_gradients = False
 
 
             # Measure the time taken for this step.
@@ -1997,8 +2055,8 @@ if __name__ == "__main__":
                 for p in qf1.parameters():
                     p.requires_grad = False
                 # reg = weight_regularization(actor, l2_scale=args.l2_reg, l1_scale=args.l1_reg)
-                reg = 0.0
-                total_actor_loss = actor_loss_total + reg
+                # reg = 0.0
+                # total_actor_loss = actor_loss_total
                 actor_loss_total.backward(retain_graph=True)
                 log_gradients_in_model(actor, writer, global_step)
                 for p in qf1.parameters():
@@ -2016,10 +2074,10 @@ if __name__ == "__main__":
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
             
             # QF1 OPTIMIZATION BLOCK
+            qf1_loss_total.backward()
             if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
                 writer.add_scalar("grads/qf1_grad", qf1_grad, global_step)
-            qf1_loss_total.backward()
             if clip_gradients:
                 torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=args.max_grad_norm)
                 if iteration % args.writer_interval == 0:
@@ -2030,10 +2088,11 @@ if __name__ == "__main__":
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
             # QF2 OPTIMIZATION BLOCK
+            qf2_loss_total.backward()
             if iteration % args.writer_interval == 0:
                 qf2_grad = get_grad_norm(qf2)
                 writer.add_scalar("grads/qf2_grad", qf2_grad, global_step)
-            qf2_loss_total.backward()
+
             if clip_gradients:
                 torch.nn.utils.clip_grad_norm_(qf2.parameters(), max_norm=args.max_grad_norm)
                 if iteration % args.writer_interval == 0:

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import uuid
 
 class VisualPendulumEnv(PendulumEnv):
-    def __init__(self, resolution=32, render_style='observation'):
+    def __init__(self, resolution=4, render_style='observation'):
         """
         Initialize the VisualPendulumEnv.
         
@@ -122,7 +122,7 @@ def main(render_style='pendulum'):
         render_style (str): The rendering style for the environment. Options are 'observation' and 'pendulum'.
     """
     # Instantiate the environment
-    env = VisualPendulumEnv(resolution=32, render_style=render_style)
+    env = VisualPendulumEnv(resolution=16, render_style=render_style)
     
     # Reset the environment
     observation, _ = env.reset()
@@ -134,7 +134,7 @@ def main(render_style='pendulum'):
     plt.show()
     
     # Run the environment for a few steps
-    for _ in range(20):
+    for _ in range(128):
         action = env.action_space.sample()  # Sample a random action
         observation, _, _, _, _ = env.step(action)
         
