@@ -334,7 +334,7 @@ class ImpalaActor(nn.Module):
                 nn.ReLU(),
             )
 
-            self.lstm = nn.LSTM(
+            self.debuglstm = nn.LSTM(
                 input_size=fc_scale // 2,
                 hidden_size=self.lstm_hidden_dim,
                 num_layers=self.lstm_num_layers,
@@ -501,10 +501,15 @@ class ImpalaActor(nn.Module):
             # print(f"[o] shape after permute: {o.shape}")
 
 
-        a = self.debugnet(o)
+        x = self.debugnet(o)
         if batch_input:
-            a = a.unsqueeze(1)
-        new_hidden = self.get_zero_hidden()
+            x = x.unsqueeze(1)
+        x_lstm, new_hidden = self.debuglstm(x, hidden)
+        x = torch.cat([x_lstm, x], dim=-1)
+        a = self.action_head(x)
+        # if batch_input:
+        #     a = a.unsqueeze(1)
+        # new_hidden = self.get_zero_hidden()
 
         # else:
 
@@ -596,6 +601,7 @@ class ImpalaCritic(nn.Module):
                 nn.Linear(fc_scale, fc_scale // 2),
                 nn.ReLU(),
             )
+
             self.debuglstm = nn.LSTM(
                 input_size=fc_scale // 2,
                 hidden_size=self.lstm_hidden_dim,
@@ -768,9 +774,9 @@ class ImpalaCritic(nn.Module):
             x = x.unsqueeze(1)
             a = a.unsqueeze(1)
         x_lstm, new_hidden = self.debuglstm(x, hidden)
-        print(f"[x] shape before concat: {x.shape}")
-        print(f"[a] shape: {a.shape}")
-        print(f"[x_lstm] shape before concat: {x_lstm.shape}")
+        # print(f"[x] shape before concat: {x.shape}")
+        # print(f"[a] shape: {a.shape}")
+        # print(f"[x_lstm] shape before concat: {x_lstm.shape}")
         x = torch.cat([x, x_lstm, a], dim=-1)
         q = self.q_head(x)
         
