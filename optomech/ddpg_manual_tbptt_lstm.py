@@ -124,7 +124,7 @@ class Args:
     """If toggled, compute q bias in the critic model."""
     normalize_returns: bool = False
     """If toggled, normalize the returns in the critic model."""
-    clip_gradients: bool = True
+    clip_gradients: bool = False
     """If toggled, clip gradients during training."""
 
     save_model: bool = False
