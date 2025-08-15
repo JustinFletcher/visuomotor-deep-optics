@@ -48,7 +48,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=512 \
+        --batch_size=128 \
         --gamma=0.9 \
         --tau=0.0001 \
         --policy_frequency=4 \
