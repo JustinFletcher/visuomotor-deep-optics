@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --actor_training_delay=10_000 --tbptt_seq_len=8 --exp_name="nvp_actor-td-10k-tbptt-8-seq-len""
-    "--gpu_list=1 --actor_training_delay=10_000 --tbptt_seq_len=16 --exp_name="nvp_actor-td-10k-tbptt-16-seq-len""
-    "--gpu_list=2 --actor_training_delay=10_000 --tbptt_seq_len=32 --exp_name="nvp_actor-td-10k-tbptt-32-seq-len""
-    "--gpu_list=3 --actor_training_delay=10_000 --tbptt_seq_len=64 --exp_name="nvp_actor-td-10k-tbptt-64-seq-len""
-    "--gpu_list=4 --actor_training_delay=0 --tbptt_seq_len=8 --exp_name="nvp_actor-td-0k-tbptt-8-seq-len""
-    "--gpu_list=5 --actor_training_delay=0 --tbptt_seq_len=16 --exp_name="nvp_actor-td-0k-tbptt-16-seq-len""
-    "--gpu_list=6 --actor_training_delay=0 --tbptt_seq_len=32 --exp_name="nvp_actor-td-0k-tbptt-32-seq-len""
-    "--gpu_list=7 --actor_training_delay=0 --tbptt_seq_len=64 --exp_name="nvp_actor-td-0k-tbptt-64-seq-len""
+    "--gpu_list=0 --actor_training_delay=10_000 --tbptt_seq_len=2 --exp_name="nvp_actor-td-10k-tbptt-2-seq-len""
+    "--gpu_list=1 --actor_training_delay=10_000 --tbptt_seq_len=4 --exp_name="nvp_actor-td-10k-tbptt-8-seq-len""
+    "--gpu_list=2 --actor_training_delay=10_000 --tbptt_seq_len=8 --exp_name="nvp_actor-td-10k-tbptt-8-seq-len""
+    "--gpu_list=3 --actor_training_delay=10_000 --tbptt_seq_len=16 --exp_name="nvp_actor-td-10k-tbptt-16-seq-len""
+    "--gpu_list=4 --actor_training_delay=0 --tbptt_seq_len=2 --exp_name="nvp_actor-td-0k-tbptt-2-seq-len""
+    "--gpu_list=5 --actor_training_delay=0 --tbptt_seq_len=4 --exp_name="nvp_actor-td-0k-tbptt-4-seq-len""
+    "--gpu_list=6 --actor_training_delay=0 --tbptt_seq_len=8 --exp_name="nvp_actor-td-0k-tbptt-8-seq-len""
+    "--gpu_list=7 --actor_training_delay=0 --tbptt_seq_len=16 --exp_name="nvp_actor-td-0k-tbptt-16-seq-len""
 
 )
 
@@ -48,10 +48,10 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=128 \
+        --batch_size=64 \
         --gamma=0.9 \
         --tau=0.1 \
-        --policy_frequency=4 \
+        --policy_frequency=1 \
         --reward_scale=0.1 \
         --clip_gradients \
         --max_grad_norm=10000.0 \
@@ -60,7 +60,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --experience_sampling_delay=0_000 \
         --actor_type=impala \
         --critic_type=impala \
-        --actor_learning_rate=3e-4 \
+        --actor_learning_rate=1e-3 \
         --critic_learning_rate=1e-3 \
         --qnetwork_channel_scale=4 \
         --actor_channel_scale=4 \

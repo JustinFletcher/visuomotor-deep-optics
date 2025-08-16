@@ -1787,12 +1787,6 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
             obs = next_obs
-            initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
-                                    new_actor_hidden[1].detach().clone())
-            initial_qf1_hidden = (qf1_hidden[0].detach().clone(),
-                                  qf1_hidden[1].detach().clone())
-            initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
-                                  qf2_hidden[1].detach().clone())
 
         # ALGO LOGIC: training.
         # If it is time to train, then train.
@@ -2043,7 +2037,7 @@ if __name__ == "__main__":
                             prior_rewards_batch.to(device),
                             actor_hidden_batch
                         )
-                    loss_qvalues, _ = qf1(
+                    loss_qvalues, qf1_hidden_batch = qf1(
                         observations_batch.to(device),
                         loss_actions,
                         prior_actions_batch.to(device),
@@ -2051,16 +2045,28 @@ if __name__ == "__main__":
                         qf1_hidden_batch
                     )
 
+                    # I added this because it makes sense this way.
+                    _, qf2_hidden_batch = qf2(
+                        observations_batch.to(device),
+                        loss_actions,
+                        prior_actions_batch.to(device),
+                        prior_rewards_batch.to(device),
+                        qf2_hidden_batch
+                    )
+
                     # actor_loss = -loss_qvalues.mean() + torch.linalg.vector_norm(loss_actions).item()
                     actor_loss = -loss_qvalues.mean()
                     actor_loss_total = actor_loss_total + actor_loss
         
 
-
+            # Detach the hidden states to prevent backpropagation through the entire sequence.
+            actor_hidden_batch = (actor_hidden_batch[0].detach(), actor_hidden_batch[1].detach())
+            qf1_hidden_batch = (qf1_hidden_batch[0].detach(), qf1_hidden_batch[1].detach())
+            qf2_hidden_batch = (qf2_hidden_batch[0].detach(), qf2_hidden_batch[1].detach())
             # Measure the time taken for this step.
             update_time = time.time()
 
-           # ACTOR OPTIMIZATION BLOCK
+            # ACTOR OPTIMIZATION BLOCK
             if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
 
                 for p in qf1.parameters():
@@ -2069,7 +2075,8 @@ if __name__ == "__main__":
                 # reg = 0.0
                 # total_actor_loss = actor_loss_total
                 actor_loss_total.backward(retain_graph=True)
-                log_gradients_in_model(actor, writer, global_step)
+                if iteration % args.writer_interval == 0:
+                    log_gradients_in_model(actor, writer, global_step)
                 for p in qf1.parameters():
                     p.requires_grad = True
                 if iteration % args.writer_interval == 0:
@@ -2113,10 +2120,7 @@ if __name__ == "__main__":
             for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-            # Detach the hidden states to prevent backpropagation through the entire sequence.
-            actor_hidden_batch = (actor_hidden_batch[0].detach(), actor_hidden_batch[1].detach())
-            qf1_hidden_batch = (qf1_hidden_batch[0].detach(), qf1_hidden_batch[1].detach())
-            qf2_hidden_batch = (qf2_hidden_batch[0].detach(), qf2_hidden_batch[1].detach())
+
 
             # Log the time taken for this step.
             update_time = time.time() - update_time
@@ -2134,7 +2138,6 @@ if __name__ == "__main__":
                 if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
                     writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                     writer.add_scalar("losses/actor_loss_total", actor_loss_total.item(), global_step)
-
 
         # STEP TIME LOGGING BLOCK
         if iteration % args.writer_interval == 0:
