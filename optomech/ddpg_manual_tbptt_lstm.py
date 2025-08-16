@@ -1587,6 +1587,12 @@ if __name__ == "__main__":
             
             # Store the current rewards before generating a new transition.
             prior_rewards = rewards.copy()
+            actor_hidden = (new_actor_hidden[0].detach().clone(),
+                            new_actor_hidden[1].detach().clone())
+            qf1_hidden = (new_qf1_hidden[0].detach().clone(),
+                          new_qf1_hidden[1].detach().clone())
+            qf2_hidden = (new_qf2_hidden[0].detach().clone(),
+                          new_qf2_hidden[1].detach().clone())
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
