@@ -49,8 +49,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_envs=1 \
         --reward_function=align \
         --batch_size=128 \
-        --gamma=0.999 \
-        --tau=0.0001 \
+        --gamma=0.9 \
+        --tau=0.1 \
         --policy_frequency=4 \
         --reward_scale=0.1 \
         --clip_gradients \
@@ -64,9 +64,9 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_learning_rate=1e-3 \
         --qnetwork_channel_scale=4 \
         --actor_channel_scale=4 \
-        --actor_fc_scale=1024 \
-        --qnetwork_fc_scale=1024 \
-        --lstm_hidden_dim=256 \
+        --actor_fc_scale=256 \
+        --qnetwork_fc_scale=256 \
+        --lstm_hidden_dim=32 \
         --action_scale=2.0 \
         --exploration_noise=0.000005 \
         --decay_rate=0.995 \

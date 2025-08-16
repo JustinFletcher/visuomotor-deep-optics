@@ -1978,7 +1978,7 @@ if __name__ == "__main__":
                 # print(f"len(qf1_hidden_batch[0]) : {len(qf1_hidden_batch[0])}")
                 # print(f"qf1_hidden_batch[0][0] shape: {qf1_hidden_batch[0][0].shape}")
 
-                qf1_a_values_batch, qf1_hidden_batch = qf1(
+                qf1_a_values_batch, _ = qf1(
                     observations_batch.to(device),
                     actions_batch.to(device),
                     prior_actions_batch.to(device),
@@ -1990,7 +1990,7 @@ if __name__ == "__main__":
                 # print(f"len(qf1_hidden_batch[0]) : {len(qf1_hidden_batch[0])}")
                 # print(f"qf1_hidden_batch[0][0] shape: {qf1_hidden_batch[0][0].shape}")
 
-                qf2_a_values_batch, qf2_hidden_batch = qf2(
+                qf2_a_values_batch, _ = qf2(
                     observations_batch.to(device),
                     actions_batch.to(device),
                     prior_actions_batch.to(device),
