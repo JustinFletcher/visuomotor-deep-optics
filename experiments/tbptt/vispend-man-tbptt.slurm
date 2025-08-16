@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --actor_training_delay=10_000 --tbptt_seq_len=16 --exp_name="nvp_actor-td-10k-tbptt-16-seq-len""
-    "--gpu_list=1 --actor_training_delay=10_000 --tbptt_seq_len=32 --exp_name="nvp_actor-td-10k-tbptt-32-seq-len""
-    "--gpu_list=2 --actor_training_delay=10_000 --tbptt_seq_len=64 --exp_name="nvp_actor-td-10k-tbptt-64-seq-len""
-    "--gpu_list=3 --actor_training_delay=10_000 --tbptt_seq_len=128 --exp_name="nvp_actor-td-10k-tbptt-128-seq-len""
-    "--gpu_list=4 --actor_training_delay=0 --tbptt_seq_len=16 --exp_name="nvp_actor-td-0k-tbptt-16-seq-len""
-    "--gpu_list=5 --actor_training_delay=0 --tbptt_seq_len=32 --exp_name="nvp_actor-td-0k-tbptt-32-seq-len""
-    "--gpu_list=6 --actor_training_delay=0 --tbptt_seq_len=64 --exp_name="nvp_actor-td-0k-tbptt-64-seq-len""
-    "--gpu_list=7 --actor_training_delay=0 --tbptt_seq_len=128 --exp_name="nvp_actor-td-0k-tbptt-128-seq-len""
+    "--gpu_list=0 --actor_training_delay=10_000 --tbptt_seq_len=8 --exp_name="nvp_actor-td-10k-tbptt-8-seq-len""
+    "--gpu_list=1 --actor_training_delay=10_000 --tbptt_seq_len=16 --exp_name="nvp_actor-td-10k-tbptt-16-seq-len""
+    "--gpu_list=2 --actor_training_delay=10_000 --tbptt_seq_len=32 --exp_name="nvp_actor-td-10k-tbptt-32-seq-len""
+    "--gpu_list=3 --actor_training_delay=10_000 --tbptt_seq_len=64 --exp_name="nvp_actor-td-10k-tbptt-64-seq-len""
+    "--gpu_list=4 --actor_training_delay=0 --tbptt_seq_len=8 --exp_name="nvp_actor-td-0k-tbptt-8-seq-len""
+    "--gpu_list=5 --actor_training_delay=0 --tbptt_seq_len=16 --exp_name="nvp_actor-td-0k-tbptt-16-seq-len""
+    "--gpu_list=6 --actor_training_delay=0 --tbptt_seq_len=32 --exp_name="nvp_actor-td-0k-tbptt-32-seq-len""
+    "--gpu_list=7 --actor_training_delay=0 --tbptt_seq_len=64 --exp_name="nvp_actor-td-0k-tbptt-64-seq-len""
 
 )
 
@@ -49,7 +49,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_envs=1 \
         --reward_function=align \
         --batch_size=128 \
-        --gamma=0.9 \
+        --gamma=0.999 \
         --tau=0.0001 \
         --policy_frequency=4 \
         --reward_scale=0.1 \
@@ -72,7 +72,6 @@ for VARIANT in "${VARIANTS[@]}"; do
         --decay_rate=0.995 \
         --writer_interval=100 \
         --target_smoothing \
-        --tbptt_seq_len=32 \
         --save_model \
         --num_eval_rollouts=1 \
         --model_save_interval=10_000 \
