@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name="debug-0""
-    "--gpu_list=1 --exp_name="debug-1""
-    "--gpu_list=2 --exp_name="debug-2""
-    "--gpu_list=3 --exp_name="debug-3""
-    "--gpu_list=4 --exp_name="debug-4""
-    "--gpu_list=5 --exp_name="debug-5""
-    "--gpu_list=6 --exp_name="debug-6""
-    "--gpu_list=7 --exp_name="debug-7""
+    "--gpu_list=0 --actor_learning_rate=1e-3 --exp_name="debug-alr-3""
+    "--gpu_list=1 --actor_learning_rate=1e-3 --exp_name="debug-alr-3""
+    "--gpu_list=2 --actor_learning_rate=1e-4 --exp_name="debug-alr-4""
+    "--gpu_list=3 --actor_learning_rate=1e-4 --exp_name="debug-alr-4""
+    "--gpu_list=4 --actor_learning_rate=1e-5 --exp_name="debug-alr-5""
+    "--gpu_list=5 --actor_learning_rate=1e-5 --exp_name="debug-alr-5""
+    "--gpu_list=6 --actor_learning_rate=1e-5 --exp_name="debug-alr-5""
+    "--gpu_list=7 --actor_learning_rate=1e-5 --exp_name="debug-alr-5""
 
 )
 
@@ -34,6 +34,7 @@ cd ~/visuomotor-deep-optics/
 for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_manual_tbptt_lstm.py \
         --seed=9758 \
+        --exp_name=debug_td \
         --env-id VisualPendulum-v1 \
         --object_type=single \
         --max_episode_steps=256 \
@@ -50,9 +51,9 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_envs=1 \
         --reward_function=align \
         --batch_size=16 \
-        --gamma=0.9 \
-        --tau=0.1 \
-        --policy_frequency=1 \
+        --gamma=0.99 \
+        --tau=0.0001 \
+        --policy_frequency=2 \
         --reward_scale=0.1 \
         --clip_gradients \
         --max_grad_norm=10000.0 \
@@ -62,13 +63,12 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_training_delay=0 \
         --actor_type=impala \
         --critic_type=impala \
-        --actor_learning_rate=1e-3 \
         --critic_learning_rate=1e-3 \
-        --qnetwork_channel_scale=4 \
-        --actor_channel_scale=4 \
-        --actor_fc_scale=2048 \
-        --qnetwork_fc_scale=2048 \
-        --lstm_hidden_dim=1024 \
+        --qnetwork_channel_scale=256 \
+        --actor_channel_scale=256 \
+        --actor_fc_scale=256 \
+        --qnetwork_fc_scale=256 \
+        --lstm_hidden_dim=64 \
         --action_scale=2.0 \
         --exploration_noise=0.0000005 \
         --decay_rate=0.5 \
