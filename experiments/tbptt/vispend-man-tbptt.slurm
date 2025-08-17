@@ -71,7 +71,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --action_scale=2.0 \
         --exploration_noise=0.000005 \
         --decay_rate=0.995 \
-        --writer_interval=16 \
+        --writer_interval=100 \
         --target_smoothing \
         --save_model \
         --num_eval_rollouts=1 \
