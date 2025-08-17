@@ -72,7 +72,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --action_scale=2.0 \
         --exploration_noise=0.0000005 \
         --decay_rate=0.5 \
-        --writer_interval=1 \
+        --writer_interval=100 \
         --target_smoothing \
         --tbptt_seq_len=2 \
         --save_model \
