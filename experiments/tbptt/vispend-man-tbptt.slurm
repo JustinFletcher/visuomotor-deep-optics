@@ -66,9 +66,9 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_learning_rate=1e-3 \
         --qnetwork_channel_scale=4 \
         --actor_channel_scale=4 \
-        --actor_fc_scale=256 \
-        --qnetwork_fc_scale=256 \
-        --lstm_hidden_dim=64 \
+        --actor_fc_scale=2048 \
+        --qnetwork_fc_scale=2048 \
+        --lstm_hidden_dim=1024 \
         --action_scale=2.0 \
         --exploration_noise=0.0000005 \
         --decay_rate=0.5 \

@@ -327,10 +327,27 @@ class ImpalaActor(nn.Module):
 
 
         if self.debug:
+            
+            self.visual_encoder = nn.Sequential(
+                nn.Conv2d(input_channels, channel_scale, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(channel_scale, channel_scale * 2, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Flatten(),
+            )
 
+            with torch.inference_mode():
+
+                # Handle channels-last environments.
+                x = torch.zeros(1, *obs_shape)
+                if self.channels_last:
+                    x = x.permute(0, 3, 1, 2)
+                visual_output_shape = self.visual_encoder(x).shape
+
+            # Debug LSTM
             self.debugnet = nn.Sequential(
                 nn.Flatten(),
-                nn.Linear(int(np.prod(input_shape)), fc_scale),
+                nn.Linear(int(np.prod(visual_output_shape[1:])), fc_scale),
                 nn.ReLU(),
                 nn.Linear(fc_scale, fc_scale // 2),
                 nn.ReLU(),
@@ -503,7 +520,8 @@ class ImpalaActor(nn.Module):
             # print(f"[o] shape after permute: {o.shape}")
 
 
-        x = self.debugnet(o)
+        x = self.visual_encoder(o)
+        x = self.debugnet(x) 
         if batch_input:
             x = x.unsqueeze(1)
 
@@ -596,25 +614,26 @@ class ImpalaCritic(nn.Module):
 
         if self.debug:
 
-            # Debug only
-            # self.debugnet = nn.Sequential(
-            #     nn.Flatten(),
-            #     nn.Linear(int(np.prod(input_shape)), fc_scale),
-            #     nn.ReLU(),
-            #     nn.Linear(fc_scale, fc_scale // 2),
-            #     nn.ReLU(),
-            # )
-            # self.q_head = nn.Sequential(
+            self.visual_encoder = nn.Sequential(
+                nn.Conv2d(input_channels, channel_scale, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(channel_scale, channel_scale * 2, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Flatten(),
+            )
 
-            #     nn.Linear((fc_scale // 2) + 1, fc_scale // 2),
-            #     nn.ReLU(),
-            #     nn.Linear(fc_scale // 2, 1),
-            # )
+            with torch.inference_mode():
+
+                # Handle channels-last environments.
+                x = torch.zeros(1, *obs_shape)
+                if self.channels_last:
+                    x = x.permute(0, 3, 1, 2)
+                visual_output_shape = self.visual_encoder(x).shape
 
             # Debug LSTM
             self.debugnet = nn.Sequential(
                 nn.Flatten(),
-                nn.Linear(int(np.prod(input_shape)), fc_scale),
+                nn.Linear(int(np.prod(visual_output_shape[1:])), fc_scale),
                 nn.ReLU(),
                 nn.Linear(fc_scale, fc_scale // 2),
                 nn.ReLU(),
@@ -792,7 +811,8 @@ class ImpalaCritic(nn.Module):
         # new_hidden = self.get_zero_hidden()
 
         # Debug LSTM
-        x = self.debugnet(o)  # Add a dimension for the q value
+        x = self.visual_encoder(o)
+        x = self.debugnet(x)  # Add a dimension for the q value
         if batch_input:
             x = x.unsqueeze(1)
             a = a.unsqueeze(1)
@@ -876,17 +896,17 @@ def weight_regularization(model: torch.nn.Module, l1_scale=0.0, l2_scale=0.0):
     return l1_scale * l1_loss + l2_scale * l2_loss
 
 
-def log_gradients_in_model(model, logger, step):
+def log_gradients_in_model(model, logger, step, prefix="layer_grads"):
     """
     Log the gradients of all parameters in the actor model to TensorBoard.
     """
     for name, param in model.named_parameters():
         if param.grad is not None:
             grad_norm = param.grad.data.norm(2).item()
-            logger.add_scalar(f"layer_grads/{name}_grad_norm", grad_norm, step)
-            logger.add_histogram(f"layer_grads/{name}_hist", param.grad.data.cpu().numpy(), step)
+            logger.add_scalar(f"{prefix}/{name}_grad_norm", grad_norm, step)
+            logger.add_histogram(f"{prefix}/{name}_hist", param.grad.data.cpu().numpy(), step)
         else:
-            logger.add_scalar(f"grads/{name}_grad_norm", 0.0, step)
+            logger.add_scalar(f"{prefix}/{name}_grad_norm", 0.0, step)
 
 def log_weights_in_model(model, logger, step):
     for tag, value in model.named_parameters():
@@ -1511,12 +1531,7 @@ if __name__ == "__main__":
         else:
             prior_actions = actions.copy()
 
-        # if isinstance(prior_actions, torch.Tensor):
-        #     prior_actions = prior_actions.cpu().numpy()
-        # else:
-        #     prior_actions = prior_actions.copy()
 
-    
         # ALGO LOGIC: put action logic here
         # If during prelearning, sample actions using the specified method.
 
@@ -2151,9 +2166,9 @@ if __name__ == "__main__":
                 # reg = weight_regularization(actor, l2_scale=args.l2_reg, l1_scale=args.l1_reg)
                 # reg = 0.0
                 # total_actor_loss = actor_loss_total
-                actor_loss_total.backward(retain_graph=True)
-                # if iteration % args.writer_interval == 0:
-                #     log_gradients_in_model(actor, writer, global_step)
+                (actor_loss_total / args.tbptt_seq_len).backward(retain_graph=True)
+                if iteration % args.writer_interval == 0:
+                    log_gradients_in_model(actor, writer, global_step, prefix="actor_grads")
                 for p in qf1.parameters():
                     p.requires_grad = True
                 if iteration % args.writer_interval == 0:
@@ -2169,9 +2184,9 @@ if __name__ == "__main__":
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
             
             # QF1 OPTIMIZATION BLOCK
-            qf1_loss_total.backward()
-            # if iteration % args.writer_interval == 0:
-            #     log_gradients_in_model(qf1, writer, global_step)
+            (qf1_loss_total / args.tbptt_seq_len).backward()
+            if iteration % args.writer_interval == 0:
+                log_gradients_in_model(qf1, writer, global_step, prefix="qf1_grads")
             if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
                 writer.add_scalar("grads/qf1_grad", qf1_grad, global_step)
@@ -2185,9 +2200,9 @@ if __name__ == "__main__":
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
             # QF2 OPTIMIZATION BLOCK
-            qf2_loss_total.backward()
-            # if iteration % args.writer_interval == 0:
-            #     log_gradients_in_model(qf2, writer, global_step)
+            (qf2_loss_total / args.tbptt_seq_len).backward()
+            if iteration % args.writer_interval == 0:
+                log_gradients_in_model(qf2, writer, global_step, prefix="qf2_grads")
             if iteration % args.writer_interval == 0:
                 qf2_grad = get_grad_norm(qf2)
                 writer.add_scalar("grads/qf2_grad", qf2_grad, global_step)

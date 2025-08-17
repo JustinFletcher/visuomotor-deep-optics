@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import uuid
 
 class VisualPendulumEnv(PendulumEnv):
-    def __init__(self, resolution=16, render_style='pendulum'):
+    def __init__(self, resolution=16, render_style='observation'):
         """
         Initialize the VisualPendulumEnv.
         
