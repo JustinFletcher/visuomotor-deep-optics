@@ -506,6 +506,25 @@ class ImpalaActor(nn.Module):
         x = self.debugnet(o)
         if batch_input:
             x = x.unsqueeze(1)
+
+        # has_time = (o.dim() == 5)  # (B, T, H, W, C) or (B, T, C, H, W)
+        # if self.channels_last:
+        #     if has_time:   # (B, T, H, W, C) -> (B, T, C, H, W)
+        #         o = o.permute(0, 1, 4, 2, 3)
+        #     else:          # (B, H, W, C) -> (B, C, H, W)
+        #         o = o.permute(0, 3, 1, 2)
+
+        # if has_time:
+        #     B, T = o.shape[:2]
+        #     o_ = o.reshape(B*T, *o.shape[2:])     # (B*T, C, H, W)
+        #     x = self.debugnet(o_)                 # (B*T, F)
+        #     x = x.view(B, T, -1)                  # (B, T, F)
+        # else:
+        #     x = self.debugnet(o)                  # (B, F)
+        #     x = x.unsqueeze(1)                    # (B, 1, F)
+
+
+
         x_lstm, new_hidden = self.debuglstm(x, hidden)
         x = torch.cat([x_lstm, x], dim=-1)
         a = self.action_head(x)
@@ -533,7 +552,7 @@ class ImpalaActor(nn.Module):
 
         #     a = self.action_head(x)
 
-        #     a = (a * self.action_scale + self.action_bias)
+        a = (a * self.action_scale + self.action_bias)
 
         return a, new_hidden
 
@@ -564,9 +583,6 @@ class ImpalaCritic(nn.Module):
 
         obs_shape = envs.single_observation_space.shape
 
-        # Check if this is a channels-last environment
-
-        # Check if this is a channels-last environment
         # Check if this is a channels-last environment
         self.channels_last = obs_shape[-1] == 1
         if self.channels_last:
@@ -615,8 +631,13 @@ class ImpalaCritic(nn.Module):
 
                 nn.Linear((fc_scale // 2) + self.lstm_hidden_dim + 1, fc_scale // 2),
                 nn.ReLU(),
-                nn.Linear(fc_scale // 2, 1),
-
+                layer_init(
+                    nn.Linear(fc_scale // 2,
+                            1
+                            ),
+                    std=1.0,
+                    bias_const=q_bias
+                ),
             )
 
 
@@ -1245,6 +1266,15 @@ if __name__ == "__main__":
     episode_next_state = list()
     episode_done = list()
 
+
+    episode_state_ring = list()
+    episode_action_ring = list()
+    episode_last_action_ring = list()
+    episode_reward_ring = list()
+    episode_last_reward_ring = list()
+    episode_next_state_ring = list()
+    episode_done_ring = list()
+
     # Initialize the global step and episode return lists.
     global_step = 0
     best_train_episode_return = -np.inf
@@ -1681,6 +1711,26 @@ if __name__ == "__main__":
             episode_last_reward.append(prior_rewards)
             episode_next_state.append(real_next_obs)
             episode_done.append(terminations)
+
+            episode_state_ring.append(obs)
+            episode_action_ring.append(actions)
+            episode_last_action_ring.append(prior_actions)
+            episode_reward_ring.append(rewards)
+            episode_last_reward_ring.append(prior_rewards)
+            episode_next_state_ring.append(real_next_obs)
+            episode_done_ring.append(terminations)
+
+            if len(episode_state_ring) > args.tbptt_seq_len:
+
+                # If the ring buffer is full, we need to pop the oldest element.
+                episode_state_ring.pop(0)
+                episode_action_ring.pop(0)
+                episode_last_action_ring.pop(0)
+                episode_reward_ring.pop(0)
+                episode_last_reward_ring.pop(0)
+                episode_next_state_ring.pop(0)
+                episode_done_ring.pop(0)
+
             if len(episode_state) == args.tbptt_seq_len:
 
                 rb.push(initial_actor_hidden,
@@ -1695,7 +1745,6 @@ if __name__ == "__main__":
                         episode_done)
                 
 
-
                 episode_state = list()
                 episode_action = list()
                 episode_last_action = list()
@@ -1703,6 +1752,7 @@ if __name__ == "__main__":
                 episode_last_reward = list()
                 episode_next_state = list()
                 episode_done = list()
+
 
                 # Set the initial hidden states to the current value.
                 initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
@@ -1716,6 +1766,8 @@ if __name__ == "__main__":
             if infos:
 
                 for info in infos["final_info"]:
+
+                    # terminations = [True]
 
                     print(f"\n\nglobal_step={global_step}, episodic_return={info['episode']['r']}")
                     writer.add_scalar("episode/episodic_return", info["episode"]["r"], global_step)
@@ -1733,6 +1785,28 @@ if __name__ == "__main__":
                     if len(train_episodic_return_list) > 100:
                         train_episodic_return_list.pop(0)
 
+                    # episode_state_ring.append(obs)
+                    # episode_action_ring.append(actions)
+                    # episode_last_action_ring.append(prior_actions)
+                    # episode_reward_ring.append(rewards)
+                    # episode_last_reward_ring.append(prior_rewards)
+                    # episode_next_state_ring.append(real_next_obs)
+                    # episode_done_ring.append(terminations)
+
+                    # Set the most recently pushed termination to True; the Env will not.
+                    terminations[-1] = [True]
+
+
+                    # If the ring buffer is full, we need to pop the oldest element.
+                    # episode_state_ring.pop(0)
+                    # episode_action_ring.pop(0)
+                    # episode_last_action_ring.pop(0)
+                    # episode_reward_ring.pop(0)
+                    # episode_last_reward_ring.pop(0)
+                    # episode_next_state_ring.pop(0)
+                    # episode_done_ring.pop(0)
+
+                    # TODO: Pop earliest from last and append done transition
                     # while len(episode_state) < args.tbptt_seq_len:
                     #      # If the episode is shorter than the TBPTT sequence length, pad it with the last transition.
                     #     episode_state.append(obs)
@@ -1743,24 +1817,24 @@ if __name__ == "__main__":
                     #     episode_next_state.append(real_next_obs)
                     #     episode_done.append(terminations)
 
-                    # rb.push(initial_actor_hidden,
-                    #         initial_qf1_hidden,
-                    #         initial_qf2_hidden,
-                    #         episode_state,
-                    #         episode_action,
-                    #         episode_last_action,
-                    #         episode_reward,
-                    #         episode_last_reward,
-                    #         episode_next_state,
-                    #         episode_done)
+                    rb.push(initial_actor_hidden,
+                            initial_qf1_hidden,
+                            initial_qf2_hidden,
+                            episode_state_ring,
+                            episode_action_ring,
+                            episode_last_action_ring,
+                            episode_reward_ring,
+                            episode_last_reward_ring,
+                            episode_next_state_ring,
+                            episode_done_ring)
 
-                    episode_state = list()
-                    episode_action = list()
-                    episode_last_action = list()
-                    episode_reward = list()
-                    episode_last_reward = list()
-                    episode_next_state = list()
-                    episode_done = list()
+                    episode_state_ring = list()
+                    episode_action_ring = list()
+                    episode_last_action_ring = list()
+                    episode_reward_ring = list()
+                    episode_last_reward_ring = list()
+                    episode_next_state_ring = list()
+                    episode_done_ring = list()
 
                     # Set the initial hidden states to the current value.
                     # initial_actor_hidden = (new_actor_hidden[0].detach().clone(),
@@ -1913,6 +1987,9 @@ if __name__ == "__main__":
 
                     # Next state action batch comes out without a sequence dimension, so we need to add it.
                     # next_state_actions_batch = next_state_actions_batch.unsqueeze(1)
+                    # TODO: Two possible interventions here: remove noise or ensure the hidden batches are correct and not off by one
+                    # TODO: Also it's unclear if dones really matter but I know I'm not handling them correctly.
+                    # The next_q_value_batch never sees an update where it's just the reward becuase dones is never tru
                     policy_noise = 0.2
 
                     noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
@@ -1957,7 +2034,7 @@ if __name__ == "__main__":
                     # Unsqueeze the last dim of rewards and dones to add a length-1 sequence dim.
                     next_q_value_batch = rewards_batch.unsqueeze(-1) + (1 - dones_batch.unsqueeze(-1)) * args.gamma * (qf1_next_target_batch)
                     # next_q_value_batch = rewards_batch
-
+                    # print(dones_batch)
 
                     # rewards_batch shape: torch.Size([8, 2, 1])
                     # dones_batch shape: torch.Size([8, 2, 1])
@@ -2094,6 +2171,8 @@ if __name__ == "__main__":
             # QF1 OPTIMIZATION BLOCK
             qf1_loss_total.backward()
             if iteration % args.writer_interval == 0:
+                log_gradients_in_model(qf1, writer, global_step)
+            if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
                 writer.add_scalar("grads/qf1_grad", qf1_grad, global_step)
             if args.clip_gradients:
@@ -2108,9 +2187,10 @@ if __name__ == "__main__":
             # QF2 OPTIMIZATION BLOCK
             qf2_loss_total.backward()
             if iteration % args.writer_interval == 0:
+                log_gradients_in_model(qf2, writer, global_step)
+            if iteration % args.writer_interval == 0:
                 qf2_grad = get_grad_norm(qf2)
                 writer.add_scalar("grads/qf2_grad", qf2_grad, global_step)
-
             if args.clip_gradients:
                 torch.nn.utils.clip_grad_norm_(qf2.parameters(), max_norm=args.max_grad_norm)
                 if iteration % args.writer_interval == 0:

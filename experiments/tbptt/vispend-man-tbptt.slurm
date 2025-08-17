@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --actor_training_delay=10_000 --tbptt_seq_len=2 --exp_name="nvp_actor-td-10k-tbptt-2-seq-len""
-    "--gpu_list=1 --actor_training_delay=10_000 --tbptt_seq_len=4 --exp_name="nvp_actor-td-10k-tbptt-8-seq-len""
-    "--gpu_list=2 --actor_training_delay=10_000 --tbptt_seq_len=8 --exp_name="nvp_actor-td-10k-tbptt-8-seq-len""
-    "--gpu_list=3 --actor_training_delay=10_000 --tbptt_seq_len=16 --exp_name="nvp_actor-td-10k-tbptt-16-seq-len""
-    "--gpu_list=4 --actor_training_delay=0 --tbptt_seq_len=2 --exp_name="nvp_actor-td-0k-tbptt-2-seq-len""
-    "--gpu_list=5 --actor_training_delay=0 --tbptt_seq_len=4 --exp_name="nvp_actor-td-0k-tbptt-4-seq-len""
-    "--gpu_list=6 --actor_training_delay=0 --tbptt_seq_len=8 --exp_name="nvp_actor-td-0k-tbptt-8-seq-len""
-    "--gpu_list=7 --actor_training_delay=0 --tbptt_seq_len=16 --exp_name="nvp_actor-td-0k-tbptt-16-seq-len""
+    "--gpu_list=0 --exp_name="debug""
+    "--gpu_list=1 --exp_name="debug""
+    "--gpu_list=2 --exp_name="debug""
+    "--gpu_list=3 --exp_name="debug""
+    "--gpu_list=4 --exp_name="debug""
+    "--gpu_list=5 --exp_name="debug""
+    "--gpu_list=6 --exp_name="debug""
+    "--gpu_list=7 --exp_name="debug""
 
 )
 
@@ -56,7 +56,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --clip_gradients \
         --max_grad_norm=10000.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=20_000 \
+        --learning_starts=10_000 \
         --experience_sampling_delay=0_000 \
         --actor_type=impala \
         --critic_type=impala \
@@ -66,14 +66,16 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_channel_scale=4 \
         --actor_fc_scale=256 \
         --qnetwork_fc_scale=256 \
-        --lstm_hidden_dim=32 \
+        --lstm_hidden_dim=256 \
+        --actor_training_delay=0 \
         --action_scale=2.0 \
         --exploration_noise=0.000005 \
         --decay_rate=0.995 \
-        --writer_interval=100 \
+        --writer_interval=16 \
         --target_smoothing \
         --save_model \
         --num_eval_rollouts=1 \
+        --tbptt_seq_len=2 \
         --model_save_interval=10_000 \
         $VARIANT &  # Run in background
 done

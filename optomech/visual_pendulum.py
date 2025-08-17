@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import uuid
 
 class VisualPendulumEnv(PendulumEnv):
-    def __init__(self, resolution=16, render_style='pendulum'):
+    def __init__(self, resolution=4, render_style='observation'):
         """
         Initialize the VisualPendulumEnv.
         
@@ -43,6 +43,9 @@ class VisualPendulumEnv(PendulumEnv):
 
     def step(self, action):
         observation, reward, terminated, truncated, info = super().step(action)
+        # print("raw outputs")
+        # print(terminated)
+        # print(truncated)
         self.last_observation = observation  # Update the latest observation
         return self._get_visual_observation(observation), reward, terminated, truncated, info
 
