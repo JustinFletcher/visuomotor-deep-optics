@@ -34,7 +34,6 @@ cd ~/visuomotor-deep-optics/
 for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_manual_tbptt_lstm.py \
         --seed=9758 \
-        --exp_name=debug_td \
         --env-id VisualPendulum-v1 \
         --object_type=single \
         --max_episode_steps=256 \
