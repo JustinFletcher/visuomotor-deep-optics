@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --actor_learning_rate=1e-3 --exp_name="debug-alr-3""
-    "--gpu_list=1 --actor_learning_rate=1e-3 --exp_name="debug-alr-3""
-    "--gpu_list=2 --actor_learning_rate=1e-4 --exp_name="debug-alr-4""
-    "--gpu_list=3 --actor_learning_rate=1e-4 --exp_name="debug-alr-4""
-    "--gpu_list=4 --actor_learning_rate=1e-5 --exp_name="debug-alr-5""
-    "--gpu_list=5 --actor_learning_rate=1e-5 --exp_name="debug-alr-5""
-    "--gpu_list=6 --actor_learning_rate=1e-5 --exp_name="debug-alr-5""
-    "--gpu_list=7 --actor_learning_rate=1e-5 --exp_name="debug-alr-5""
+    "--gpu_list=0 --actor_learning_rate=1e-3 --exp_name="debug-alr-3-1""
+    "--gpu_list=1 --actor_learning_rate=1e-3 --exp_name="debug-alr-3-2""
+    "--gpu_list=2 --actor_learning_rate=1e-4 --exp_name="debug-alr-4-1""
+    "--gpu_list=3 --actor_learning_rate=1e-4 --exp_name="debug-alr-4-2""
+    "--gpu_list=4 --actor_learning_rate=1e-5 --exp_name="debug-alr-5-1""
+    "--gpu_list=5 --actor_learning_rate=1e-5 --exp_name="debug-alr-5-2""
+    "--gpu_list=6 --actor_learning_rate=1e-5 --exp_name="debug-alr-5-3""
+    "--gpu_list=7 --actor_learning_rate=1e-5 --exp_name="debug-alr-5-4""
 
 )
 
