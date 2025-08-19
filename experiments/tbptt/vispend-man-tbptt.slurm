@@ -18,7 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 -exp_name="debug-0""
+    "--gpu_list=0 --tbptt_seq_len=2 --exp_name="seq2_0""
+    "--gpu_list=0 --tbptt_seq_len=2 --exp_name="seq2_1""
+    "--gpu_list=0 --tbptt_seq_len=8 --exp_name="seq8_0""
+    "--gpu_list=0 --tbptt_seq_len=8 --exp_name="seq8_1""
+    "--gpu_list=0 --tbptt_seq_len=16 --exp_name="seq16_0""
+    "--gpu_list=0 --tbptt_seq_len=16 --exp_name="seq16_1""
+    "--gpu_list=0 --tbptt_seq_len=64 --exp_name="seq64_0""
+    "--gpu_list=0 --tbptt_seq_len=64 --exp_name="seq64_1""
 )
 
 cd ~/visuomotor-deep-optics/
