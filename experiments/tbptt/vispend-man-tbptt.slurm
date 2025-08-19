@@ -18,15 +18,7 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --actor_learning_rate=1e-3 --batch_size=16 --exp_name="debug-alr-3-16""
-    "--gpu_list=1 --actor_learning_rate=1e-3 --batch_size=64 --exp_name="debug-alr-3-64""
-    "--gpu_list=2 --actor_learning_rate=1e-4 --batch_size=16 --exp_name="debug-alr-4-16""
-    "--gpu_list=3 --actor_learning_rate=1e-4 --batch_size=64 --exp_name="debug-alr-4-64""
-    "--gpu_list=4 --actor_learning_rate=1e-5 --batch_size=16 --exp_name="debug-alr-5-16""
-    "--gpu_list=5 --actor_learning_rate=1e-5 --batch_size=64 --exp_name="debug-alr-5-64""
-    "--gpu_list=6 --actor_learning_rate=1e-5 --batch_size=128 --exp_name="debug-alr-5-128""
-    "--gpu_list=7 --actor_learning_rate=1e-5 --batch_size=256 --exp_name="debug-alr-5-256""
-
+    "--gpu_list=0 -exp_name="debug-0""
 )
 
 cd ~/visuomotor-deep-optics/
@@ -50,6 +42,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
+        --batch_size=128 \
         --gamma=0.99 \
         --tau=0.0001 \
         --policy_frequency=2 \
@@ -63,6 +56,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_type=impala \
         --critic_type=impala \
         --critic_learning_rate=1e-3 \
+        --actor_learning_rate=1e-5 \
         --qnetwork_channel_scale=256 \
         --actor_channel_scale=256 \
         --actor_fc_scale=256 \
@@ -73,7 +67,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --decay_rate=0.5 \
         --writer_interval=100 \
         --target_smoothing \
-        --tbptt_seq_len=2 \
+        --tbptt_seq_len=16 \
         --save_model \
         --num_eval_rollouts=1 \
         --model_save_interval=10_000 \

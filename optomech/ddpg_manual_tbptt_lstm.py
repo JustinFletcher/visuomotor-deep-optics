@@ -321,10 +321,7 @@ class ImpalaActor(nn.Module):
             input_channels = obs_shape[0]
             input_shape = obs_shape[1:]
 
-
         self.debug = True
-
-
 
         if self.debug:
             
@@ -498,7 +495,6 @@ class ImpalaActor(nn.Module):
                 hidden: Tuple[torch.Tensor, torch.Tensor]
         ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
 
-
         batch_input = len(o.shape) == 5
 
         # Handle the messy differences in our setup
@@ -519,30 +515,10 @@ class ImpalaActor(nn.Module):
                 o = o.permute(0, 1, 5, 2, 3, 4)  
             # print(f"[o] shape after permute: {o.shape}")
 
-
         x = self.visual_encoder(o)
         x = self.debugnet(x) 
         if batch_input:
             x = x.unsqueeze(1)
-
-        # has_time = (o.dim() == 5)  # (B, T, H, W, C) or (B, T, C, H, W)
-        # if self.channels_last:
-        #     if has_time:   # (B, T, H, W, C) -> (B, T, C, H, W)
-        #         o = o.permute(0, 1, 4, 2, 3)
-        #     else:          # (B, H, W, C) -> (B, C, H, W)
-        #         o = o.permute(0, 3, 1, 2)
-
-        # if has_time:
-        #     B, T = o.shape[:2]
-        #     o_ = o.reshape(B*T, *o.shape[2:])     # (B*T, C, H, W)
-        #     x = self.debugnet(o_)                 # (B*T, F)
-        #     x = x.view(B, T, -1)                  # (B, T, F)
-        # else:
-        #     x = self.debugnet(o)                  # (B, F)
-        #     x = x.unsqueeze(1)                    # (B, 1, F)
-
-
-
         x_lstm, new_hidden = self.debuglstm(x, hidden)
         x = torch.cat([x_lstm, x], dim=-1)
         a = self.action_head(x)
