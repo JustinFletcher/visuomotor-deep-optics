@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --tbptt_seq_len=2 --exp_name="seq2_0""
-    "--gpu_list=1 --tbptt_seq_len=2 --exp_name="seq2_1""
-    "--gpu_list=2 --tbptt_seq_len=2 --exp_name="seq2_2""
-    "--gpu_list=3 --tbptt_seq_len=2 --exp_name="seq2_3""
-    "--gpu_list=4 --tbptt_seq_len=4 --exp_name="seq4_0""
-    "--gpu_list=5 --tbptt_seq_len=4 --exp_name="seq4_1""
-    "--gpu_list=6 --tbptt_seq_len=4 --exp_name="seq4_2""
-    "--gpu_list=7 --tbptt_seq_len=4 --exp_name="seq4_3""
+    "--gpu_list=0 --exp_name="0""
+    "--gpu_list=1 --exp_name="1""
+    "--gpu_list=2 --exp_name="2""
+    "--gpu_list=3 --exp_name="3""
+    "--gpu_list=4 --exp_name="4""
+    "--gpu_list=5 --exp_name="5""
+    "--gpu_list=6 --exp_name="6""
+    "--gpu_list=7 --exp_name="7""
 )
 
 cd ~/visuomotor-deep-optics/
@@ -65,17 +65,18 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_learning_rate=1e-5 \
         --qnetwork_channel_scale=512 \
         --actor_channel_scale=512 \
-        --actor_fc_scale=512 \
-        --qnetwork_fc_scale=512 \
+        --actor_fc_scale=1024 \
+        --qnetwork_fc_scale=1024 \
         --lstm_hidden_dim=256 \
         --action_scale=2.0 \
-        --exploration_noise=0.0000005 \
-        --decay_rate=0.5 \
+        --exploration_noise=0.1 \
+        --decay_rate=0.9 \
         --writer_interval=100 \
+        --tbptt_seq_len=2 \
         --target_smoothing \
         --save_model \
-        --num_eval_rollouts=1 \
-        --model_save_interval=10_000 \
+        --num_eval_rollouts=5 \
+        --model_save_interval=100_000 \
         $VARIANT &  # Run in background
 done
 
