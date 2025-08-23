@@ -50,7 +50,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_function=align \
         --batch_size=128 \
         --gamma=0.99 \
-        --tau=0.0001 \
+        --tau=0.0005 \
         --policy_frequency=2 \
         --reward_scale=0.1 \
         --clip_gradients \
@@ -62,7 +62,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_type=impala \
         --critic_type=impala \
         --critic_learning_rate=1e-3 \
-        --actor_learning_rate=1e-5 \
+        --actor_learning_rate=1e-4 \
         --qnetwork_channel_scale=512 \
         --actor_channel_scale=512 \
         --actor_fc_scale=1024 \
