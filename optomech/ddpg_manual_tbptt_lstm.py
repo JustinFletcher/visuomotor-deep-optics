@@ -2143,8 +2143,8 @@ if __name__ == "__main__":
                 # reg = 0.0
                 # total_actor_loss = actor_loss_total
                 (actor_loss_total / args.tbptt_seq_len).backward(retain_graph=True)
-                if iteration % args.writer_interval == 0:
-                    log_gradients_in_model(actor, writer, global_step, prefix="actor_grads")
+                # if iteration % args.writer_interval == 0:
+                #     log_gradients_in_model(actor, writer, global_step, prefix="actor_grads")
                 for p in qf1.parameters():
                     p.requires_grad = True
                 if iteration % args.writer_interval == 0:
@@ -2161,8 +2161,8 @@ if __name__ == "__main__":
             
             # QF1 OPTIMIZATION BLOCK
             (qf1_loss_total / args.tbptt_seq_len).backward()
-            if iteration % args.writer_interval == 0:
-                log_gradients_in_model(qf1, writer, global_step, prefix="qf1_grads")
+            # if iteration % args.writer_interval == 0:
+            #     log_gradients_in_model(qf1, writer, global_step, prefix="qf1_grads")
             if iteration % args.writer_interval == 0:
                 qf1_grad = get_grad_norm(qf1)
                 writer.add_scalar("grads/qf1_grad", qf1_grad, global_step)
@@ -2177,8 +2177,8 @@ if __name__ == "__main__":
 
             # QF2 OPTIMIZATION BLOCK
             (qf2_loss_total / args.tbptt_seq_len).backward()
-            if iteration % args.writer_interval == 0:
-                log_gradients_in_model(qf2, writer, global_step, prefix="qf2_grads")
+            # if iteration % args.writer_interval == 0:
+            #     log_gradients_in_model(qf2, writer, global_step, prefix="qf2_grads")
             if iteration % args.writer_interval == 0:
                 qf2_grad = get_grad_norm(qf2)
                 writer.add_scalar("grads/qf2_grad", qf2_grad, global_step)
