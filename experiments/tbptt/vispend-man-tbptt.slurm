@@ -8,7 +8,7 @@
 #SBATCH --output=./tbptt.out
 #SBATCH --error=./tbptt.err
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=48:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
 
 
 # fdsgdfgs #SBATCH --nodelist=cr4mi2        # 
