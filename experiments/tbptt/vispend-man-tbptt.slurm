@@ -69,8 +69,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --qnetwork_fc_scale=1024 \
         --lstm_hidden_dim=256 \
         --action_scale=2.0 \
-        --exploration_noise=0.1 \
-        --decay_rate=0.9 \
+        --exploration_noise=0.2 \
+        --decay_rate=0.93 \
         --writer_interval=100 \
         --tbptt_seq_len=2 \
         --target_smoothing \
