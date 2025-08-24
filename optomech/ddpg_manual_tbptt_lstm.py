@@ -1416,8 +1416,8 @@ if __name__ == "__main__":
                     random_policy_returns_array = np.array(random_policy_returns_list).flatten()
 
                     mean_eval_episode_return = np.mean(episodic_returns_array)
-                    mean_zero_return_advantage = np.mean(episodic_returns_array / zero_policy_returns_array)
-                    mean_random_return_advantage = np.mean(episodic_returns_array / random_policy_returns_array)
+                    mean_zero_return_advantage = np.mean(zero_policy_returns_array - episodic_returns_array)
+                    mean_random_return_advantage = np.mean(random_policy_returns_array - episodic_returns_array)
 
                     writer.add_scalar("eval/best_policy_mean_returns", mean_eval_episode_return, iteration)
                     writer.add_scalar("eval/best_policy_zero_return_advantage", mean_zero_return_advantage, iteration)
@@ -1839,14 +1839,49 @@ if __name__ == "__main__":
                     actor_hidden = actor.get_zero_hidden()
                     qf1_hidden = qf1.get_zero_hidden()
                     qf2_hidden = qf2.get_zero_hidden()
+
+                    print("Warming up the hidden state")
+                    num_warmup_steps = 10
+                    actions = np.array([(actor.action_scale.cpu() * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
+                    obs, rewards, _, _, _ = envs.step(actions)
+                    for _ in range(num_warmup_steps):
+
+                        prior_actions = actions
+                        prior_rewards = rewards
+                        actions, actor_hidden = actor(
+                            torch.tensor(obs).to(device),
+                            torch.tensor(prior_actions).to(device),
+                            torch.tensor(prior_rewards).to(torch.float32).to(device),
+                            actor_hidden
+                        )
+                        
+                        _, qf1_hidden = qf1(
+                            torch.tensor(obs).to(device),
+                            torch.tensor(actions).to(device),
+                            torch.tensor(prior_actions).to(device),
+                            torch.tensor(prior_rewards).to(torch.float32).to(device),
+                            qf1_hidden
+                        )
+                        _, qf2_hidden = qf2(
+                            torch.tensor(obs).to(device),
+                            torch.tensor(actions).to(device),
+                            torch.tensor(prior_actions).to(device),
+                            torch.tensor(prior_rewards).to(torch.float32).to(device),
+                            qf2_hidden
+                        )
+
+                        obs, rewards, _, _, _ = envs.step(actions)
+
                     initial_actor_hidden = actor_hidden
                     initial_qf1_hidden = qf1_hidden
                     initial_qf2_hidden = qf2_hidden
 
+                    print("Resetting Noise Generator")
                     noise_generator.reset()
                     if global_step > args.learning_starts:
                         noise_generator.decay()
-                        
+
+
                     break
 
 
