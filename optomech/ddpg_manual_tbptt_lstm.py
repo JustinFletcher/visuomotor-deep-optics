@@ -1844,6 +1844,11 @@ if __name__ == "__main__":
                     num_warmup_steps = 10
                     actions = np.array([(actor.action_scale.cpu() * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
                     obs, rewards, _, _, _ = envs.step(actions)
+
+                    # If the obs are 8bit images, convert to float32 and rescale.
+                    if torch.tensor(obs).dtype != torch.float32:
+                        obs = np.array((obs / 255.0).astype(np.float32))
+                    rewards = args.reward_scale * rewards
                     for _ in range(num_warmup_steps):
 
                         prior_actions = actions
@@ -1871,6 +1876,10 @@ if __name__ == "__main__":
                         )
 
                         obs, rewards, _, _, _ = envs.step(actions)
+                        # If the obs are 8bit images, convert to float32 and rescale.
+                        if torch.tensor(obs).dtype != torch.float32:
+                            obs = np.array((obs / 255.0).astype(np.float32))
+                        rewards = args.reward_scale * rewards
 
                     initial_actor_hidden = actor_hidden
                     initial_qf1_hidden = qf1_hidden
