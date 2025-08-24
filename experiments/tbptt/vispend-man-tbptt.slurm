@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --learning_starts=200_000 --exp_name="0_warmup2_200k""
-    "--gpu_list=1 --learning_starts=200_000 --exp_name="1_warmup2_200k""
-    "--gpu_list=2 --learning_starts=200_000 --exp_name="2_warmup2_200k""
-    "--gpu_list=3 --learning_starts=200_000 --exp_name="3_warmup2_200k""
-    "--gpu_list=4 --learning_starts=100_000 --exp_name="4_warmup2_100k""
-    "--gpu_list=5 --learning_starts=100_000 --exp_name="5_warmup2_100k""
-    "--gpu_list=6 --learning_starts=100_000 --exp_name="6_warmup2_100k""
-    "--gpu_list=7 --learning_starts=100_000 --exp_name="7_warmup2_100k""
+    "--gpu_list=0 --learning_starts=200_000 --exp_name="0_warmup3_200k""
+    "--gpu_list=1 --learning_starts=200_000 --exp_name="1_warmup3_200k""
+    "--gpu_list=2 --learning_starts=200_000 --exp_name="2_warmup3_200k""
+    "--gpu_list=3 --learning_starts=200_000 --exp_name="3_warmup3_200k""
+    "--gpu_list=4 --learning_starts=100_000 --exp_name="4_warmup3_100k""
+    "--gpu_list=5 --learning_starts=100_000 --exp_name="5_warmup3_100k""
+    "--gpu_list=6 --learning_starts=100_000 --exp_name="6_warmup3_100k""
+    "--gpu_list=7 --learning_starts=100_000 --exp_name="7_warmup3_100k""
 )
 
 cd ~/visuomotor-deep-optics/
