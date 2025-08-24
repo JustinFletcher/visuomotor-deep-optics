@@ -1851,7 +1851,7 @@ if __name__ == "__main__":
                     rewards = args.reward_scale * rewards
                     for _ in range(num_warmup_steps):
 
-                        if torch.no_grad():
+                        with torch.no_grad():
                             prior_actions = actions
                             prior_rewards = rewards
                             actions, actor_hidden = actor(
