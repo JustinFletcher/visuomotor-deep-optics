@@ -1859,6 +1859,11 @@ if __name__ == "__main__":
                             torch.tensor(prior_rewards).to(torch.float32).to(device),
                             actor_hidden
                         )
+
+                        actions = actions.cpu().numpy().clip(
+                            actor.action_scale.cpu().numpy() * envs.single_action_space.low,
+                            actor.action_scale.cpu().numpy() * envs.single_action_space.high)
+                        
                         
                         _, qf1_hidden = qf1(
                             torch.tensor(obs).to(device),
