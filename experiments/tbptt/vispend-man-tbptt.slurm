@@ -8,7 +8,7 @@
 #SBATCH --output=./tbptt.out
 #SBATCH --error=./tbptt.err
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=24:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=18:00:00                # Maximum runtime (D-HH:MM:SS)
 
 
 # fdsgdfgs #SBATCH --nodelist=cr4mi2        # 
@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --learning_starts=10_000 --exp_name="0_10k""
-    "--gpu_list=1 --learning_starts=10_000 --exp_name="1_10k""
-    "--gpu_list=2 --learning_starts=10_000 --exp_name="2_10k""
-    "--gpu_list=3 --learning_starts=10_000 --exp_name="3_10k""
-    "--gpu_list=4 --learning_starts=100_000 --exp_name="4_100k""
-    "--gpu_list=5 --learning_starts=100_000 --exp_name="5_100k""
-    "--gpu_list=6 --learning_starts=100_000 --exp_name="6_100k""
-    "--gpu_list=7 --learning_starts=100_000 --exp_name="7_100k""
+    "--gpu_list=0 --learning_starts=200_000 --exp_name="0_warmup_200k""
+    "--gpu_list=1 --learning_starts=200_000 --exp_name="1_warmup_200k""
+    "--gpu_list=2 --learning_starts=200_000 --exp_name="2_warmup_200k""
+    "--gpu_list=3 --learning_starts=200_000 --exp_name="3_warmup_200k""
+    "--gpu_list=4 --learning_starts=100_000 --exp_name="4_warmup_100k""
+    "--gpu_list=5 --learning_starts=100_000 --exp_name="5_warmup_100k""
+    "--gpu_list=6 --learning_starts=100_000 --exp_name="6_warmup_100k""
+    "--gpu_list=7 --learning_starts=100_000 --exp_name="7_warmup_100k""
 )
 
 cd ~/visuomotor-deep-optics/
