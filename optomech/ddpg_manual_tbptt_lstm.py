@@ -1851,40 +1851,41 @@ if __name__ == "__main__":
                     rewards = args.reward_scale * rewards
                     for _ in range(num_warmup_steps):
 
-                        prior_actions = actions
-                        prior_rewards = rewards
-                        actions, actor_hidden = actor(
-                            torch.tensor(obs).to(device),
-                            torch.tensor(prior_actions).to(device),
-                            torch.tensor(prior_rewards).to(torch.float32).to(device),
-                            actor_hidden
-                        )
+                        if torch.no_grad():
+                            prior_actions = actions
+                            prior_rewards = rewards
+                            actions, actor_hidden = actor(
+                                torch.tensor(obs).to(device),
+                                torch.tensor(prior_actions).to(device),
+                                torch.tensor(prior_rewards).to(torch.float32).to(device),
+                                actor_hidden
+                            )
 
-                        actions = actions.cpu().numpy().clip(
-                            actor.action_scale.cpu().numpy() * envs.single_action_space.low,
-                            actor.action_scale.cpu().numpy() * envs.single_action_space.high)
-                        
-                        
-                        _, qf1_hidden = qf1(
-                            torch.tensor(obs).to(device),
-                            torch.tensor(actions).to(device),
-                            torch.tensor(prior_actions).to(device),
-                            torch.tensor(prior_rewards).to(torch.float32).to(device),
-                            qf1_hidden
-                        )
-                        _, qf2_hidden = qf2(
-                            torch.tensor(obs).to(device),
-                            torch.tensor(actions).to(device),
-                            torch.tensor(prior_actions).to(device),
-                            torch.tensor(prior_rewards).to(torch.float32).to(device),
-                            qf2_hidden
-                        )
+                            actions = actions.cpu().numpy().clip(
+                                actor.action_scale.cpu().numpy() * envs.single_action_space.low,
+                                actor.action_scale.cpu().numpy() * envs.single_action_space.high)
+                            
+                            
+                            _, qf1_hidden = qf1(
+                                torch.tensor(obs).to(device),
+                                torch.tensor(actions).to(device),
+                                torch.tensor(prior_actions).to(device),
+                                torch.tensor(prior_rewards).to(torch.float32).to(device),
+                                qf1_hidden
+                            )
+                            _, qf2_hidden = qf2(
+                                torch.tensor(obs).to(device),
+                                torch.tensor(actions).to(device),
+                                torch.tensor(prior_actions).to(device),
+                                torch.tensor(prior_rewards).to(torch.float32).to(device),
+                                qf2_hidden
+                            )
 
-                        obs, rewards, _, _, _ = envs.step(actions)
-                        # If the obs are 8bit images, convert to float32 and rescale.
-                        if torch.tensor(obs).dtype != torch.float32:
-                            obs = np.array((obs / 255.0).astype(np.float32))
-                        rewards = args.reward_scale * rewards
+                            obs, rewards, _, _, _ = envs.step(actions)
+                            # If the obs are 8bit images, convert to float32 and rescale.
+                            if torch.tensor(obs).dtype != torch.float32:
+                                obs = np.array((obs / 255.0).astype(np.float32))
+                            rewards = args.reward_scale * rewards
 
                     initial_actor_hidden = actor_hidden
                     initial_qf1_hidden = qf1_hidden
