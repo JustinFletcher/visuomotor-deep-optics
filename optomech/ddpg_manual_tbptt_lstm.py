@@ -1887,6 +1887,9 @@ if __name__ == "__main__":
                                 obs = np.array((obs / 255.0).astype(np.float32))
                             rewards = args.reward_scale * rewards
 
+
+                            next_obs = obs
+
                     initial_actor_hidden = actor_hidden
                     initial_qf1_hidden = qf1_hidden
                     initial_qf2_hidden = qf2_hidden
