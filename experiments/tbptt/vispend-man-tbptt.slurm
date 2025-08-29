@@ -8,7 +8,7 @@
 #SBATCH --output=./tbptt.out
 #SBATCH --error=./tbptt.err
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=18:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=72:00:00                # Maximum runtime (D-HH:MM:SS)
 
 
 # fdsgdfgs #SBATCH --nodelist=cr4mi2        # 
@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --learning_starts=200_000 --exp_name="0_warmup6_200k""
-    "--gpu_list=1 --learning_starts=200_000 --exp_name="1_warmup6_200k""
-    "--gpu_list=2 --learning_starts=200_000 --exp_name="2_warmup6_200k""
-    "--gpu_list=3 --learning_starts=200_000 --exp_name="3_warmup6_200k""
-    "--gpu_list=4 --learning_starts=100_000 --exp_name="4_warmup6_100k""
-    "--gpu_list=5 --learning_starts=100_000 --exp_name="5_warmup6_100k""
-    "--gpu_list=6 --learning_starts=100_000 --exp_name="6_warmup6_100k""
-    "--gpu_list=7 --learning_starts=100_000 --exp_name="7_warmup6_100k""
+    "--gpu_list=0 --learning_starts=200_000 --exp_name="0_warmup7_small_200k""
+    "--gpu_list=1 --learning_starts=200_000 --exp_name="1_warmup7_small_200k""
+    "--gpu_list=2 --learning_starts=200_000 --exp_name="2_warmup7_small_200k""
+    "--gpu_list=3 --learning_starts=200_000 --exp_name="3_warmup7_small_200k""
+    "--gpu_list=4 --learning_starts=100_000 --exp_name="4_warmup7_small_100k""
+    "--gpu_list=5 --learning_starts=100_000 --exp_name="5_warmup7_small_100k""
+    "--gpu_list=6 --learning_starts=100_000 --exp_name="6_warmup7_small_100k""
+    "--gpu_list=7 --learning_starts=100_000 --exp_name="7_warmup7_small_100k""
 )
 
 cd ~/visuomotor-deep-optics/
@@ -62,11 +62,11 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_type=impala \
         --critic_learning_rate=1e-3 \
         --actor_learning_rate=1e-5 \
-        --qnetwork_channel_scale=256 \
-        --actor_channel_scale=256 \
-        --actor_fc_scale=512 \
-        --qnetwork_fc_scale=512 \
-        --lstm_hidden_dim=256 \
+        --qnetwork_channel_scale=128 \
+        --actor_channel_scale=128 \
+        --actor_fc_scale=128 \
+        --qnetwork_fc_scale=128 \
+        --lstm_hidden_dim=128 \
         --action_scale=2.0 \
         --exploration_noise=0.2 \
         --decay_rate=0.93 \
