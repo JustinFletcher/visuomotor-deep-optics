@@ -49,7 +49,6 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_envs=1 \
         --reward_function=align \
         --batch_size=16 \
-        --gamma=0.99 \
         --tau=0.0001 \
         --policy_frequency=2 \
         --reward_scale=0.1 \
