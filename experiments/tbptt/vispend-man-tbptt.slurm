@@ -62,14 +62,14 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_type=impala \
         --critic_learning_rate=1e-3 \
         --actor_learning_rate=1e-5 \
-        --qnetwork_channel_scale=128 \
-        --actor_channel_scale=128 \
-        --actor_fc_scale=128 \
-        --qnetwork_fc_scale=128 \
-        --lstm_hidden_dim=128 \
+        --qnetwork_channel_scale=256 \
+        --actor_channel_scale=256 \
+        --actor_fc_scale=256 \
+        --qnetwork_fc_scale=256 \
+        --lstm_hidden_dim=256 \
         --action_scale=2.0 \
         --exploration_noise=0.2 \
-        --decay_rate=0.93 \
+        --decay_rate=0.97 \
         --writer_interval=100 \
         --target_smoothing \
         --save_model \
