@@ -17,9 +17,9 @@
 # This is a change git
 
 # Open questions.
-# Does batch size matter? What's the max at 512 and 256?
-# Does q_bias matter?
-# What's the right tau?
+# Does batch size matter? What's the max at 512 and 256? rather would leave this be for now.
+# Does q_bias matter? - This experiment is 5666
+# What's the right tau? - trying 005 in 5666
 # Should I have the LSTM directly in the loop?
 
 
@@ -77,7 +77,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --lstm_hidden_dim=128 \
         --action_scale=2.0 \
         --exploration_noise=0.2 \
-        --decay_rate=0.999 \
+        --decay_rate=0.99 \
         --writer_interval=100 \
         --tbptt_seq_len=16 \
         --target_smoothing \
