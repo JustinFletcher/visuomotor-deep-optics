@@ -18,14 +18,14 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --learning_starts=200_000 --exp_name="0_warmup7_small_200k""
-    "--gpu_list=1 --learning_starts=200_000 --exp_name="1_warmup7_small_200k""
-    "--gpu_list=2 --learning_starts=200_000 --exp_name="2_warmup7_small_200k""
-    "--gpu_list=3 --learning_starts=200_000 --exp_name="3_warmup7_small_200k""
-    "--gpu_list=4 --learning_starts=100_000 --exp_name="4_warmup7_small_100k""
-    "--gpu_list=5 --learning_starts=100_000 --exp_name="5_warmup7_small_100k""
-    "--gpu_list=6 --learning_starts=100_000 --exp_name="6_warmup7_small_100k""
-    "--gpu_list=7 --learning_starts=100_000 --exp_name="7_warmup7_small_100k""
+    "--gpu_list=0 --tbptt_seq_len=2 --gamma=0.99 --exp_name="0_warmup7_small_seq2_gamma99""
+    "--gpu_list=1 --tbptt_seq_len=4 --gamma=0.99 --exp_name="1_warmup7_small_seq4_gamma99""
+    "--gpu_list=2 --tbptt_seq_len=8 --gamma=0.99 --exp_name="2_warmup7_small_seq8_gamma99""
+    "--gpu_list=3 --tbptt_seq_len=16 --gamma=0.99 --exp_name="3_warmup7_small_seq16_gamma99""
+    "--gpu_list=4 --tbptt_seq_len=2 --gamma=0.5 --exp_name="4_warmup7_small_seq2_gamma5""
+    "--gpu_list=5 --tbptt_seq_len=4 --gamma=0.5 --exp_name="5_warmup7_small_seq4_gamma5""
+    "--gpu_list=6 --tbptt_seq_len=8 --gamma=0.5 --exp_name="6_warmup7_small_seq8_gamma5""
+    "--gpu_list=7 --tbptt_seq_len=16 --gamma=0.5 --exp_name="7_warmup7_small_seq16_gamma5""
 )
 
 cd ~/visuomotor-deep-optics/
@@ -56,6 +56,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --clip_gradients \
         --max_grad_norm=10000.0 \
         --buffer_size=1_000_000 \
+        --learning_starts=100_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=0 \
         --actor_type=impala \
@@ -71,7 +72,6 @@ for VARIANT in "${VARIANTS[@]}"; do
         --exploration_noise=0.2 \
         --decay_rate=0.93 \
         --writer_interval=100 \
-        --tbptt_seq_len=32 \
         --target_smoothing \
         --save_model \
         --num_eval_rollouts=5 \
