@@ -644,8 +644,8 @@ class ImpalaCritic(nn.Module):
             )
             
             self.q_head = nn.Sequential(
-
-                nn.Linear((fc_scale // 2) + self.lstm_hidden_dim + 1, fc_scale // 2),
+                # 64 + 128 + 1 = 193
+                nn.Linear((fc_scale // 2) + self.lstm_hidden_dim + vector_action_size, fc_scale // 2),
                 # nn.Linear(self.lstm_hidden_dim + 1, fc_scale // 2),
                 nn.ReLU(),
                 layer_init(
@@ -815,9 +815,9 @@ class ImpalaCritic(nn.Module):
             x = x.unsqueeze(1)
             a = a.unsqueeze(1)
         x_lstm, new_hidden = self.debuglstm(x, hidden)
-        # print(f"[x] shape before concat: {x.shape}")
-        # print(f"[a] shape: {a.shape}")
-        # print(f"[x_lstm] shape before concat: {x_lstm.shape}")
+        print(f"[x] shape before concat: {x.shape}")
+        print(f"[a] shape: {a.shape}")
+        print(f"[x_lstm] shape before concat: {x_lstm.shape}")
         x = torch.cat([x, x_lstm, a], dim=-1)
         # x = torch.cat([x_lstm, a], dim=-1)
         q = self.q_head(x)
