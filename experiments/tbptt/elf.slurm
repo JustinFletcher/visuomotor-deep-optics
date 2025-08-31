@@ -25,7 +25,7 @@
 
 
 VARIANTS=(
-    "--gpu_list=0 --exp_name="0_optomech_tau0005_small""
+    "--gpu_list=0 --exp_name="0_optomech_longrun""
 )
 
 cd ~/visuomotor-deep-optics/
@@ -49,7 +49,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_wind_diff_motion \
         --num_envs=1 \
         --reward_function=align \
-        --batch_size=16 \
+        --batch_size=8 \
         --gamma=0.99 \
         --tau=0.0001 \
         --policy_frequency=2 \
@@ -57,7 +57,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --clip_gradients \
         --max_grad_norm=10000.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=10_000 \
+        --learning_starts=1_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=0 \
         --actor_type=impala \
@@ -76,7 +76,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --tbptt_seq_len=16 \
         --target_smoothing \
         --save_model \
-        --num_eval_rollouts=5 \
+        --num_eval_rollouts=0 \
         --model_save_interval=100_000 \
         $VARIANT &  # Run in background
 done
