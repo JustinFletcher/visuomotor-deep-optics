@@ -168,6 +168,8 @@ class Args:
     target_smoothing: bool = False
     """How long the sequence length is for the LSTM"""
     tbptt_seq_len: int = 16
+    """Number of warmup steps"""
+    num_warmup_steps: int = 10
 
     # visual pendulum parameters
     # learning_rate: float = 3e-4
@@ -325,10 +327,23 @@ class ImpalaActor(nn.Module):
 
         if self.debug:
             
+            # self.visual_encoder = nn.Sequential(
+            #     nn.Conv2d(input_channels, channel_scale, kernel_size=3, stride=2),
+            #     nn.ReLU(),
+            #     nn.Conv2d(channel_scale, channel_scale * 2, kernel_size=3, stride=2),
+            #     nn.ReLU(),
+            #     nn.Flatten(),
+            # )
+
+
             self.visual_encoder = nn.Sequential(
-                nn.Conv2d(input_channels, channel_scale, kernel_size=3, stride=2),
+                nn.Conv2d(input_channels, channel_scale, kernel_size=3, stride=1),
                 nn.ReLU(),
-                nn.Conv2d(channel_scale, channel_scale * 2, kernel_size=3, stride=2),
+                nn.Conv2d(channel_scale, channel_scale * 2, kernel_size=3, stride=1),
+                nn.ReLU(),
+                nn.Conv2d(channel_scale * 2, channel_scale * 3, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(channel_scale * 3, channel_scale * 4, kernel_size=4, stride=3),
                 nn.ReLU(),
                 nn.Flatten(),
             )
@@ -359,6 +374,7 @@ class ImpalaActor(nn.Module):
 
             self.action_head = nn.Sequential(
                 nn.Linear(fc_scale // 2 + self.lstm_hidden_dim, fc_scale // 2),
+                # nn.Linear(self.lstm_hidden_dim, fc_scale // 2),
                 nn.ReLU(),
                 nn.Linear(fc_scale // 2, int(np.prod(envs.single_action_space.shape))),
                 nn.Tanh(),
@@ -521,6 +537,7 @@ class ImpalaActor(nn.Module):
             x = x.unsqueeze(1)
         x_lstm, new_hidden = self.debuglstm(x, hidden)
         x = torch.cat([x_lstm, x], dim=-1)
+        # x = x_lstm
         a = self.action_head(x)
         # if batch_input:
         #     a = a.unsqueeze(1)
@@ -591,9 +608,13 @@ class ImpalaCritic(nn.Module):
         if self.debug:
 
             self.visual_encoder = nn.Sequential(
-                nn.Conv2d(input_channels, channel_scale, kernel_size=3, stride=2),
+                nn.Conv2d(input_channels, channel_scale, kernel_size=3, stride=1),
                 nn.ReLU(),
-                nn.Conv2d(channel_scale, channel_scale * 2, kernel_size=3, stride=2),
+                nn.Conv2d(channel_scale, channel_scale * 2, kernel_size=3, stride=1),
+                nn.ReLU(),
+                nn.Conv2d(channel_scale * 2, channel_scale * 3, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(channel_scale * 3, channel_scale * 4, kernel_size=4, stride=3),
                 nn.ReLU(),
                 nn.Flatten(),
             )
@@ -625,6 +646,7 @@ class ImpalaCritic(nn.Module):
             self.q_head = nn.Sequential(
 
                 nn.Linear((fc_scale // 2) + self.lstm_hidden_dim + 1, fc_scale // 2),
+                # nn.Linear(self.lstm_hidden_dim + 1, fc_scale // 2),
                 nn.ReLU(),
                 layer_init(
                     nn.Linear(fc_scale // 2,
@@ -797,6 +819,7 @@ class ImpalaCritic(nn.Module):
         # print(f"[a] shape: {a.shape}")
         # print(f"[x_lstm] shape before concat: {x_lstm.shape}")
         x = torch.cat([x, x_lstm, a], dim=-1)
+        # x = torch.cat([x_lstm, a], dim=-1)
         q = self.q_head(x)
         
 
@@ -1841,7 +1864,6 @@ if __name__ == "__main__":
                     qf2_hidden = qf2.get_zero_hidden()
 
                     print("Warming up the hidden state")
-                    num_warmup_steps = 10
                     actions = np.array([(actor.action_scale.cpu() * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
                     obs, rewards, _, _, _ = envs.step(actions)
 
@@ -1849,7 +1871,7 @@ if __name__ == "__main__":
                     if torch.tensor(obs).dtype != torch.float32:
                         obs = np.array((obs / 255.0).astype(np.float32))
                     rewards = args.reward_scale * rewards
-                    for _ in range(num_warmup_steps):
+                    for _ in range(args.num_warmup_steps):
 
                         with torch.no_grad():
                             prior_actions = actions
@@ -1881,14 +1903,12 @@ if __name__ == "__main__":
                                 qf2_hidden
                             )
 
-                            obs, rewards, _, _, _ = envs.step(actions)
+                            next_obs, rewards, _, _, _ = envs.step(actions)
                             # If the obs are 8bit images, convert to float32 and rescale.
-                            if torch.tensor(obs).dtype != torch.float32:
-                                obs = np.array((obs / 255.0).astype(np.float32))
+                            if torch.tensor(next_obs).dtype != torch.float32:
+                                next_obs = np.array((next_obs / 255.0).astype(np.float32))
                             rewards = args.reward_scale * rewards
-
-
-                            next_obs = obs
+                            obs = next_obs
 
                     initial_actor_hidden = actor_hidden
                     initial_qf1_hidden = qf1_hidden
