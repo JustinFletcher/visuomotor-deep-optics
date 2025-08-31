@@ -345,8 +345,8 @@ class ImpalaActor(nn.Module):
                 nn.ReLU(),
                 nn.Conv2d(channel_scale * 3, channel_scale * 4, kernel_size=3, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(channel_scale * 4, channel_scale * 2, kernel_size=3, stride=2),
-                nn.ReLU(),
+                # nn.Conv2d(channel_scale * 4, channel_scale * 2, kernel_size=3, stride=2),
+                # nn.ReLU(),
                 nn.Flatten(),
             )
 
@@ -523,7 +523,7 @@ class ImpalaActor(nn.Module):
 
         # Handle channels-last environments.
         if self.channels_last:
-            print(f"[o] shape before permute: {o.shape}")
+            # print(f"[o] shape before permute: {o.shape}")
             if len(o.shape) == 4:
                 o = o.permute(0, 3, 1, 2)
             elif len(o.shape) == 5:
@@ -531,7 +531,7 @@ class ImpalaActor(nn.Module):
                 o = o.squeeze(1)  # Remove the sequence dimension
             elif len(o.shape) == 6:
                 o = o.permute(0, 1, 5, 2, 3, 4) 
-            print(f"[o] shape after permute: {o.shape}")
+            # print(f"[o] shape after permute: {o.shape}")
         else:
             # print(f"[o] shape before squeeze: {o.shape}")
             if len(o.shape) == 5:
@@ -624,8 +624,8 @@ class ImpalaCritic(nn.Module):
                 nn.ReLU(),
                 nn.Conv2d(channel_scale * 3, channel_scale * 4, kernel_size=3, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(channel_scale * 4, channel_scale * 2, kernel_size=3, stride=2),
-                nn.ReLU(),
+                # nn.Conv2d(channel_scale * 4, channel_scale * 2, kernel_size=3, stride=2),
+                # nn.ReLU(),
                 nn.Flatten(),
             )
 
@@ -1369,7 +1369,7 @@ if __name__ == "__main__":
                  mu=0.0, 
                  theta=0.15, 
                  sigma_initial=args.exploration_noise, 
-                 min_sigma=args.exploration_noise * 0.01, 
+                 min_sigma=args.exploration_noise * 0.00001, 
                  decay_rate=args.decay_rate,
                  auto_decay=False,
                  device='cpu')

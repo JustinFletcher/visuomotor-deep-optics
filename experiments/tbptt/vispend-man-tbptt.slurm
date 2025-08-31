@@ -39,6 +39,7 @@ cd ~/visuomotor-deep-optics/
 # Run all variants in parallel
 for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_manual_tbptt_lstm.py \
+        --seed=9758 \
         --env-id VisualPendulum-v1 \
         --focal_plane_image_size_pixels=256 \
         --object_type=single \
@@ -63,7 +64,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --clip_gradients \
         --max_grad_norm=10000.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=10_000 \
+        --learning_starts=100_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=0 \
         --actor_type=impala \

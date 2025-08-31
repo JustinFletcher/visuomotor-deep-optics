@@ -2,8 +2,8 @@
 #SBATCH --job-name=tbptt           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=32
-#SBATCH --ntasks-per-node=32          # Number of tasks per node
+#SBATCH --ntasks=64
+#SBATCH --ntasks-per-node=64          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       #
 #SBATCH --output=./tbptt_elf.out
 #SBATCH --error=./tbptt_elf.err
@@ -25,7 +25,8 @@
 
 
 VARIANTS=(
-    "--gpu_list=0 --exp_name="0_optomech_longrun""
+    "--gpu_list=0 --exp_name="0_optomech_longrun_direct""
+    "--gpu_list=1 --incremental_control --exp_name="1_optomech_longrun_incremental""
 )
 
 cd ~/visuomotor-deep-optics/
@@ -34,9 +35,9 @@ for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_manual_tbptt_lstm.py \
         --seed=9758 \
         --env-id optomech-v1 \
-        --focal_plane_image_size_pixels=256 \
+        --focal_plane_image_size_pixels=64 \
         --object_type=single \
-        --max_episode_steps=256 \
+        --max_episode_steps=1024 \
         --ao_interval_ms=5.0 \
         --control_interval_ms=5.0 \
         --frame_interval_ms=5.0 \
@@ -57,7 +58,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --clip_gradients \
         --max_grad_norm=10000.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=10_000 \
+        --learning_starts=200_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=0 \
         --actor_type=impala \
@@ -70,10 +71,10 @@ for VARIANT in "${VARIANTS[@]}"; do
         --qnetwork_fc_scale=128 \
         --lstm_hidden_dim=128 \
         --action_scale=1.0 \
-        --exploration_noise=0.1 \
+        --exploration_noise=0.00001 \
         --decay_rate=0.99 \
-        --writer_interval=100 \
-        --tbptt_seq_len=16 \
+        --writer_interval=1 \
+        --tbptt_seq_len=8 \
         --target_smoothing \
         --save_model \
         --num_eval_rollouts=0 \
