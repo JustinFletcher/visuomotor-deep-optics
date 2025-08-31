@@ -529,6 +529,7 @@ class ImpalaActor(nn.Module):
                 o = o.squeeze(1)  # Remove the sequence dimension
             elif len(o.shape) == 6:
                 o = o.permute(0, 1, 5, 2, 3, 4)  
+                o = o.squeeze(1)  # Remove the sequence dimension
             # print(f"[o] shape after permute: {o.shape}")
 
         x = self.visual_encoder(o)
@@ -799,6 +800,7 @@ class ImpalaCritic(nn.Module):
                 o = o.squeeze(1)  # Remove the sequence dimension
             elif len(o.shape) == 6:
                 o = o.permute(0, 1, 5, 2, 3, 4)  
+                o = o.squeeze(1)  # Remove the sequence dimension
             # print(f"[o] shape after permute: {o.shape}")
 
 
