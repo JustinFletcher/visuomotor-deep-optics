@@ -64,8 +64,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --critic_type=impala \
         --critic_learning_rate=1e-3 \
         --actor_learning_rate=1e-5 \
-        --qnetwork_channel_scale=128 \
-        --actor_channel_scale=128 \
+        --qnetwork_channel_scale=32 \
+        --actor_channel_scale=32 \
         --actor_fc_scale=128 \
         --qnetwork_fc_scale=128 \
         --lstm_hidden_dim=128 \
