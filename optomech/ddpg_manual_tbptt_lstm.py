@@ -343,7 +343,9 @@ class ImpalaActor(nn.Module):
                 nn.ReLU(),
                 nn.Conv2d(channel_scale * 2, channel_scale * 3, kernel_size=3, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(channel_scale * 3, channel_scale * 4, kernel_size=4, stride=3),
+                nn.Conv2d(channel_scale * 3, channel_scale * 4, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(channel_scale * 4, channel_scale * 2, kernel_size=3, stride=2),
                 nn.ReLU(),
                 nn.Flatten(),
             )
@@ -511,7 +513,7 @@ class ImpalaActor(nn.Module):
                 hidden: Tuple[torch.Tensor, torch.Tensor]
         ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
 
-        batch_input = len(o.shape) >= 5
+        batch_input = len(o.shape) == 5
 
         # Handle the messy differences in our setup
         if batch_input:
@@ -521,20 +523,22 @@ class ImpalaActor(nn.Module):
 
         # Handle channels-last environments.
         if self.channels_last:
-            # print(f"[o] shape before permute: {o.shape}")
+            print(f"[o] shape before permute: {o.shape}")
             if len(o.shape) == 4:
                 o = o.permute(0, 3, 1, 2)
             elif len(o.shape) == 5:
                 o = o.permute(0, 1, 4, 2, 3)
                 o = o.squeeze(1)  # Remove the sequence dimension
             elif len(o.shape) == 6:
-                o = o.permute(0, 1, 5, 2, 3, 4)  
-                o = o.squeeze(1)  # Remove the sequence dimension
-
+                o = o.permute(0, 1, 5, 2, 3, 4) 
+            print(f"[o] shape after permute: {o.shape}")
         else:
-            o = o.squeeze(1) 
-            # print(f"[o] shape after permute: {o.shape}")
-
+            # print(f"[o] shape before squeeze: {o.shape}")
+            if len(o.shape) == 5:
+                o = o.squeeze(1)  # Remove the sequence dimension
+            elif len(o.shape) == 6:
+                o = o.squeeze(1)  # Remove the sequence dimension
+            # print(f"[o] shape after squeeze: {o.shape}")
         x = self.visual_encoder(o)
         x = self.debugnet(x) 
         if batch_input:
@@ -618,7 +622,9 @@ class ImpalaCritic(nn.Module):
                 nn.ReLU(),
                 nn.Conv2d(channel_scale * 2, channel_scale * 3, kernel_size=3, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(channel_scale * 3, channel_scale * 4, kernel_size=4, stride=3),
+                nn.Conv2d(channel_scale * 3, channel_scale * 4, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(channel_scale * 4, channel_scale * 2, kernel_size=3, stride=2),
                 nn.ReLU(),
                 nn.Flatten(),
             )
@@ -783,13 +789,12 @@ class ImpalaCritic(nn.Module):
         # print(f"forward-input [a_prior] shape: {a_prior.shape}")
         # print(f"forward-input [r_prior] shape: {r_prior.shape}")
 
-        batch_input = len(o.shape) >= 5
+        batch_input = len(o.shape) == 5
 
         # Handle the messy differences in our setup
         if batch_input:
             a_prior = a_prior.squeeze(1)
             a = a.squeeze(1)
-            # die
         else:
             r_prior = r_prior.unsqueeze(-1)
 
@@ -802,11 +807,15 @@ class ImpalaCritic(nn.Module):
                 o = o.permute(0, 1, 4, 2, 3)
                 o = o.squeeze(1)  # Remove the sequence dimension
             elif len(o.shape) == 6:
-                o = o.permute(0, 1, 5, 2, 3, 4)
+                o = o.permute(0, 1, 5, 2, 3, 4)  
 
         else:
-            o = o.squeeze(1)  # Remove the sequence dimension
-            # print(f"[o] shape after permute: {o.shape}")
+            # print(f"[o] shape before squeeze: {o.shape}")
+            if len(o.shape) == 5:
+                o = o.squeeze(1)  # Remove the sequence dimension
+            elif len(o.shape) == 6:
+                o = o.squeeze(1)  # Remove the sequence dimension
+            # print(f"[o] shape after squeeze: {o.shape}")
 
 
         # Debug only
