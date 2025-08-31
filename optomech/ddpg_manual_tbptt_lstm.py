@@ -511,7 +511,7 @@ class ImpalaActor(nn.Module):
                 hidden: Tuple[torch.Tensor, torch.Tensor]
         ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
 
-        batch_input = len(o.shape) == 5
+        batch_input = len(o.shape) >= 5
 
         # Handle the messy differences in our setup
         if batch_input:
@@ -530,7 +530,9 @@ class ImpalaActor(nn.Module):
             elif len(o.shape) == 6:
                 o = o.permute(0, 1, 5, 2, 3, 4)  
                 o = o.squeeze(1)  # Remove the sequence dimension
-                o = o.squeeze(1)  # Remove the sequence dimension
+
+        else:
+            o = o.squeeze(1) 
             # print(f"[o] shape after permute: {o.shape}")
 
         x = self.visual_encoder(o)
@@ -781,7 +783,7 @@ class ImpalaCritic(nn.Module):
         # print(f"forward-input [a_prior] shape: {a_prior.shape}")
         # print(f"forward-input [r_prior] shape: {r_prior.shape}")
 
-        batch_input = len(o.shape) == 5
+        batch_input = len(o.shape) >= 5
 
         # Handle the messy differences in our setup
         if batch_input:
@@ -800,9 +802,10 @@ class ImpalaCritic(nn.Module):
                 o = o.permute(0, 1, 4, 2, 3)
                 o = o.squeeze(1)  # Remove the sequence dimension
             elif len(o.shape) == 6:
-                o = o.permute(0, 1, 5, 2, 3, 4)  
-                o = o.squeeze(1)  # Remove the sequence dimension
-                o = o.squeeze(1)  # Remove the sequence dimension
+                o = o.permute(0, 1, 5, 2, 3, 4)
+
+        else:
+            o = o.squeeze(1)  # Remove the sequence dimension
             # print(f"[o] shape after permute: {o.shape}")
 
 
