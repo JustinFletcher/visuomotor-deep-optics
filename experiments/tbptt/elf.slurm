@@ -2,11 +2,11 @@
 #SBATCH --job-name=tbptt           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=16
-#SBATCH --ntasks-per-node=16          # Number of tasks per node
+#SBATCH --ntasks=32
+#SBATCH --ntasks-per-node=32          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       #
-#SBATCH --output=./tbptt.out
-#SBATCH --error=./tbptt.err
+#SBATCH --output=./tbptt_elf.out
+#SBATCH --error=./tbptt_elf.err
 #SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=7-00:00:00                # Maximum runtime (D-HH:MM:SS)
 
@@ -25,14 +25,7 @@
 
 
 VARIANTS=(
-
     "--gpu_list=0 --exp_name="0_optomech_tau0005_small""
-    "--gpu_list=1 --exp_name="1_optomech_tau0005_small""
-    "--gpu_list=3 --exp_name="3_optomech_tau0005_small""
-    "--gpu_list=4 --exp_name="4_optomech_tau0005_small""
-    "--gpu_list=5 --exp_name="5_optomech_tau0005_small""
-    "--gpu_list=6 --exp_name="6_optomech_tau0005_small""
-    "--gpu_list=7 --exp_name="7_optomech_tau0005_small""
 )
 
 cd ~/visuomotor-deep-optics/
@@ -58,13 +51,13 @@ for VARIANT in "${VARIANTS[@]}"; do
         --reward_function=align \
         --batch_size=16 \
         --gamma=0.99 \
-        --tau=0.0005 \
+        --tau=0.0001 \
         --policy_frequency=2 \
         --reward_scale=0.1 \
         --clip_gradients \
         --max_grad_norm=10000.0 \
         --buffer_size=1_000_000 \
-        --learning_starts=100_000 \
+        --learning_starts=10_000 \
         --experience_sampling_delay=0_000 \
         --actor_training_delay=0 \
         --actor_type=impala \
