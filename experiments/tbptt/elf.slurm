@@ -26,13 +26,13 @@
 
 VARIANTS=(
 
-    "--gpu_list=0 --exp_name="0_tau0005_small""
-    "--gpu_list=1 --exp_name="1_tau0005_small""
-    "--gpu_list=3 --exp_name="3_tau0005_small""
-    "--gpu_list=4 --exp_name="4_tau0005_small""
-    "--gpu_list=5 --exp_name="5_tau0005_small""
-    "--gpu_list=6 --exp_name="6_tau0005_small""
-    "--gpu_list=7 --exp_name="7_tau0005_small""
+    "--gpu_list=0 --exp_name="0_optomech_tau0005_small""
+    "--gpu_list=1 --exp_name="1_optomech_tau0005_small""
+    "--gpu_list=3 --exp_name="3_optomech_tau0005_small""
+    "--gpu_list=4 --exp_name="4_optomech_tau0005_small""
+    "--gpu_list=5 --exp_name="5_optomech_tau0005_small""
+    "--gpu_list=6 --exp_name="6_optomech_tau0005_small""
+    "--gpu_list=7 --exp_name="7_optomech_tau0005_small""
 )
 
 cd ~/visuomotor-deep-optics/
@@ -40,7 +40,7 @@ cd ~/visuomotor-deep-optics/
 for VARIANT in "${VARIANTS[@]}"; do
     poetry run python ./optomech/ddpg_manual_tbptt_lstm.py \
         --seed=9758 \
-        --env-id VisualPendulum-v1 \
+        --env-id optomech-v1 \
         --focal_plane_image_size_pixels=256 \
         --object_type=single \
         --max_episode_steps=256 \
@@ -49,7 +49,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --frame_interval_ms=5.0 \
         --decision_interval_ms=5.0 \
         --num_atmosphere_layers=0 \
-        --aperture_type=elf \
+        --aperture_type=nanoelfplus \
         --observation_mode=image_only \
         --command_secondaries \
         --init_differential_motion \
@@ -76,8 +76,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --actor_fc_scale=128 \
         --qnetwork_fc_scale=128 \
         --lstm_hidden_dim=128 \
-        --action_scale=2.0 \
-        --exploration_noise=0.2 \
+        --action_scale=1.0 \
+        --exploration_noise=0.1 \
         --decay_rate=0.99 \
         --writer_interval=100 \
         --tbptt_seq_len=16 \
