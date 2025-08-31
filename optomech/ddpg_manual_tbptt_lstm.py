@@ -359,9 +359,9 @@ class ImpalaActor(nn.Module):
             # Debug LSTM
             self.debugnet = nn.Sequential(
                 nn.Flatten(),
-                nn.Linear(int(np.prod(visual_output_shape[1:])), fc_scale),
+                nn.Linear(int(np.prod(visual_output_shape[1:])), fc_scale // 4),
                 nn.ReLU(),
-                nn.Linear(fc_scale, fc_scale // 2),
+                nn.Linear(fc_scale // 4, fc_scale // 2),
                 nn.ReLU(),
             )
 
@@ -630,9 +630,9 @@ class ImpalaCritic(nn.Module):
             # Debug LSTM
             self.debugnet = nn.Sequential(
                 nn.Flatten(),
-                nn.Linear(int(np.prod(visual_output_shape[1:])), fc_scale),
+                nn.Linear(int(np.prod(visual_output_shape[1:])), fc_scale // 4),
                 nn.ReLU(),
-                nn.Linear(fc_scale, fc_scale // 2),
+                nn.Linear(fc_scale // 4, fc_scale // 2),
                 nn.ReLU(),
             )
 
