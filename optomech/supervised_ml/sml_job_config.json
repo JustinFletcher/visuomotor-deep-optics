@@ -1,0 +1,29 @@
+{
+  "total_samples": 500,
+  "samples_per_job": 500,
+  "write_frequency": 100,
+  "max_workers": 8,
+  "timeout_minutes": 120,
+  "base_dataset_dir": "./datasets",
+  "dataset_name": "sml_100k_dataset",
+  "env_id": "optomech-v1",
+  "object_type": "single",
+  "aperture_type": "elf",
+  "reward_function": "align",
+  "observation_mode": "image_only",
+  "focal_plane_image_size_pixels": 256,
+  "environment_flags": [
+    "--ao_interval_ms=5.0",
+    "--control_interval_ms=5.0",
+    "--frame_interval_ms=5.0",
+    "--decision_interval_ms=5.0",
+    "--num_atmosphere_layers=0",
+    "--aperture_type=elf",
+    "--focal_plane_image_size_pixels=256",
+    "--observation_mode=image_only",
+    "--command_secondaries",
+    "--init_differential_motion",
+    "--model_wind_diff_motion",
+    "--reward_function=align"
+  ]
+}

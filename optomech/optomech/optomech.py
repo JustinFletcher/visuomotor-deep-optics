@@ -589,6 +589,13 @@ class OpticalSystem(object):
         wavefront = hcipy.Wavefront(self.aperture, self.wavelength)
         perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
         self.perfect_image = perfect_image.intensity
+        # Reshape to be image shaped
+        self.target_image = perfect_image.intensity.reshape(
+            (
+                int(np.sqrt(perfect_image.intensity.size)),
+                int(np.sqrt(perfect_image.intensity.size))
+            )
+        )
         # TODO: Build a camera-based imaging approach here.
         # self.camera = hcipy.NoiselessDetector(focal_grid)
 
@@ -1442,6 +1449,9 @@ class OpticalSystem(object):
         max_tip_correction_radians = max_tip_correction_as * np.pi / (180 * 3600)
         max_tilt_correction_radians = max_tilt_correction_as * np.pi / (180 * 3600)
 
+        self.max_piston_correction = max_piston_correction_meters
+        self.max_tip_correction = max_tip_correction_radians
+        self.max_tilt_correction = max_tilt_correction_radians
 
         # TODO: Refactor to extract tuples to np array and use _apply_ptt_displacements.
         for segment_id in range(self.num_apertures):
@@ -1551,10 +1561,21 @@ class OpticalSystem(object):
                 # print("segment_tilt_command_radians")
                 # print(segment_tilt_command_radians)
 
+                # # Print piston state, command and command meter before
+                # print("\n+++++")
+                # print("self.segment_baseline_dict[segment_id]['piston']:")
+                # print(self.segment_baseline_dict[segment_id]["piston"])
+                # print("segment_piston_command:")
+                # print(segment_piston_command)
+                # print("segment_piston_command_meters:")
+                # print(segment_piston_command_meters)
+
                 piston_state = self.segment_baseline_dict[segment_id]["piston"] + segment_piston_command_meters
                 tip_state = self.segment_baseline_dict[segment_id]["tip"] + segment_tip_command_radians
                 tilt_state = self.segment_baseline_dict[segment_id]["tilt"] + segment_tilt_command_radians
 
+                # print("Piston state after:")
+                # print(piston_state)
 
             # Set the actuators in meter and radians.
             self.segmented_mirror.set_segment_actuators(
@@ -2179,7 +2200,6 @@ class OptomechEnv(gym.Env):
 
         for n, action_value in enumerate(action_vector):
 
-
             tree_address = action_tree.linear_to_tree_dict[n]
 
             # Convert the string to a list of integers
@@ -2431,7 +2451,7 @@ class OptomechEnv(gym.Env):
 
                     bandwidth_nanometers = 100.0
                     bandwidth_meters = bandwidth_nanometers / 1e9
-                    sampling = 10
+                    sampling = 5
                     bandwidth_increment_meters = bandwidth_meters / sampling
                     min_wavelength = self.optical_system.wavelength - (bandwidth_meters / 2)
                     wavelengths = [min_wavelength + (i * bandwidth_increment_meters) for i in range(sampling)]
@@ -2587,7 +2607,8 @@ class OptomechEnv(gym.Env):
 
             rewards = list()
             normalized_psf = self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-        
+            normalized_target = self.optical_system.target_image / np.max(self.optical_system.target_image)
+
             for focal_plane_image in self.focal_plane_images:
                 
                 normalized_image = focal_plane_image / np.max(focal_plane_image)
@@ -2610,7 +2631,7 @@ class OptomechEnv(gym.Env):
                 centering = np.mean(normalized_image * distance_map)
                 center_concentration = centering / np.mean(normalized_image)
 
-                mse = -np.mean((np.log(normalized_image.flatten()) - np.log(normalized_psf)) ** 2)
+                mse = -np.mean((np.log(normalized_image.flatten()) - np.log(normalized_target.flatten())) ** 2)
 
                 # 0.42 is good enough for centering.
                 # For elf, want diminishing returns at about 0.6
