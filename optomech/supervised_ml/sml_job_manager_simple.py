@@ -146,6 +146,8 @@ def main():
                        help="Override dataset name from config")
     parser.add_argument("--total_samples", type=int, default=None,
                        help="Override total samples from config")
+    parser.add_argument("--dataset_dir", type=str, default=None,
+                       help="Absolute path to top-level directory where dataset should be written")
     
     args = parser.parse_args()
     
@@ -166,6 +168,8 @@ def main():
         config.dataset_name = args.dataset_name
     if args.total_samples:
         config.total_samples = args.total_samples
+    if args.dataset_dir:
+        config.base_dataset_dir = str(Path(args.dataset_dir).resolve())
     
     # Convert dataset_save_path to absolute path
     dataset_save_path = Path(config.base_dataset_dir).resolve()

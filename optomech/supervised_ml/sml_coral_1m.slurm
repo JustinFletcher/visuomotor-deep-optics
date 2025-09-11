@@ -14,7 +14,8 @@ cd ~/visuomotor-deep-optics/
 
 # Launch the SML dataset generation
 poetry run python optomech/supervised_ml/sml_job_manager_simple.py \
-    --config ~/visuomotor-deep-optics/optomech/supervised_ml/sml_job_config.json \
+    --config optomech/supervised_ml/sml_job_config.json \
     --total_samples 50000 \
-    --dataset_name optomech-1m
+    --dataset_name optomech-1m \
+    --dataset_dir $WORKDIR/datasets
 
