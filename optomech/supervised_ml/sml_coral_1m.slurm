@@ -2,7 +2,6 @@
 #SBATCH --job-name=sml-1m-dataset    # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks=28
 #SBATCH --ntasks-per-node=28          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       #
 #SBATCH --output=./sml_1m.out
