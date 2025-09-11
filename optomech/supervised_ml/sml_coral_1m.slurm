@@ -2,9 +2,9 @@
 #SBATCH --job-name=sml-1m-dataset    # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
+#SBATCH --nodelist=cr1dpu[1-2],cr4mi[1-2],cr4mi[3-4] 
 #SBATCH --ntasks-per-node=28          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       #
-#SBATCH --nodelist=cr1dpu[1-2],cr4mi[1-2],cr4mi[3-4] 
 #SBATCH --output=./sml_1m.out
 #SBATCH --error=./sml_1m.err
 #SBATCH --gres=gpu:A100-PCIe:8
