@@ -38,7 +38,7 @@ def cli_main(flags):
             if file_mtime >= latest_mtime:
                 latest_file = filename
 
-            print(file_mtime)
+            # print(file_mtime)
         episode_file = glob.glob(os.path.join(flags.episode_info_dir, latest_file))[-1]
 
     else:
@@ -79,17 +79,21 @@ def cli_main(flags):
     for step_info_pickle_filename in step_info_pickle_filenames:
         with open(step_info_pickle_filename, 'rb') as f:
             a = pickle.load(f)
-            print(a)
+            # print(a)
             if a['state_content'][0]['segmented_mirror_surfaces']:
                 b = a['state_content'][0]['segmented_mirror_surfaces'][0]
                 if surface_min is None or np.min(b) < surface_min:
                     surface_min = np.min(b)
                 if surface_max is None or np.max(b) > surface_max:
                     surface_max = np.max(b)
-    print("max, min")
+    # print("max, min")
     surface_max = surface_max * 1e6
     surface_min = surface_min * 1e6
     steps_list = list()
+
+    # Print progress information
+    total_files = len(step_info_pickle_filenames)
+    print(f"🎨 Rendering {total_files} step files...")
 
     # Now we can iterate over each steps info do as we please.
     # for i, (step_index, step_info_dict) in enumerate(sorted(step_info_dicts.items())):
@@ -98,14 +102,16 @@ def cli_main(flags):
         with open(step_info_pickle_filename, 'rb') as f:
             info_dict = pickle.load(f)
             step_index= info_dict["step_index"] 
-            steps_list.append(step_index)
             step_info_dict = info_dict
 
-        print("Rendering step %d" % step_index)
+        # DEBUG: print("Rendering step %d" % step_index)
 
         # If the step index is not a multiple of the render interval, skip it.
         if step_index % flags.render_interval != 0:
             continue
+        
+        # Only add to steps_list if we're actually rendering this step
+        steps_list.append(step_index)
     
         try:
 
@@ -156,7 +162,7 @@ def cli_main(flags):
 
                 # Parse a single frame from the observation...
                 obs_frame = step_info_dict["observation"][frame_index]
-                print(step_info_dict["state_content"])
+                # DEBUG: print(step_info_dict["state_content"])
             
                 plt.subplot(num_rows, num_cols, frame_index + 1)
 
@@ -329,8 +335,8 @@ def cli_main(flags):
 
                         plt.subplot(num_rows, num_cols, num_cols)
                         plt.title('Action ($a_t$)')
-                        print(len(step_info_dict["action"]))
-                        print(step_info_dict["action"])
+                        # DEBUG: print(len(step_info_dict["action"]))
+                        # DEBUG: print(step_info_dict["action"])
                         
                         plt.imshow([step_info_dict["action"] for _ in range(len(step_info_dict["action"]))], cmap='inferno')
                         # plt.imshow([step_info_dict["action"] for _ in range(len(step_info_dict["action"]))], cmap='inferno')
@@ -349,10 +355,6 @@ def cli_main(flags):
             secondary_mirror_surface_l2 = np.linalg.norm(segmented_mirror_surface)
 
             plt.title(secondary_mirror_surface_l2)
-
-
-
-
 
 
             # hcipy.imshow_field(segmented_mirror_surface * 1e6, cmap='RdBu', vmin=-1.1, vmax=1.1, mask=aperture_mask)
@@ -379,7 +381,7 @@ def cli_main(flags):
                 plt.colorbar()
 
 
-            print(step_info_dict["reward"])
+            # DEBUG: print(step_info_dict["reward"])
 
             reward = step_info_dict["reward"]
 
@@ -408,6 +410,7 @@ def cli_main(flags):
             print("Error rendering step %d: %s" % (step_index, e))
             continue
             
+    print(f"🎬 Creating GIF from {len(render_filenames)} rendered images...")
     make_gif_from_images(gif_path=gif_path,
                             gif_name='observations.gif',
                             image_filenames=render_filenames)
@@ -421,7 +424,7 @@ def make_gif_from_images(gif_path, gif_name, image_filenames):
     images = list()
     for filename in natural_sort(image_filenames):
 
-        print(filename)
+        # print(filename)
         try:
             images.append(imageio.imread(filename))
         except Exception as e:
@@ -522,7 +525,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--render_dpi',
                         type=int,
-                        default=200,
+                        default=100,
                         help='The DPI of all rendered images.')
     
     parser.add_argument('--render_mode',

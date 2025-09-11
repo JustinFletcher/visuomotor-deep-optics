@@ -84,6 +84,10 @@ def run_single_job(job_id: int, config: JobConfig, results: List):
         args.focal_plane_image_size_pixels = config.focal_plane_image_size_pixels
         args.silence = True  # Keep it quiet for background running
         
+        # Set the job config file path to the copied config in the dataset directory
+        config_file = dataset_subfolder / f"{config.dataset_name}_job_config.json"
+        args.job_config_file = str(config_file)
+        
         # Apply environment flags
         for flag in config.environment_flags:
             if "=" in flag:

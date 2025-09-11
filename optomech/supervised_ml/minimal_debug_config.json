@@ -1,0 +1,21 @@
+{
+  "total_samples": 10,
+  "samples_per_job": 10,
+  "write_frequency": 5,
+  "max_workers": 1,
+  "timeout_minutes": 15,
+  "base_dataset_dir": "./datasets",
+  "dataset_name": "debug_minimal_10",
+  "env_id": "optomech-v1",
+  "object_type": "single",
+  "aperture_type": "elf",
+  "reward_function": "align",
+  "observation_mode": "image_only",
+  "focal_plane_image_size_pixels": 64,
+  "environment_flags": [
+    "--aperture_type=elf",
+    "--focal_plane_image_size_pixels=64",
+    "--observation_mode=image_only",
+    "--reward_function=align"
+  ]
+}

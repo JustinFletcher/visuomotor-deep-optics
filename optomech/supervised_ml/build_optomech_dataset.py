@@ -31,6 +31,15 @@ except ImportError:
     from dataset_manager import DatasetManager
     CHUNKED_AVAILABLE = False
 
+# Import job config loading function
+try:
+    from optomech_rollout import load_environment_config
+except ImportError:
+    def load_environment_config(config_path):
+        """Fallback if optomech_rollout is not available"""
+        with open(config_path, 'r') as f:
+            return json.load(f)
+
 
 def make_env(env_id, flags):
     """
@@ -108,6 +117,7 @@ class Args:
     chunked_dataset: bool = False
     chunk_size: int = 1000
     write_frequency: int = 100  # Write samples to disk every N samples
+    job_config_file: str = "sml_job_config.json"  # Job config file to use for environment settings
 
     # 2. Environment Configuration (same as SA)
     env_id: str = "optomech-v1"
@@ -138,7 +148,7 @@ class Args:
     # 4. Rendering and Logging (same as SA)
     render: bool = False
     render_frequency: int = 1
-    render_dpi: float = 500.0
+    render_dpi: float = 100.0
     record_env_state_info: bool = False
     write_env_state_info: bool = False
     write_state_interval: int = 1
@@ -185,6 +195,23 @@ def build_dataset(args):
     Main function to build the direct supervised ML dataset.
     Generates IID samples with uniformly random actions and computes correction targets.
     """
+    
+    # Load job config file for environment settings
+    if os.path.exists(args.job_config_file):
+        print(f"📋 Loading environment config from: {args.job_config_file}")
+        job_config = load_environment_config(args.job_config_file)
+        config_vars = vars(job_config)
+        print(f"✅ Loaded {len(config_vars)} environment flags")
+        
+        # Override args with job config values where they exist
+        for key, value in config_vars.items():
+            if hasattr(args, key):
+                setattr(args, key, value)
+                print(f"  Override: {key} = {value}")
+    else:
+        print(f"⚠️  Job config file not found: {args.job_config_file}")
+        print("Using default environment settings from Args")
+    
     # Register custom environments
     gym.envs.registration.register(
         id='optomech-v1',
@@ -283,14 +310,41 @@ def build_dataset(args):
         next_obs, reward, terminated, truncated, step_info = env.step(action)
         
         # Get optical system and compute perfect correction target
-        optical_system = env.optical_system
+        optical_system = env.optical_system  # Use unwrapped to avoid deprecation warning
         perfect_action = compute_correction_target(optical_system, action)
+        
+
+        # Debug: Apply the correction and check reward improvement
+        # Note: This is just for validation - we don't use the corrected reward in training
+        corrected_action = action + perfect_action
+        
+        # Check if any action values are outside the valid range before clipping
+        action_low = env.action_space.low
+        action_high = env.action_space.high
+        out_of_bounds = (corrected_action < action_low) | (corrected_action > action_high)
+        if np.any(out_of_bounds):
+            out_of_bounds_indices = np.where(out_of_bounds)[0]
+            out_of_bounds_values = corrected_action[out_of_bounds_indices]
+            low_bounds = action_low[out_of_bounds_indices]
+            high_bounds = action_high[out_of_bounds_indices]
+            print(f"⚠️  Warning: Corrected action has {np.sum(out_of_bounds)} values outside valid range:")
+            for i, (idx, val, low, high) in enumerate(zip(out_of_bounds_indices, out_of_bounds_values, low_bounds, high_bounds)):
+                print(f"    Index {idx}: {val:.4f} not in [{low:.4f}, {high:.4f}]")
+                if i >= 5:  # Limit output to first 5 out-of-bounds values
+                    print(f"    ... and {len(out_of_bounds_indices) - 5} more")
+                    break
+        
+        # Clip the corrected action to valid action space bounds
+        corrected_action = np.clip(corrected_action, action_low, action_high)
+        _, corrected_reward, _, _, _ = env.step(corrected_action - action)
+        print(f"Sample {sample_idx}: Reward before correction: {reward:.4f}, after perfect correction: {corrected_reward:.4f}")
+        
         
         # Store as observation-action pair with uint16 conversion for storage efficiency
         obs_uint16 = np.clip(next_obs, 0, 65535).astype(np.uint16)  # Clip to valid uint16 range and convert
         sample_pair = {
             'observation': obs_uint16.tolist(),      # Observation after random action (model input)
-            'perfect_action': perfect_action.tolist()  # Perfect correction (model target)
+            'perfect_action': corrected_action.tolist()  # Perfect correction (model target)
         }
         sample_pairs.append(sample_pair)
         

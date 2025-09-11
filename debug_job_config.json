@@ -1,0 +1,19 @@
+{
+  "total_samples": 100,
+  "samples_per_job": 25,
+  "max_workers": 2,
+  "timeout_minutes": 30,
+  "base_dataset_dir": "datasets",
+  "dataset_name": "debug_sml_100",
+  "write_frequency": 10,
+  "env_id": "OptomechObservationEnv-v0",
+  "object_type": "usaf1951",
+  "aperture_type": "circle",
+  "reward_function": "ssim",
+  "observation_mode": "image",
+  "focal_plane_image_size_pixels": 128,
+  "environment_flags": [
+    "--image_modality=focal_plane",
+    "--focal_plane_return_all_samples=false"
+  ]
+}

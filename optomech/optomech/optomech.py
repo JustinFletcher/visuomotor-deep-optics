@@ -1271,8 +1271,8 @@ class OpticalSystem(object):
             # Sample displacement in radians.
             wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
             wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
-            print("Wind PTT Displacements:")
-            print(wind_ptt_displacements)
+            # print("Wind PTT Displacements:")
+            # print(wind_ptt_displacements)
             self._apply_ptt_displacements(wind_ptt_displacements)
 
 
@@ -1436,7 +1436,7 @@ class OpticalSystem(object):
         segments_ptt_commands = secondaries_commands
     
         # Cannonical
-        max_piston_correction_micron = 2.5
+        max_piston_correction_micron = 10.0
         max_tip_correction_as = 20.0
         max_tilt_correction_as = 20.0
 
@@ -2649,7 +2649,7 @@ class OptomechEnv(gym.Env):
                 # else:
                 #     alpha_mse = 0.0
 
-                print("Strehl: %.6f, Centering: %.6f, MSE: %.6f" % (strehl, center_concentration, mse))
+                # print("Strehl: %.6f, Centering: %.6f, MSE: %.6f" % (strehl, center_concentration, mse))
 
                 reward = (alpha_strehl * strehl) +\
                          (alpha_centering * center_concentration) +\

@@ -243,6 +243,31 @@ sinfo -p standard
 - Verify DataParallel is working: check GPU utilization with `nvidia-smi`
 - Scale batch size appropriately for multi-GPU
 
+## Dataset Generation Commands
+
+### Large-Scale Dataset Creation (100K samples)
+
+Once you have both terminal panes set up, you can run:
+
+**In Pane 1 (Dataset Generation):**
+```bash
+cd ~/visuomotor-deep-optics && poetry run python optomech/supervised_ml/sml_job_manager_simple.py --config sml_job_config.json --total_samples 100000
+```
+
+**In Pane 2 (Progress Monitoring):**
+```bash
+cd ~/visuomotor-deep-optics && poetry run python optomech/supervised_ml/sml_job_watcher.py --dataset_dir datasets/sml_100k_dataset
+```
+
+### Alternative Commands (without poetry)
+```bash
+# Pane 1
+cd ~/visuomotor-deep-optics && python optomech/supervised_ml/sml_job_manager_simple.py --config sml_job_config.json --total_samples 100000
+
+# Pane 2  
+cd ~/visuomotor-deep-optics && python optomech/supervised_ml/sml_job_watcher.py --dataset_dir datasets/sml_100k_dataset
+```
+
 ## Quick Reference Commands
 
 ```bash

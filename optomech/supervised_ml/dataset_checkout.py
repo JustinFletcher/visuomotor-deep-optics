@@ -95,6 +95,54 @@ def format_action_text(action: np.ndarray) -> str:
         return f"Action ({action.size} dims): [{', '.join(f'{x:.4f}' for x in action[:3])} ... {', '.join(f'{x:.4f}' for x in action[-3:])}]"
 
 
+def visualize_action_vector(action: np.ndarray, ax: plt.Axes, title: str):
+    """Visualize action vector as a color-coded bar chart"""
+    if action.size == 0:
+        # Empty action - show placeholder
+        ax.text(0.5, 0.5, "No corrections\nneeded", ha='center', va='center', 
+                transform=ax.transAxes, fontsize=12, 
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.7))
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_xticks([])
+        ax.set_yticks([])
+    else:
+        # Create bar chart of action values
+        indices = np.arange(len(action))
+        bars = ax.bar(indices, action, alpha=0.8)
+        
+        # Color bars based on value (red for negative, blue for positive)
+        for bar, val in zip(bars, action):
+            if val > 0:
+                bar.set_color('blue')
+            elif val < 0:
+                bar.set_color('red')
+            else:
+                bar.set_color('gray')
+        
+        # Add horizontal lines at clipping bounds
+        ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.7, label='Clip bounds')
+        ax.axhline(y=-1.0, color='red', linestyle='--', alpha=0.7)
+        ax.axhline(y=0.0, color='black', linestyle='-', alpha=0.3)
+        
+        # Formatting
+        ax.set_xlabel('Action Dimension')
+        ax.set_ylabel('Action Value')
+        ax.set_ylim(-1.2, 1.2)
+        ax.set_xticks(indices[::max(1, len(indices)//10)])  # Show every 10th tick if many dims
+        ax.grid(True, alpha=0.3)
+        
+        # Add value labels on bars for small action vectors
+        if len(action) <= 8:
+            for i, val in enumerate(action):
+                ax.text(i, val + 0.05 * np.sign(val) if val != 0 else 0.05, 
+                       f'{val:.3f}', ha='center', va='bottom' if val >= 0 else 'top', 
+                       fontsize=8, rotation=45)
+    
+    ax.set_title(title, fontsize=10)
+    return ax
+
+
 def create_dataset_checkout(dataset_path: Path, num_examples: int = 6, save_path: Path = None):
     """
     Create a visualization of dataset examples
@@ -122,44 +170,39 @@ def create_dataset_checkout(dataset_path: Path, num_examples: int = 6, save_path
     else:
         sample_pairs = pairs
     
-    # Create figure
-    n_cols = min(3, len(sample_pairs))
-    n_rows = (len(sample_pairs) + n_cols - 1) // n_cols
+    # Create figure with 2 columns per sample (observation + action)
+    n_sample_cols = min(3, len(sample_pairs))  # Max 3 samples per row
+    n_cols = n_sample_cols * 2  # 2 subplots per sample
+    n_rows = (len(sample_pairs) + n_sample_cols - 1) // n_sample_cols
     
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
-    if n_rows == 1 and n_cols == 1:
-        axes = [axes]
-    elif n_rows == 1:
-        axes = [axes]
-    else:
-        axes = axes.flatten()
+    fig = plt.figure(figsize=(4 * n_cols, 4 * n_rows))
     
     # Plot examples
     for i, (obs, action, metadata) in enumerate(sample_pairs):
-        if i >= len(axes):
-            break
-            
-        ax = axes[i]
+        row = i // n_sample_cols
+        col_offset = (i % n_sample_cols) * 2
         
-        # Create title with action info
-        action_text = format_action_text(action)
-        title = f"Sample {i+1}\n{action_text}"
+        # Observation subplot
+        ax_obs = plt.subplot(n_rows, n_cols, row * n_cols + col_offset + 1)
+        visualize_observation(obs, ax_obs, f"Sample {i+1}: Observation")
         
-        # Visualize observation
-        visualize_observation(obs, ax, title)
+        # Add observation stats
+        stats_text = f"Shape: {obs.shape}\nRange: [{obs.min()}, {obs.max()}]"
+        ax_obs.text(0.02, 0.98, stats_text, transform=ax_obs.transAxes, 
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+                   verticalalignment='top', fontsize=8)
         
-        # Add stats as text
-        stats_text = f"Obs shape: {obs.shape}\nRange: [{obs.min()}, {obs.max()}]"
-        if action.size > 0:
-            stats_text += f"\nAction range: [{action.min():.4f}, {action.max():.4f}]"
-        
-        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-                verticalalignment='top', fontsize=8)
+        # Action subplot
+        ax_action = plt.subplot(n_rows, n_cols, row * n_cols + col_offset + 2)
+        action_title = f"Perfect Action\n{format_action_text(action)}"
+        visualize_action_vector(action, ax_action, action_title)
     
-    # Hide unused subplots
-    for i in range(len(sample_pairs), len(axes)):
-        axes[i].set_visible(False)
+    # Hide unused subplots if any
+    total_subplots = n_rows * n_cols
+    used_subplots = len(sample_pairs) * 2
+    for i in range(used_subplots + 1, total_subplots + 1):
+        ax = plt.subplot(n_rows, n_cols, i)
+        ax.set_visible(False)
     
     # Add overall title
     dataset_info = sample_pairs[0][2] if sample_pairs else {}
