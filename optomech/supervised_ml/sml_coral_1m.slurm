@@ -4,7 +4,7 @@
 #SBATCH --nodes=1                    # Number of nodes
 #SBATCH --ntasks=1                   # Number of tasks
 #SBATCH --ntasks-per-node=1          # Number of tasks per node
-#SBATCH --cpus-per-task=32           # Number of CPU cores per task
+#SBATCH --cpus-per-task=28           # Number of CPU cores per task
 #SBATCH --account=MHPCC96650DAS      # Account
 #SBATCH --output=$WORKDIR/sml_1m.out  # Standard output
 #SBATCH --error=$WORKDIR/sml_1m.err   # Standard error
@@ -38,14 +38,14 @@ echo "Available GPUs: $CUDA_VISIBLE_DEVICES"
 echo "CPU cores: $SLURM_CPUS_PER_TASK"
 
 # Create job-specific config for 1M dataset
-# Each job contributes 500 samples (2000 jobs total for 1M samples)
+# Each job contributes 50,000 samples (20 jobs total for 1M samples)
 cat > /tmp/sml_1m_config_${SLURM_JOB_ID}.json << EOF
 {
   "total_samples": 1000000,
-  "samples_per_job": 500,
-  "write_frequency": 100,
-  "max_workers": 4,
-  "timeout_minutes": 1440,
+  "samples_per_job": 10000,
+  "write_frequency": 1000,
+  "max_workers": 8,
+  "timeout_minutes": 14400,
   "base_dataset_dir": "$WORKDIR/datasets",
   "dataset_name": "optomech-1m",
   "env_id": "optomech-v1",
@@ -86,13 +86,13 @@ cat /tmp/sml_1m_config_${SLURM_JOB_ID}.json
 
 echo "========================================"
 echo "Starting SML dataset generation..."
-echo "Target: 500 samples per job"
+echo "Target: 50,000 samples per job"
 echo "========================================"
 
 # Launch the SML job manager
 poetry run python optomech/supervised_ml/sml_job_manager_simple.py \
     --config /tmp/sml_1m_config_${SLURM_JOB_ID}.json \
-    --total_samples 500 \
+    --total_samples 50000 \
     --dataset_name optomech-1m
 
 # Capture exit status
