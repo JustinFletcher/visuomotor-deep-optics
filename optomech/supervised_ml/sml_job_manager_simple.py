@@ -150,7 +150,7 @@ def main():
     args = parser.parse_args()
     
     # Load configuration from JSON file
-    config_path = Path(__file__).parent / args.config
+    config_path = args.config
     if not config_path.exists():
         print(f"❌ Error: Configuration file not found at {config_path}")
         return 1
