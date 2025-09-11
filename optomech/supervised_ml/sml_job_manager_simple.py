@@ -151,7 +151,7 @@ def main():
     
     # Load configuration from JSON file
     config_path = args.config
-    if not config_path.exists():
+    if not Path(config_path).exists():
         print(f"❌ Error: Configuration file not found at {config_path}")
         return 1
     
