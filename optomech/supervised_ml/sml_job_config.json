@@ -1,9 +1,9 @@
 {
-  "total_samples": 500,
-  "samples_per_job": 500,
-  "write_frequency": 100,
+  "total_samples": 1000000,
+  "samples_per_job": 50000,
+  "write_frequency": 1000,
   "max_workers": 8,
-  "timeout_minutes": 120,
+  "timeout_minutes": 14400,
   "base_dataset_dir": "./datasets",
   "dataset_name": "sml_100k_dataset",
   "env_id": "optomech-v1",
