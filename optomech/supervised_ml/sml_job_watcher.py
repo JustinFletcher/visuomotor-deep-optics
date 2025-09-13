@@ -16,6 +16,22 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+# Try to import h5py for HDF5 support
+try:
+    import h5py
+    HDF5_AVAILABLE = True
+except ImportError:
+    HDF5_AVAILABLE = False
+    print("⚠️  h5py not available, HDF5 files will be estimated by size")
+
+# Try to import numpy for .npz support
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+    print("⚠️  numpy not available, .npz files will be estimated by size")
+
 
 class DatasetJobWatcher:
     """Watches SML dataset generation jobs by analyzing dataset files directly"""
@@ -71,7 +87,45 @@ class DatasetJobWatcher:
         dataset_files = []
         temp_files = []
 
-        # Look for JSON files (standard format) but skip config and metadata files
+        # Look for HDF5 files (new format)
+        try:
+            h5_files = list(dataset_dir.glob("*.h5"))
+            print(f"🗂️  Found {len(h5_files)} HDF5 files")
+            
+            for file_path in h5_files:
+                filename = file_path.name
+                if (filename.startswith('.tmp_') or 
+                    filename.endswith('.tmp') or
+                    filename.startswith('tmp_') or
+                    '.tmp.' in filename):
+                    temp_files.append(file_path)
+                    print(f"⏳ Temp H5 file: {filename}")
+                else:
+                    dataset_files.append(file_path)
+                    print(f"🗂️  Dataset H5 file: {filename}")
+        except Exception as e:
+            print(f"⚠️  Error scanning H5 files: {e}")
+            
+        # Look for NumPy files (.npz format)
+        try:
+            npz_files = list(dataset_dir.glob("*.npz"))
+            print(f"📦 Found {len(npz_files)} NPZ files")
+            
+            for file_path in npz_files:
+                filename = file_path.name
+                if (filename.startswith('.tmp_') or 
+                    filename.endswith('.tmp') or
+                    filename.startswith('tmp_') or
+                    '.tmp.' in filename):
+                    temp_files.append(file_path)
+                    print(f"⏳ Temp NPZ file: {filename}")
+                else:
+                    dataset_files.append(file_path)
+                    print(f"📦 Dataset NPZ file: {filename}")
+        except Exception as e:
+            print(f"⚠️  Error scanning NPZ files: {e}")
+
+        # Look for JSON files (legacy format)
         try:
             json_files = list(dataset_dir.glob("*.json"))
             print(f"📁 Found {len(json_files)} JSON files")
@@ -239,45 +293,99 @@ class DatasetJobWatcher:
             # If not doing full analysis, estimate from file size
             if not full_analysis:
                 file_size = file_path.stat().st_size
-                # Use a reasonable estimate: ~50KB per 100 samples for JSON episode files
-                samples = max(1, int(file_size / 500))  # Assume ~500 bytes per sample
+                # Different estimates based on file type
+                if file_path.suffix == '.h5':
+                    # HDF5 compressed: ~150 bytes per sample (much better compression)
+                    samples = max(1, int(file_size / 150))
+                elif file_path.suffix == '.npz':
+                    # NumPy compressed: ~200 bytes per sample
+                    samples = max(1, int(file_size / 200))
+                else:
+                    # JSON: ~500 bytes per sample (inefficient)
+                    samples = max(1, int(file_size / 500))
                 return samples, None
                 
             # Full analysis: parse the file content
-            if file_path.suffix == '.json':
+            if file_path.suffix == '.h5' and HDF5_AVAILABLE:
+                with h5py.File(file_path, 'r') as f:
+                    if 'observations' in f:
+                        samples = f['observations'].shape[0]
+                    elif 'perfect_actions' in f:
+                        samples = f['perfect_actions'].shape[0]
+                    
+                    # Extract metadata from attributes
+                    metadata = {}
+                    for key in f.attrs.keys():
+                        metadata[key] = f.attrs[key]
+                        
+            elif file_path.suffix == '.npz' and NUMPY_AVAILABLE:
+                data = np.load(file_path)
+                if 'observations' in data:
+                    samples = data['observations'].shape[0]
+                elif 'perfect_actions' in data:
+                    samples = data['perfect_actions'].shape[0]
+                
+                # Extract metadata from npz file
+                metadata = {}
+                for key in data.keys():
+                    if key not in ['observations', 'perfect_actions']:
+                        try:
+                            metadata[key] = data[key].item() if data[key].ndim == 0 else data[key]
+                        except:
+                            pass
+                            
+            elif file_path.suffix == '.json':
                 with open(file_path, 'r') as f:
                     data = json.load(f)
+                    
+                # Extract metadata if present
+                if isinstance(data, dict) and 'metadata' in data:
+                    metadata = data['metadata']
+                    episode_data = data.get('episode_data', data)
+                else:
+                    episode_data = data
+                
+                # Count samples based on data structure
+                if isinstance(episode_data, dict):
+                    # Look for observation arrays
+                    if 'observations' in episode_data:
+                        samples = len(episode_data['observations'])
+                    elif 'sample_pairs' in episode_data:
+                        samples = len(episode_data['sample_pairs'])
+                    elif 'perfect_actions' in episode_data:
+                        samples = len(episode_data['perfect_actions'])
+                    elif 'next_observations' in episode_data:
+                        samples = len(episode_data['next_observations'])
+                    else:
+                        # Try to find any list-like structure
+                        for key, value in episode_data.items():
+                            if isinstance(value, list) and len(value) > 0:
+                                samples = len(value)
+                                break
+                elif isinstance(episode_data, list):
+                    samples = len(episode_data)
+                    
             elif file_path.suffix == '.pkl':
                 with open(file_path, 'rb') as f:
                     data = pickle.load(f)
+                    
+                # Handle pickle data similar to JSON
+                if isinstance(data, dict) and 'metadata' in data:
+                    metadata = data['metadata']
+                    episode_data = data.get('episode_data', data)
+                else:
+                    episode_data = data
+                
+                if isinstance(episode_data, dict):
+                    if 'observations' in episode_data:
+                        samples = len(episode_data['observations'])
+                    elif 'sample_pairs' in episode_data:
+                        samples = len(episode_data['sample_pairs'])
+                elif isinstance(episode_data, list):
+                    samples = len(episode_data)
             else:
                 print(f"⚠️  Unknown file type: {file_path.suffix}")
                 return 0, None
-            
-            # Extract metadata if present
-            if isinstance(data, dict) and 'metadata' in data:
-                metadata = data['metadata']
-                episode_data = data.get('episode_data', data)
-            else:
-                episode_data = data
-            
-            # Count samples based on data structure
-            if isinstance(episode_data, dict):
-                # Look for observation arrays
-                if 'observations' in episode_data:
-                    samples = len(episode_data['observations'])
-                elif 'perfect_actions' in episode_data:
-                    samples = len(episode_data['perfect_actions'])
-                elif 'next_observations' in episode_data:
-                    samples = len(episode_data['next_observations'])
-                else:
-                    # Try to find any list-like structure
-                    for key, value in episode_data.items():
-                        if isinstance(value, list) and len(value) > 0:
-                            samples = len(value)
-                            break
-            elif isinstance(episode_data, list):
-                samples = len(episode_data)
             
         except FileNotFoundError:
             print(f"⚠️  File not found (may have been moved/deleted): {file_path.name}")

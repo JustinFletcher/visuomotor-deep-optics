@@ -1598,7 +1598,7 @@ toy-text = ["pygame (>=2.1.3)", "pygame (>=2.1.3)"]
 name = "h5py"
 version = "3.13.0"
 description = "Read and write HDF5 files from Python"
-optional = true
+optional = false
 python-versions = ">=3.9"
 files = [
     {file = "h5py-3.13.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:5540daee2b236d9569c950b417f13fd112d51d78b4c43012de05774908dff3f5"},
@@ -5587,4 +5587,4 @@ qdagger-dqn-atari-jax-impalacnn = ["AutoROM", "ale-py", "flax", "jax", "jaxlib",
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.11"
-content-hash = "d8ca63ef4105c32e3f6ffb4d405683f5f9e4ab1143688680c7677c2f6631e1d1"
+content-hash = "63953890f3a08e7635ac5f0f12d7dc44ce448e3a37c84188cdf2005c0fb5b4a0"

@@ -13,10 +13,19 @@ from pathlib import Path
 import argparse
 from typing import List, Tuple, Dict, Any
 
+# Try to import h5py for HDF5 support
+try:
+    import h5py
+    HDF5_AVAILABLE = True
+except ImportError:
+    HDF5_AVAILABLE = False
+    print("⚠️  h5py not available, HDF5 files cannot be loaded")
+
 
 def load_dataset_pairs(dataset_path: Path) -> List[Tuple[np.ndarray, np.ndarray, Dict[str, Any]]]:
     """
     Load all observation-action pairs from a dataset directory.
+    Supports HDF5, NPZ, and JSON formats.
     
     Args:
         dataset_path: Path to dataset directory
@@ -27,35 +36,111 @@ def load_dataset_pairs(dataset_path: Path) -> List[Tuple[np.ndarray, np.ndarray,
     dataset_path = Path(dataset_path)
     pairs = []
     
-    # Find all episode files
-    episode_files = list(dataset_path.glob("episode_*.json"))
-    print(f"Found {len(episode_files)} episode files in {dataset_path}")
+    # Find all dataset files (prioritize HDF5, then NPZ, then JSON)
+    h5_files = list(dataset_path.glob("*.h5"))
+    npz_files = list(dataset_path.glob("*.npz"))
+    json_files = list(dataset_path.glob("episode_*.json")) + list(dataset_path.glob("batch_*.json"))
     
-    for episode_file in sorted(episode_files):
-        with open(episode_file, 'r') as f:
-            data = json.load(f)
-        
-        episode_metadata = data.get('metadata', {})
-        
-        # Extract pairs from metadata (new format)
-        if 'sample_pairs' in episode_metadata:
-            episode_pairs = episode_metadata['sample_pairs']
-            for pair in episode_pairs:
-                obs = np.array(pair['observation'], dtype=np.uint16)
-                action = np.array(pair['perfect_action'], dtype=np.float32)
-                pairs.append((obs, action, episode_metadata))
-            print(f"  Loaded {len(episode_pairs)} pairs from {episode_file.name} (new pairs format)")
-        
-        # Fallback to legacy format if needed
-        elif 'observations' in data and 'perfect_actions' in data:
-            observations = data['observations']
-            perfect_actions = data['perfect_actions']
-            for obs, action in zip(observations, perfect_actions):
-                obs = np.array(obs, dtype=np.uint16)
-                action = np.array(action, dtype=np.float32)
-                pairs.append((obs, action, episode_metadata))
-            print(f"  Loaded {len(observations)} pairs from {episode_file.name} (legacy format)")
+    total_files = len(h5_files) + len(npz_files) + len(json_files)
+    print(f"Found {len(h5_files)} H5, {len(npz_files)} NPZ, {len(json_files)} JSON files in {dataset_path}")
     
+    # Load HDF5 files (preferred format)
+    if h5_files and HDF5_AVAILABLE:
+        print("Loading from HDF5 files...")
+        for h5_file in sorted(h5_files):
+            try:
+                with h5py.File(h5_file, 'r') as f:
+                    observations = f['observations'][:]
+                    perfect_actions = f['perfect_actions'][:]
+                    
+                    # Extract metadata from attributes
+                    metadata = {}
+                    for key in f.attrs.keys():
+                        try:
+                            metadata[key] = f.attrs[key]
+                        except:
+                            pass
+                    
+                    # Add pairs
+                    for obs, action in zip(observations, perfect_actions):
+                        pairs.append((obs, action, metadata))
+                    
+                    print(f"  Loaded {len(observations)} pairs from {h5_file.name}")
+            except Exception as e:
+                print(f"  ⚠️  Error loading {h5_file.name}: {e}")
+    
+    # Load NPZ files (fallback format)
+    elif npz_files:
+        print("Loading from NPZ files...")
+        for npz_file in sorted(npz_files):
+            try:
+                data = np.load(npz_file)
+                observations = data['observations']
+                perfect_actions = data['perfect_actions']
+                
+                # Extract metadata
+                metadata = {}
+                for key in data.keys():
+                    if key not in ['observations', 'perfect_actions']:
+                        try:
+                            metadata[key] = data[key].item() if data[key].ndim == 0 else data[key]
+                        except:
+                            pass
+                
+                # Add pairs
+                for obs, action in zip(observations, perfect_actions):
+                    pairs.append((obs, action, metadata))
+                
+                print(f"  Loaded {len(observations)} pairs from {npz_file.name}")
+            except Exception as e:
+                print(f"  ⚠️  Error loading {npz_file.name}: {e}")
+    
+    # Load JSON files (legacy format)
+    elif json_files:
+        print("Loading from JSON files (legacy format)...")
+        for episode_file in sorted(json_files):
+            try:
+                with open(episode_file, 'r') as f:
+                    data = json.load(f)
+                
+                episode_metadata = data.get('metadata', {})
+                
+                # Extract pairs from sample_pairs (new JSON format)
+                if 'sample_pairs' in data:
+                    episode_pairs = data['sample_pairs']
+                    for pair in episode_pairs:
+                        obs = np.array(pair['observation'], dtype=np.uint16)
+                        action = np.array(pair['perfect_action'], dtype=np.float32)
+                        pairs.append((obs, action, episode_metadata))
+                    print(f"  Loaded {len(episode_pairs)} pairs from {episode_file.name}")
+                
+                # Extract pairs from metadata (alternative JSON format)
+                elif 'sample_pairs' in episode_metadata:
+                    episode_pairs = episode_metadata['sample_pairs']
+                    for pair in episode_pairs:
+                        obs = np.array(pair['observation'], dtype=np.uint16)
+                        action = np.array(pair['perfect_action'], dtype=np.float32)
+                        pairs.append((obs, action, episode_metadata))
+                    print(f"  Loaded {len(episode_pairs)} pairs from {episode_file.name} (metadata format)")
+                
+                # Fallback to legacy format if needed
+                elif 'observations' in data and 'perfect_actions' in data:
+                    observations = data['observations']
+                    perfect_actions = data['perfect_actions']
+                    for obs, action in zip(observations, perfect_actions):
+                        obs_array = np.array(obs, dtype=np.uint16)
+                        action_array = np.array(action, dtype=np.float32)
+                        pairs.append((obs_array, action_array, episode_metadata))
+                    print(f"  Loaded {len(observations)} pairs from {episode_file.name} (legacy format)")
+                else:
+                    print(f"  ⚠️  No recognizable data format in {episode_file.name}")
+                    
+            except Exception as e:
+                print(f"  ⚠️  Error loading {episode_file.name}: {e}")
+    else:
+        print("No dataset files found!")
+    
+    print(f"Total pairs loaded: {len(pairs)}")
     return pairs
 
 

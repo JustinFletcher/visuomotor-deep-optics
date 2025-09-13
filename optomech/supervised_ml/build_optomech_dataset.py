@@ -21,6 +21,7 @@ import numpy as np
 import torch
 import gymnasium as gym
 import tyro
+import h5py
 from matplotlib import pyplot as plt
 
 # Local imports
@@ -234,59 +235,69 @@ def build_dataset(args):
     env = gym.make(args.env_id, **vars(args))
     env = gym.wrappers.RecordEpisodeStatistics(env)
 
-    # Initialize dataset manager
-    dataset_path = args.dataset_save_path
+    # Initialize dataset directory 
+    dataset_path = Path(args.dataset_save_path)
+    dataset_dir = dataset_path / args.dataset_name
+    dataset_dir.mkdir(parents=True, exist_ok=True)
     
-    if args.chunked_dataset and CHUNKED_AVAILABLE and args.num_samples > 10000:
-        print(f"Using chunked dataset manager (chunk_size={args.chunk_size})")
-        dataset_manager = ChunkedDatasetManager(dataset_path, chunk_size=args.chunk_size)
-        use_chunked = True
-    else:
-        print("Using standard dataset manager")
-        from dataset_manager import DatasetManager
-        dataset_manager = DatasetManager(dataset_path)
-        use_chunked = False
+    print(f"Dataset will be saved to: {dataset_dir}")
 
-    # Helper function to write a batch of samples
+    # Helper function to write a batch of samples to HDF5
     def write_batch(sample_pairs, batch_start_idx):
-        """Write a batch of observation-action pairs to disk"""
+        """Write a batch of observation-action pairs to HDF5 file for efficient storage"""
         if not sample_pairs:
             return None
+        
+        # Convert to numpy arrays for efficient storage
+        observations = np.array([pair['observation'] for pair in sample_pairs], dtype=np.uint16)
+        perfect_actions = np.array([pair['perfect_action'] for pair in sample_pairs], dtype=np.float32)
+        
+        # Create HDF5 filename
+        batch_filename = f"batch_{batch_start_idx:06d}_{batch_start_idx + len(sample_pairs) - 1:06d}.h5"
+        batch_path = dataset_dir / batch_filename
+        
+        # Save to HDF5 with compression
+        try:
+            import h5py
+            with h5py.File(batch_path, 'w') as f:
+                # Store data with compression
+                f.create_dataset('observations', data=observations, compression='gzip', compression_opts=6)
+                f.create_dataset('perfect_actions', data=perfect_actions, compression='gzip', compression_opts=6)
+                
+                # Store metadata as attributes
+                f.attrs['batch_size'] = len(sample_pairs)
+                f.attrs['batch_start_idx'] = batch_start_idx
+                f.attrs['dataset_type'] = 'direct_sml_pairs'
+                f.attrs['env_id'] = args.env_id
+                f.attrs['object_type'] = args.object_type
+                f.attrs['aperture_type'] = args.aperture_type
+                f.attrs['reward_function'] = args.reward_function
+                f.attrs['total_samples_planned'] = args.num_samples
+                f.attrs['observation_shape'] = observations.shape[1:]
+                f.attrs['action_space_shape'] = perfect_actions.shape[1:]
+                f.attrs['description'] = f'Direct SML pairs batch {batch_start_idx}-{batch_start_idx + len(sample_pairs) - 1}'
+                
+        except ImportError:
+            print("⚠️  h5py not available, falling back to numpy compressed format")
+            # Fallback to numpy compressed format
+            batch_filename = f"batch_{batch_start_idx:06d}_{batch_start_idx + len(sample_pairs) - 1:06d}.npz"
+            batch_path = dataset_dir / batch_filename
             
-        # Prepare dataset for SML - store as observation-action pairs for easy training iteration
-        # Also maintain compatibility with dataset manager by providing expected keys
-        dataset_dict = {
-            'sample_pairs': sample_pairs,  # NEW: List of {'observation': obs, 'perfect_action': action} dicts
-            'observations': [pair['observation'] for pair in sample_pairs],  # Compatibility 
-            'next_observations': [pair['observation'] for pair in sample_pairs],  # Same as observations for SML
-            'actions': [[0.0] for _ in range(len(sample_pairs))],  # Dummy actions (not used)
-            'rewards': [0.0 for _ in range(len(sample_pairs))],    # Dummy rewards (not used)
-            'dones': [False for _ in range(len(sample_pairs))],    # Dummy dones (not used)
-            'perfect_actions': [pair['perfect_action'] for pair in sample_pairs],  # Compatibility
-            'batch_size': len(sample_pairs),
-            'batch_start_idx': batch_start_idx
-        }
+            np.savez_compressed(
+                batch_path,
+                observations=observations,
+                perfect_actions=perfect_actions,
+                batch_size=len(sample_pairs),
+                batch_start_idx=batch_start_idx,
+                dataset_type='direct_sml_pairs',
+                env_id=args.env_id,
+                object_type=args.object_type,
+                aperture_type=args.aperture_type,
+                reward_function=args.reward_function,
+                total_samples_planned=args.num_samples
+            )
         
-        # Prepare metadata for this batch (including the pairs in metadata for preservation)
-        metadata = {
-            'dataset_type': 'direct_sml_pairs',
-            'env_id': args.env_id,
-            'object_type': args.object_type,
-            'aperture_type': args.aperture_type,
-            'reward_function': args.reward_function,
-            'batch_size': len(sample_pairs),
-            'batch_start_idx': batch_start_idx,
-            'total_samples_planned': args.num_samples,
-            'observation_shape': len(sample_pairs[0]['observation']) if sample_pairs else 0,
-            'action_space_shape': list(env.action_space.shape),
-            'perfect_action_shape': len(sample_pairs[0]['perfect_action']) if sample_pairs else 0,
-            'description': f'Direct SML pairs batch {batch_start_idx}-{batch_start_idx + len(sample_pairs) - 1}: observation-action pairs',
-            'sample_pairs': sample_pairs  # Store the pairs in metadata to preserve them
-        }
-        
-        # Save batch
-        dataset_id = dataset_manager.save_episode(dataset_dict, metadata)
-        return dataset_id
+        return str(batch_path)
 
     # Data collector for current batch
     sample_pairs = []  # List of {'observation': obs, 'perfect_action': action} pairs
@@ -299,6 +310,11 @@ def build_dataset(args):
     # Track timing for progress reporting
     start_time = time.time()
     obs, info = env.reset()
+    
+    # Track consecutive perfect rewards for config validation
+    consecutive_perfect_rewards = 0
+    PERFECT_REWARD_THRESHOLD = 0.999  # Close to 1.0 to account for floating point precision
+    MAX_CONSECUTIVE_PERFECT = 5      # If we see this many perfect rewards in a row, configs are wrong
         
 
     # Generate IID samples
@@ -338,6 +354,24 @@ def build_dataset(args):
         corrected_action = np.clip(corrected_action, action_low, action_high)
         _, corrected_reward, _, _, _ = env.step(corrected_action - action)
         print(f"Sample {sample_idx}: Reward before correction: {reward:.4f}, after perfect correction: {corrected_reward:.4f}")
+        
+        # Check for consecutive perfect rewards (indicates config issues)
+        if corrected_reward >= PERFECT_REWARD_THRESHOLD:
+            consecutive_perfect_rewards += 1
+            if consecutive_perfect_rewards >= MAX_CONSECUTIVE_PERFECT:
+                print(f"\n❌ ERROR: Detected {consecutive_perfect_rewards} consecutive perfect rewards (≥{PERFECT_REWARD_THRESHOLD:.3f})!")
+                print("This is statistically impossible and indicates a configuration problem.")
+                print("\n🔧 Please check your environment configuration:")
+                print("   - Ensure optical aberrations are being properly introduced")
+                print("   - Verify the reward function is configured correctly") 
+                print("   - Check that the environment is not in a 'perfect' starting state")
+                print("   - Review optomech-version, object-type, and aperture-type settings")
+                print(f"\n💡 Perfect rewards should be rare in random sampling scenarios.")
+                print("Terminating dataset generation early to prevent wasted computation.")
+                env.close()
+                return
+        else:
+            consecutive_perfect_rewards = 0  # Reset counter on non-perfect reward
         
         
         # Store as observation-action pair with uint16 conversion for storage efficiency
@@ -381,32 +415,14 @@ def build_dataset(args):
             batch_ids.append(batch_id)
             print(f"💾 Wrote final batch {len(batch_ids)} (samples {batch_start_idx}-{args.num_samples-1}) to disk: {batch_id}")
 
-    # Create summary metadata for all batches
-    summary_metadata = {
-        'dataset_type': 'direct_sml_summary',
-        'env_id': args.env_id,
-        'object_type': args.object_type,
-        'aperture_type': args.aperture_type,
-        'reward_function': args.reward_function,
-        'total_samples': args.num_samples,
-        'write_frequency': args.write_frequency,
-        'num_batches': len(batch_ids),
-        'batch_ids': batch_ids,
-        'observation_shape': list(next_obs.shape) if 'next_obs' in locals() else [],
-        'action_space_shape': list(env.action_space.shape),
-        'description': f'Direct SML dataset summary: {len(batch_ids)} batches totaling {args.num_samples} samples'
-    }
-    
     print(f"\n✅ Direct SML Dataset created successfully!")
     print(f"Total batches written: {len(batch_ids)}")
     print(f"Samples: {args.num_samples}")
     print(f"Write frequency: {args.write_frequency} samples per batch")
-    print(f"Observation shape: {summary_metadata['observation_shape']}")
-    print(f"Action space shape: {summary_metadata['action_space_shape']}")
-    print(f"Data format: observation-action pairs for easy training iteration")
-    print(f"Saved to: {dataset_path}")
+    print(f"Data format: HDF5 compressed observation-action pairs")
+    print(f"Saved to: {dataset_dir}")
     if batch_ids:
-        print(f"Batch IDs: {batch_ids}")
+        print(f"Sample batch files: {batch_ids[:3]}{'...' if len(batch_ids) > 3 else ''}")
     
     # Cleanup
     env.close()
