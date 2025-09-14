@@ -87,10 +87,10 @@ class DatasetJobWatcher:
         dataset_files = []
         temp_files = []
 
-        # Look for HDF5 files (new format)
+        # Look for HDF5 files (new format with UUID naming)
         try:
-            h5_files = list(dataset_dir.glob("*.h5"))
-            print(f"🗂️  Found {len(h5_files)} HDF5 files")
+            h5_files = list(dataset_dir.glob("batch_*.h5"))  # Only look for batch files
+            print(f"🗂️  Found {len(h5_files)} HDF5 batch files")
             
             for file_path in h5_files:
                 filename = file_path.name
@@ -106,10 +106,10 @@ class DatasetJobWatcher:
         except Exception as e:
             print(f"⚠️  Error scanning H5 files: {e}")
             
-        # Look for NumPy files (.npz format)
+        # Look for NumPy files (.npz format with UUID naming)
         try:
-            npz_files = list(dataset_dir.glob("*.npz"))
-            print(f"📦 Found {len(npz_files)} NPZ files")
+            npz_files = list(dataset_dir.glob("batch_*.npz"))  # Only look for batch files
+            print(f"📦 Found {len(npz_files)} NPZ batch files")
             
             for file_path in npz_files:
                 filename = file_path.name

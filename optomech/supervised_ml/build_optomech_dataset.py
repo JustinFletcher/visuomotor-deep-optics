@@ -242,9 +242,39 @@ def build_dataset(args):
     
     print(f"Dataset will be saved to: {dataset_dir}")
 
+    # Function to count existing samples in the dataset directory
+    def count_existing_samples():
+        """Count total samples across all existing batch files in the directory"""
+        total_samples = 0
+        
+        # Look for HDF5 files
+        try:
+            h5_files = list(dataset_dir.glob("batch_*.h5"))
+            for h5_file in h5_files:
+                try:
+                    with h5py.File(h5_file, 'r') as f:
+                        if 'observations' in f:
+                            total_samples += f['observations'].shape[0]
+                except Exception as e:
+                    print(f"⚠️  Could not read {h5_file}: {e}")
+        except ImportError:
+            pass
+        
+        # Look for NPZ files (fallback format)
+        npz_files = list(dataset_dir.glob("batch_*.npz"))
+        for npz_file in npz_files:
+            try:
+                data = np.load(npz_file)
+                if 'observations' in data:
+                    total_samples += data['observations'].shape[0]
+            except Exception as e:
+                print(f"⚠️  Could not read {npz_file}: {e}")
+        
+        return total_samples
+
     # Helper function to write a batch of samples to HDF5
-    def write_batch(sample_pairs, batch_start_idx):
-        """Write a batch of observation-action pairs to HDF5 file for efficient storage"""
+    def write_batch(sample_pairs, global_sample_count):
+        """Write a batch of observation-action pairs to HDF5 file with UUID naming for parallel safety"""
         if not sample_pairs:
             return None
         
@@ -252,8 +282,9 @@ def build_dataset(args):
         observations = np.array([pair['observation'] for pair in sample_pairs], dtype=np.uint16)
         perfect_actions = np.array([pair['perfect_action'] for pair in sample_pairs], dtype=np.float32)
         
-        # Create HDF5 filename
-        batch_filename = f"batch_{batch_start_idx:06d}_{batch_start_idx + len(sample_pairs) - 1:06d}.h5"
+        # Create UUID-based filename to prevent parallel job collisions
+        batch_uuid = str(uuid.uuid4())
+        batch_filename = f"batch_{batch_uuid}.h5"
         batch_path = dataset_dir / batch_filename
         
         # Save to HDF5 with compression
@@ -266,7 +297,8 @@ def build_dataset(args):
                 
                 # Store metadata as attributes
                 f.attrs['batch_size'] = len(sample_pairs)
-                f.attrs['batch_start_idx'] = batch_start_idx
+                f.attrs['batch_uuid'] = batch_uuid
+                f.attrs['global_sample_count'] = global_sample_count
                 f.attrs['dataset_type'] = 'direct_sml_pairs'
                 f.attrs['env_id'] = args.env_id
                 f.attrs['object_type'] = args.object_type
@@ -275,12 +307,12 @@ def build_dataset(args):
                 f.attrs['total_samples_planned'] = args.num_samples
                 f.attrs['observation_shape'] = observations.shape[1:]
                 f.attrs['action_space_shape'] = perfect_actions.shape[1:]
-                f.attrs['description'] = f'Direct SML pairs batch {batch_start_idx}-{batch_start_idx + len(sample_pairs) - 1}'
+                f.attrs['description'] = f'Direct SML pairs batch {batch_uuid} ({len(sample_pairs)} samples)'
                 
         except ImportError:
             print("⚠️  h5py not available, falling back to numpy compressed format")
-            # Fallback to numpy compressed format
-            batch_filename = f"batch_{batch_start_idx:06d}_{batch_start_idx + len(sample_pairs) - 1:06d}.npz"
+            # Fallback to numpy compressed format with UUID naming
+            batch_filename = f"batch_{batch_uuid}.npz"
             batch_path = dataset_dir / batch_filename
             
             np.savez_compressed(
@@ -288,7 +320,8 @@ def build_dataset(args):
                 observations=observations,
                 perfect_actions=perfect_actions,
                 batch_size=len(sample_pairs),
-                batch_start_idx=batch_start_idx,
+                batch_uuid=batch_uuid,
+                global_sample_count=global_sample_count,
                 dataset_type='direct_sml_pairs',
                 env_id=args.env_id,
                 object_type=args.object_type,
@@ -303,7 +336,17 @@ def build_dataset(args):
     sample_pairs = []  # List of {'observation': obs, 'perfect_action': action} pairs
     batch_ids = []  # Track all saved batch IDs
 
-    print(f"Building direct SML dataset with {args.num_samples} samples...")
+    # Check existing samples in directory
+    existing_samples = count_existing_samples()
+    if existing_samples >= args.num_samples:
+        print(f"✅ Target samples ({args.num_samples}) already reached! Found {existing_samples} existing samples.")
+        env.close()
+        return
+    
+    samples_needed = args.num_samples - existing_samples
+    print(f"📊 Found {existing_samples} existing samples, need {samples_needed} more to reach {args.num_samples}")
+
+    print(f"Building direct SML dataset with {samples_needed} additional samples...")
     print(f"Incremental write frequency: every {args.write_frequency} samples")
     print("=" * 60)
 
@@ -317,8 +360,15 @@ def build_dataset(args):
     MAX_CONSECUTIVE_PERFECT = 5      # If we see this many perfect rewards in a row, configs are wrong
         
 
-    # Generate IID samples
-    for sample_idx in range(args.num_samples):
+    # Generate IID samples until target is reached
+    for local_sample_idx in range(samples_needed):
+        # Check periodically if another job has completed the target
+        if local_sample_idx % 100 == 0:
+            current_total = count_existing_samples() + len(sample_pairs)
+            if current_total >= args.num_samples:
+                print(f"🎯 Target reached by other jobs! Current total: {current_total}")
+                break
+        
         # Sample uniform random action
         action = env.action_space.sample()
         
@@ -353,7 +403,10 @@ def build_dataset(args):
         # Clip the corrected action to valid action space bounds
         corrected_action = np.clip(corrected_action, action_low, action_high)
         _, corrected_reward, _, _, _ = env.step(corrected_action - action)
-        print(f"Sample {sample_idx}: Reward before correction: {reward:.4f}, after perfect correction: {corrected_reward:.4f}")
+        
+        # Calculate global sample index for reporting
+        global_sample_idx = existing_samples + local_sample_idx
+        print(f"Sample {global_sample_idx}: Reward before correction: {reward:.4f}, after perfect correction: {corrected_reward:.4f}")
         
         # Check for consecutive perfect rewards (indicates config issues)
         if corrected_reward >= PERFECT_REWARD_THRESHOLD:
@@ -384,45 +437,51 @@ def build_dataset(args):
         
         # Write batch to disk if we've accumulated enough samples
         if len(sample_pairs) >= args.write_frequency:
-            batch_start_idx = sample_idx + 1 - len(sample_pairs)
-            batch_id = write_batch(sample_pairs, batch_start_idx)
+            current_total_samples = existing_samples + local_sample_idx + 1
+            batch_id = write_batch(sample_pairs, current_total_samples)
             if batch_id:
                 batch_ids.append(batch_id)
-                print(f"💾 Wrote batch {len(batch_ids)} (samples {batch_start_idx}-{sample_idx}) to disk: {batch_id}")
+                print(f"💾 Wrote batch {len(batch_ids)} ({len(sample_pairs)} samples) to disk: {batch_id}")
             
             # Clear batch list for next batch
             sample_pairs = []
         
         # Progress reporting - more frequent and verbose for job manager parsing
-        if (sample_idx + 1) % 10 == 0 or (sample_idx + 1) == args.num_samples:
-            progress = (sample_idx + 1) / args.num_samples * 100
+        if (local_sample_idx + 1) % 10 == 0 or (local_sample_idx + 1) == samples_needed:
+            current_total_samples = existing_samples + local_sample_idx + 1
+            progress = current_total_samples / args.num_samples * 100
             elapsed = time.time() - start_time
-            samples_per_sec = (sample_idx + 1) / elapsed if elapsed > 0 else 0
-            eta_seconds = (args.num_samples - sample_idx - 1) / samples_per_sec if samples_per_sec > 0 else 0
+            samples_per_sec = (local_sample_idx + 1) / elapsed if elapsed > 0 else 0
+            remaining_needed = samples_needed - local_sample_idx - 1
+            eta_seconds = remaining_needed / samples_per_sec if samples_per_sec > 0 else 0
             eta_str = f"{eta_seconds:.0f}s" if eta_seconds < 3600 else f"{eta_seconds/3600:.1f}h"
             
-            print(f"Progress: {sample_idx+1}/{args.num_samples} ({progress:.1f}%) | "
-                  f"Rate: {samples_per_sec:.2f} samples/s | ETA: {eta_str}")
+            print(f"Progress: {current_total_samples}/{args.num_samples} ({progress:.1f}%) | "
+                  f"Local: {local_sample_idx+1}/{samples_needed} | Rate: {samples_per_sec:.2f} samples/s | ETA: {eta_str}")
             
             # Flush output for real-time monitoring
             sys.stdout.flush()
 
     # Write any remaining samples as final batch
     if sample_pairs:
-        batch_start_idx = args.num_samples - len(sample_pairs)
-        batch_id = write_batch(sample_pairs, batch_start_idx)
+        final_total_samples = existing_samples + len(sample_pairs)
+        batch_id = write_batch(sample_pairs, final_total_samples)
         if batch_id:
             batch_ids.append(batch_id)
-            print(f"💾 Wrote final batch {len(batch_ids)} (samples {batch_start_idx}-{args.num_samples-1}) to disk: {batch_id}")
+            print(f"💾 Wrote final batch {len(batch_ids)} ({len(sample_pairs)} samples) to disk: {batch_id}")
 
-    print(f"\n✅ Direct SML Dataset created successfully!")
-    print(f"Total batches written: {len(batch_ids)}")
-    print(f"Samples: {args.num_samples}")
+    # Get final count from directory
+    final_sample_count = count_existing_samples()
+    
+    print(f"\n✅ Direct SML Dataset generation completed!")
+    print(f"Total samples in directory: {final_sample_count}")
+    print(f"Target samples: {args.num_samples}")
+    print(f"Batches written by this job: {len(batch_ids)}")
     print(f"Write frequency: {args.write_frequency} samples per batch")
-    print(f"Data format: HDF5 compressed observation-action pairs")
+    print(f"Data format: HDF5 compressed observation-action pairs with UUID naming")
     print(f"Saved to: {dataset_dir}")
     if batch_ids:
-        print(f"Sample batch files: {batch_ids[:3]}{'...' if len(batch_ids) > 3 else ''}")
+        print(f"Sample batch files from this job: {[Path(b).name for b in batch_ids[:3]]}{'...' if len(batch_ids) > 3 else ''}")
     
     # Cleanup
     env.close()

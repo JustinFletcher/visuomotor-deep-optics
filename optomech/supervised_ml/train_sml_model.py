@@ -371,9 +371,23 @@ def get_device(device_str: str = "auto") -> tuple[torch.device, int]:
     """Get the best available device for training and return device + GPU count"""
     if device_str == "auto":
         if torch.cuda.is_available():
+            # Clear CUDA cache and reset any existing contexts
+            torch.cuda.empty_cache()
+            
             device = torch.device("cuda")
             gpu_count = torch.cuda.device_count()
             print(f"Using CUDA device: {torch.cuda.get_device_name()}")
+            
+            # Check GPU memory availability
+            try:
+                memory_free, memory_total = torch.cuda.mem_get_info()
+                print(f"GPU Memory: {memory_free / 1e9:.1f}GB free / {memory_total / 1e9:.1f}GB total")
+                
+                if memory_free < 2e9:  # Less than 2GB free
+                    print("⚠️  Warning: Low GPU memory available, consider reducing batch size")
+            except:
+                print("Could not check GPU memory")
+            
             if gpu_count > 1:
                 print(f"Found {gpu_count} CUDA GPUs - DataParallel will be enabled")
                 for i in range(gpu_count):
@@ -390,6 +404,16 @@ def get_device(device_str: str = "auto") -> tuple[torch.device, int]:
     else:
         device = torch.device(device_str)
         print(f"Using specified device: {device}")
+        
+        # Clear CUDA cache if using CUDA
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+            try:
+                memory_free, memory_total = torch.cuda.mem_get_info(device)
+                print(f"GPU Memory: {memory_free / 1e9:.1f}GB free / {memory_total / 1e9:.1f}GB total")
+            except:
+                print("Could not check GPU memory")
+        
         gpu_count = torch.cuda.device_count() if device.type == "cuda" else 1
         return device, gpu_count
 
@@ -525,12 +549,31 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=50, help="Number of epochs")
-    parser.add_argument("--device", type=str, default="auto", help="Device to use (auto/cuda/mps/cpu)")
+    parser.add_argument("--device", type=str, default="auto", help="Device to use (auto/cuda/mps/cpu/cuda:0/cuda:1)")
+    parser.add_argument("--no_dataparallel", action="store_true", 
+                       help="Disable DataParallel even with multiple GPUs")
+    parser.add_argument("--force_cpu", action="store_true",
+                       help="Force CPU training (useful for debugging GPU issues)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resume_from", type=str, default=None, 
                        help="Path to checkpoint file to resume training from")
     
     args = parser.parse_args()
+    
+    # Initialize CUDA environment safely
+    if torch.cuda.is_available():
+        # Set CUDA device and initialize context early
+        torch.cuda.init()
+        torch.cuda.empty_cache()
+        
+        # Set memory allocation settings to avoid fragmentation
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
+        
+        # Disable cudnn benchmark for more stable behavior
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        
+        print(f"🔧 CUDA initialized with {torch.cuda.device_count()} devices")
     
     # Set random seeds
     torch.manual_seed(args.seed)
@@ -585,13 +628,14 @@ def main():
                             shuffle=False, num_workers=0)
     
     # Initialize model, optimizer, and criterion
-    device, gpu_count = get_device(config.device)
+    device_arg = "cpu" if args.force_cpu else config.device
+    device, gpu_count = get_device(device_arg)
     
     input_channels = sample_obs.shape[0] if len(sample_obs.shape) == 3 else 1
     model = SMLModel(input_channels=input_channels, action_dim=action_dim).to(device)
     
     # Enable DataParallel for multi-GPU training
-    if gpu_count > 1 and device.type == "cuda":
+    if gpu_count > 1 and device.type == "cuda" and not args.no_dataparallel:
         model = DataParallel(model)
         print(f"🚀 DataParallel enabled across {gpu_count} GPUs")
         
