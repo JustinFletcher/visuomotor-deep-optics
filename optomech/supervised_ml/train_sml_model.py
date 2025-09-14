@@ -9,6 +9,8 @@ import sys
 import json
 import random
 import argparse
+from torch.utils.tensorboard import SummaryWriter
+import uuid
 import time
 from pathlib import Path
 from typing import List, Tuple, Dict
@@ -557,6 +559,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--resume_from", type=str, default=None, 
                        help="Path to checkpoint file to resume training from")
+    parser.add_argument("--log_dir", type=str, default="runs",
+                       help="Base directory for TensorBoard logs, plots, and saved models")
     
     args = parser.parse_args()
     
@@ -580,7 +584,14 @@ def main():
     np.random.seed(args.seed)
     random.seed(args.seed)
     
-    # Load dataset
+    # Set up log directory for this run
+    run_id = str(uuid.uuid4())[:8]
+    log_dir = Path(args.log_dir) / f"run_{run_id}"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📁 Logging to: {log_dir}")
+
+    # Update config paths to use log_dir
+    model_save_path = str(log_dir / "sml_model.pth")
     config = TrainingConfig(
         dataset_path=args.dataset_path,
         batch_size=args.batch_size,
@@ -588,8 +599,12 @@ def main():
         num_epochs=args.num_epochs,
         device=args.device,
         seed=args.seed,
-        resume_from=args.resume_from
+        resume_from=args.resume_from,
+        model_save_path=model_save_path,
+        plot_losses=True
     )
+    # TensorBoard writer
+    tb_writer = SummaryWriter(log_dir=str(log_dir))
     
     print("🚀 Starting SML Model Training")
     print("=" * 50)
@@ -698,30 +713,34 @@ def main():
         # Validate
         val_loss = validate_epoch(model, val_loader, criterion, device)
         val_losses.append(val_loss)
-        
+
+        # TensorBoard logging
+        tb_writer.add_scalar('Loss/Train', train_loss, epoch)
+        tb_writer.add_scalar('Loss/Val', val_loss, epoch)
+
         # Calculate timing
         epoch_time = time.time() - epoch_start_time
         epoch_times.append(epoch_time)
-        
+
         # Calculate ETA
         avg_epoch_time = np.mean(epoch_times)
         remaining_epochs = config.num_epochs - (epoch + 1)
         eta_seconds = remaining_epochs * avg_epoch_time
         eta_minutes = eta_seconds / 60
         eta_hours = eta_minutes / 60
-        
+
         if eta_hours >= 1:
             eta_str = f"{eta_hours:.1f}h"
         elif eta_minutes >= 1:
             eta_str = f"{eta_minutes:.1f}m"
         else:
             eta_str = f"{eta_seconds:.0f}s"
-        
+
         print(f"  Train Loss: {train_loss:.6f}")
         print(f"  Val Loss:   {val_loss:.6f}")
         print(f"  Epoch Time: {epoch_time:.1f}s")
         print(f"  ETA:        {eta_str}")
-        
+
         # Show GPU memory usage for multi-GPU setups
         if gpu_count > 1 and device.type == "cuda":
             memory_info = []
@@ -739,7 +758,6 @@ def main():
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             if config.save_model:
-                os.makedirs(os.path.dirname(config.model_save_path), exist_ok=True)
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
@@ -750,7 +768,7 @@ def main():
                     'val_losses': val_losses,
                     'config': config
                 }, config.model_save_path)
-                print(f"  ✅ New best model saved!")
+                print(f"  ✅ New best model saved at {config.model_save_path}!")
     
     total_training_time = time.time() - training_start_time
     
@@ -788,8 +806,11 @@ def main():
     
     # Plot training curves
     if config.plot_losses:
-        plot_save_path = config.model_save_path.replace('.pth', '_training_curves.png')
+        plot_save_path = str(log_dir / "training_curves.png")
         plot_training_curves(train_losses, val_losses, plot_save_path)
+        print(f"📈 Training curves saved to {plot_save_path}")
+
+    tb_writer.close()
     
     print("\n🎉 Training complete!")
 
