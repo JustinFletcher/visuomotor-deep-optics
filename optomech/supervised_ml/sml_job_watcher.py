@@ -1,562 +1,205 @@
 #!/usr/bin/env python3
 """
-Standalone Job Watcher for SML Dataset Generation
+Simple Dataset Watcher - Counts samples directly from H5 files
 
-Monitors dataset generation progress by directly analyzing dataset files.
-Works independently of job managers and config files.
+No metadata parsing, no job manager dependencies, just pure sample counting.
 """
 
 import os
 import sys
 import time
-import json
-import pickle
 import argparse
 from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime
+from typing import Dict, List
 
-# Try to import h5py for HDF5 support
+# Try to import h5py
 try:
     import h5py
     HDF5_AVAILABLE = True
 except ImportError:
     HDF5_AVAILABLE = False
-    print("⚠️  h5py not available, HDF5 files will be estimated by size")
-
-# Try to import numpy for .npz support
-try:
-    import numpy as np
-    NUMPY_AVAILABLE = True
-except ImportError:
-    NUMPY_AVAILABLE = False
-    print("⚠️  numpy not available, .npz files will be estimated by size")
+    print("❌ h5py not available - cannot read HDF5 files")
+    sys.exit(1)
 
 
-class DatasetJobWatcher:
-    """Watches SML dataset generation jobs by analyzing dataset files directly"""
-    
-    def __init__(self, dataset_base_dir: str = "./datasets", verbose: bool = False):
-        self.dataset_base_dir = Path(dataset_base_dir).resolve()
-        self.refresh_interval = 10  # seconds
-        self.detailed_interval = 60  # seconds for detailed updates
-        self.last_detailed_update = 0
-        self.verbose = verbose
-    
-    def find_active_datasets(self) -> List[Dict]:
-        """Find all dataset directories with SML data files"""
-        active_datasets = []
-        
-        if not self.dataset_base_dir.exists():
-            return active_datasets
-        
-        # Look for any directories containing dataset files
-        for dataset_dir in self.dataset_base_dir.iterdir():
-            if dataset_dir.is_dir():
-                status = self.assess_dataset_status(dataset_dir)
-                if status['has_dataset_files']:
-                    dataset_info = {
-                        'name': dataset_dir.name,
-                        'path': str(dataset_dir),
-                        'status': status
-                    }
-                    active_datasets.append(dataset_info)
-        
-        return active_datasets
-    
-    def assess_dataset_status(self, dataset_dir: Path) -> Dict:
-        """Assess current status by analyzing dataset files directly"""
-        status = {
-            'total_samples_generated': 0,
-            'total_batches': 0,
+def get_directory_size(directory: Path) -> int:
+    """Get total size of directory in bytes"""
+    total_size = 0
+    try:
+        for file_path in directory.rglob('*'):
+            if file_path.is_file():
+                total_size += file_path.stat().st_size
+    except (OSError, PermissionError):
+        pass
+    return total_size
+
+
+def format_bytes(bytes_val: int) -> str:
+    """Format bytes as human readable string"""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if bytes_val < 1024:
+            return f"{bytes_val:.1f} {unit}"
+        bytes_val /= 1024
+    return f"{bytes_val:.1f} PB"
+
+
+def count_samples_in_h5(file_path: Path) -> int:
+    """Count samples in a single H5 file"""
+    try:
+        with h5py.File(file_path, 'r') as f:
+            if 'observations' in f:
+                return f['observations'].shape[0]
+            elif 'perfect_actions' in f:
+                return f['perfect_actions'].shape[0]
+            else:
+                return 0
+    except Exception:
+        return 0
+
+
+def scan_directory(directory: Path) -> Dict:
+    """Scan directory and count all samples in H5 files"""
+    if not directory.exists():
+        return {
+            'total_samples': 0,
             'total_files': 0,
-            'temp_files': 0,
-            'has_dataset_files': False,
-            'dataset_type': 'unknown',
-            'start_time': None,
-            'last_activity': None,
-            'estimated_target': None,
-            'batch_size': None,
-            'file_details': [],
-            'avg_bytes_per_sample': None
+            'directory_size': 0,
+            'oldest_file': None,
+            'newest_file': None,
+            'file_details': []
         }
-
-        print(f"🔍 Scanning directory: {dataset_dir}")
-        
-        # Find all dataset files
-        dataset_files = []
-        temp_files = []
-
-        # Look for HDF5 files (new format with UUID naming)
-        try:
-            h5_files = list(dataset_dir.glob("batch_*.h5"))  # Only look for batch files
-            print(f"🗂️  Found {len(h5_files)} HDF5 batch files")
-            
-            for file_path in h5_files:
-                filename = file_path.name
-                if (filename.startswith('.tmp_') or 
-                    filename.endswith('.tmp') or
-                    filename.startswith('tmp_') or
-                    '.tmp.' in filename):
-                    temp_files.append(file_path)
-                    print(f"⏳ Temp H5 file: {filename}")
-                else:
-                    dataset_files.append(file_path)
-                    print(f"🗂️  Dataset H5 file: {filename}")
-        except Exception as e:
-            print(f"⚠️  Error scanning H5 files: {e}")
-            
-        # Look for NumPy files (.npz format with UUID naming)
-        try:
-            npz_files = list(dataset_dir.glob("batch_*.npz"))  # Only look for batch files
-            print(f"📦 Found {len(npz_files)} NPZ batch files")
-            
-            for file_path in npz_files:
-                filename = file_path.name
-                if (filename.startswith('.tmp_') or 
-                    filename.endswith('.tmp') or
-                    filename.startswith('tmp_') or
-                    '.tmp.' in filename):
-                    temp_files.append(file_path)
-                    print(f"⏳ Temp NPZ file: {filename}")
-                else:
-                    dataset_files.append(file_path)
-                    print(f"📦 Dataset NPZ file: {filename}")
-        except Exception as e:
-            print(f"⚠️  Error scanning NPZ files: {e}")
-
-        # Look for JSON files (legacy format)
-        try:
-            json_files = list(dataset_dir.glob("*.json"))
-            print(f"📁 Found {len(json_files)} JSON files")
-            
-            for file_path in json_files:
-                filename = file_path.name
-                
-                # Skip temporary files (more comprehensive patterns)
-                if (filename.startswith('.tmp_') or 
-                    filename.endswith('.tmp') or
-                    filename.startswith('tmp_') or
-                    '.tmp.' in filename):
-                    temp_files.append(file_path)
-                    print(f"⏳ Temp file: {filename}")
-                    continue
-                    
-                # Skip known config and metadata files that aren't actual dataset files
-                if (filename.endswith('_job_config.json') or 
-                    filename.endswith('_job_results.json') or
-                    filename == 'dataset_stats.json' or
-                    filename == 'config.json'):
-                    print(f"⚙️  Config file: {filename}")
-                    continue
-                    
-                # Only include files that look like episode/batch data
-                if (filename.startswith('episode_') or 
-                    filename.startswith('batch_') or
-                    filename.startswith('data_')):
-                    dataset_files.append(file_path)
-                    print(f"📊 Dataset file: {filename}")
-                    
-        except Exception as e:
-            print(f"⚠️  Error scanning JSON files: {e}")
-                
-        # Look for pickle files  
-        try:
-            pkl_files = list(dataset_dir.glob("*.pkl"))
-            print(f"📦 Found {len(pkl_files)} PKL files")
-            
-            for file_path in pkl_files:
-                filename = file_path.name
-                if (filename.startswith('.tmp_') or 
-                    filename.endswith('.tmp') or
-                    filename.startswith('tmp_') or
-                    '.tmp.' in filename):
-                    temp_files.append(file_path)
-                    print(f"⏳ Temp PKL file: {filename}")
-                else:
-                    dataset_files.append(file_path)
-                    print(f"📦 Dataset PKL file: {filename}")
-        except Exception as e:
-            print(f"⚠️  Error scanning PKL files: {e}")
-        
-        status['total_files'] = len(dataset_files)
-        status['temp_files'] = len(temp_files)
-        status['has_dataset_files'] = len(dataset_files) > 0 or len(temp_files) > 0
-        
-        print(f"📈 Summary: {len(dataset_files)} dataset files, {len(temp_files)} temp files")
-        
-        if not status['has_dataset_files']:
-            print("❌ No dataset files found")
-            return status
-
-        # Analyze each file to count samples - SKIP temp files to avoid race conditions
-        total_samples = 0
-        total_batches = 0
-        dataset_types = set()
-        batch_sizes = []
-        avg_bytes_per_sample = None
-        
-        print(f"🔍 Analyzing {len(dataset_files)} dataset files for sample counts...")
-        
-        # Parse the first file completely to get baseline metrics
-        first_file_analyzed = False
-        for i, file_path in enumerate(dataset_files):
-            try:
-                if not first_file_analyzed:
-                    # Parse first file completely to get sample size baseline
-                    print(f"   📊 Analyzing first file completely: {file_path.name}")
-                    samples, metadata = self.analyze_dataset_file(file_path, full_analysis=True)
-                    
-                    if samples > 0:
-                        file_size = file_path.stat().st_size
-                        avg_bytes_per_sample = file_size / samples
-                        status['avg_bytes_per_sample'] = avg_bytes_per_sample
-                        print(f"   📏 Established baseline: {avg_bytes_per_sample:.0f} bytes/sample")
-                        first_file_analyzed = True
-                else:
-                    # For subsequent files, estimate based on file size
-                    file_size = file_path.stat().st_size
-                    if avg_bytes_per_sample and avg_bytes_per_sample > 0:
-                        samples = max(1, int(file_size / avg_bytes_per_sample))
-                        metadata = None  # Don't parse metadata for speed
-                        print(f"   📄 {file_path.name}: ~{samples} samples (estimated from {file_size:,} bytes)")
-                    else:
-                        # Fallback to basic estimation
-                        samples = max(1, file_size // 50000)
-                        metadata = None
-                        print(f"   📄 {file_path.name}: ~{samples} samples (fallback estimate)")
-                
-                total_samples += samples
-                total_batches += 1
-                
-                if metadata:
-                    if 'dataset_type' in metadata:
-                        dataset_types.add(metadata['dataset_type'])
-                    if 'batch_size' in metadata:
-                        batch_sizes.append(metadata['batch_size'])
-                    if 'total_samples_planned' in metadata and not status['estimated_target']:
-                        status['estimated_target'] = metadata['total_samples_planned']
-                
-                status['file_details'].append({
-                    'file': file_path.name,
-                    'samples': samples,
-                    'metadata': metadata,
-                    'estimated': first_file_analyzed and i > 0  # Mark if this was estimated
-                })
-                
-            except Exception as e:
-                print(f"⚠️  Error analyzing file {file_path.name}: {e}")
-                # Continue processing other files instead of crashing
-                
-        status['total_samples_generated'] = total_samples
-        status['total_batches'] = total_batches
-        
-        if dataset_types:
-            status['dataset_type'] = ', '.join(dataset_types)
-        
-        if batch_sizes:
-            status['batch_size'] = int(sum(batch_sizes) / len(batch_sizes))  # Average
-        
-        # Check timing from file modification times (with safety checks)
-        all_files = dataset_files + temp_files
-        if all_files:
-            timestamps = []
-            for f in all_files:
-                try:
-                    timestamps.append(f.stat().st_mtime)
-                except (FileNotFoundError, OSError):
-                    # File disappeared during processing - skip it
-                    continue
-            
-            if timestamps:  # Only proceed if we have valid timestamps
-                status['start_time'] = min(timestamps)
-                status['last_activity'] = max(timestamps)
-        
-        return status
     
-    def analyze_dataset_file(self, file_path: Path, full_analysis: bool = False) -> tuple:
-        """Analyze a single dataset file to extract sample count and metadata
-        
-        Args:
-            file_path: Path to the dataset file
-            full_analysis: If True, parse the file completely. If False, estimate from size.
-        """
-        samples = 0
-        metadata = None
-        
+    # Find all H5 files
+    h5_files = list(directory.glob("*.h5")) + list(directory.glob("batch_*.h5"))
+    
+    total_samples = 0
+    file_details = []
+    timestamps = []
+    
+    print(f"🔍 Found {len(h5_files)} H5 files in {directory}")
+    
+    for h5_file in h5_files:
         try:
-            # Extra safety check: ensure file still exists and is readable
-            if not file_path.exists():
-                print(f"⚠️  File disappeared during analysis: {file_path.name}")
-                return 0, None
+            samples = count_samples_in_h5(h5_file)
+            file_size = h5_file.stat().st_size
+            file_time = h5_file.stat().st_mtime
             
-            # If not doing full analysis, estimate from file size
-            if not full_analysis:
-                file_size = file_path.stat().st_size
-                # Different estimates based on file type
-                if file_path.suffix == '.h5':
-                    # HDF5 compressed: ~150 bytes per sample (much better compression)
-                    samples = max(1, int(file_size / 150))
-                elif file_path.suffix == '.npz':
-                    # NumPy compressed: ~200 bytes per sample
-                    samples = max(1, int(file_size / 200))
-                else:
-                    # JSON: ~500 bytes per sample (inefficient)
-                    samples = max(1, int(file_size / 500))
-                return samples, None
-                
-            # Full analysis: parse the file content
-            if file_path.suffix == '.h5' and HDF5_AVAILABLE:
-                with h5py.File(file_path, 'r') as f:
-                    if 'observations' in f:
-                        samples = f['observations'].shape[0]
-                    elif 'perfect_actions' in f:
-                        samples = f['perfect_actions'].shape[0]
-                    
-                    # Extract metadata from attributes
-                    metadata = {}
-                    for key in f.attrs.keys():
-                        metadata[key] = f.attrs[key]
-                        
-            elif file_path.suffix == '.npz' and NUMPY_AVAILABLE:
-                data = np.load(file_path)
-                if 'observations' in data:
-                    samples = data['observations'].shape[0]
-                elif 'perfect_actions' in data:
-                    samples = data['perfect_actions'].shape[0]
-                
-                # Extract metadata from npz file
-                metadata = {}
-                for key in data.keys():
-                    if key not in ['observations', 'perfect_actions']:
-                        try:
-                            metadata[key] = data[key].item() if data[key].ndim == 0 else data[key]
-                        except:
-                            pass
-                            
-            elif file_path.suffix == '.json':
-                with open(file_path, 'r') as f:
-                    data = json.load(f)
-                    
-                # Extract metadata if present
-                if isinstance(data, dict) and 'metadata' in data:
-                    metadata = data['metadata']
-                    episode_data = data.get('episode_data', data)
-                else:
-                    episode_data = data
-                
-                # Count samples based on data structure
-                if isinstance(episode_data, dict):
-                    # Look for observation arrays
-                    if 'observations' in episode_data:
-                        samples = len(episode_data['observations'])
-                    elif 'sample_pairs' in episode_data:
-                        samples = len(episode_data['sample_pairs'])
-                    elif 'perfect_actions' in episode_data:
-                        samples = len(episode_data['perfect_actions'])
-                    elif 'next_observations' in episode_data:
-                        samples = len(episode_data['next_observations'])
-                    else:
-                        # Try to find any list-like structure
-                        for key, value in episode_data.items():
-                            if isinstance(value, list) and len(value) > 0:
-                                samples = len(value)
-                                break
-                elif isinstance(episode_data, list):
-                    samples = len(episode_data)
-                    
-            elif file_path.suffix == '.pkl':
-                with open(file_path, 'rb') as f:
-                    data = pickle.load(f)
-                    
-                # Handle pickle data similar to JSON
-                if isinstance(data, dict) and 'metadata' in data:
-                    metadata = data['metadata']
-                    episode_data = data.get('episode_data', data)
-                else:
-                    episode_data = data
-                
-                if isinstance(episode_data, dict):
-                    if 'observations' in episode_data:
-                        samples = len(episode_data['observations'])
-                    elif 'sample_pairs' in episode_data:
-                        samples = len(episode_data['sample_pairs'])
-                elif isinstance(episode_data, list):
-                    samples = len(episode_data)
-            else:
-                print(f"⚠️  Unknown file type: {file_path.suffix}")
-                return 0, None
+            total_samples += samples
+            timestamps.append(file_time)
             
-        except FileNotFoundError:
-            print(f"⚠️  File not found (may have been moved/deleted): {file_path.name}")
-            return 0, None
-        except PermissionError:
-            print(f"⚠️  Permission denied accessing: {file_path.name}")
-            return 0, None
-        except json.JSONDecodeError as e:
-            print(f"⚠️  JSON decode error in {file_path.name}: {e}")
-            # Fallback: estimate from file size
-            try:
-                file_size = file_path.stat().st_size
-                samples = max(1, file_size // 500)  # Rough estimate
-            except:
-                samples = 0
+            file_details.append({
+                'name': h5_file.name,
+                'samples': samples,
+                'size': file_size,
+                'modified': file_time
+            })
+            
+            print(f"   📄 {h5_file.name}: {samples:,} samples ({format_bytes(file_size)})")
+            
         except Exception as e:
-            print(f"⚠️  Could not parse {file_path.name}: {e}")
-            # Fallback: estimate from file size
-            try:
-                file_size = file_path.stat().st_size
-                samples = max(1, file_size // 500)  # Rough estimate
-            except:
-                samples = 0
+            print(f"   ⚠️  Error reading {h5_file.name}: {e}")
+    
+    directory_size = get_directory_size(directory)
+    
+    return {
+        'total_samples': total_samples,
+        'total_files': len(h5_files),
+        'directory_size': directory_size,
+        'oldest_file': min(timestamps) if timestamps else None,
+        'newest_file': max(timestamps) if timestamps else None,
+        'file_details': file_details
+    }
 
-        return samples, metadata
+
+def compute_generation_rate(data: Dict) -> float:
+    """Compute empirical generation rate from file timestamps"""
+    if not data['oldest_file'] or not data['newest_file'] or data['total_samples'] == 0:
+        return 0.0
     
-    def print_dataset_summary(self, datasets: List[Dict]):
-        """Print summary of all datasets"""
-        if not datasets:
-            print("📭 No dataset files found")
-            return
-        
-        print(f"\n{'='*80}")
-        print(f"📊 DATASET MONITOR - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"{'='*80}")
-        
-        for dataset in datasets:
-            name = dataset['name']
-            status = dataset['status']
-            
-            # Format timing info
-            start_str = "Unknown"
-            last_activity_str = "Unknown"
-            if status['start_time']:
-                start_dt = datetime.fromtimestamp(status['start_time'])
-                start_str = start_dt.strftime('%H:%M:%S')
-                
-            if status['last_activity']:
-                last_dt = datetime.fromtimestamp(status['last_activity'])
-                last_activity_str = last_dt.strftime('%H:%M:%S')
-                
-                # Calculate time since last activity
-                time_since = datetime.now() - last_dt
-                if time_since.total_seconds() > 300:  # 5 minutes
-                    last_activity_str += f" ({time_since.total_seconds()/60:.0f}m ago)"
-            
-            print(f"\n📁 Dataset: {name}")
-            print(f"   Path: {dataset['path']}")
-            print(f"   📊 Total samples: {status['total_samples_generated']:,}")
-            print(f"   📦 Batches/Files: {status['total_batches']}")
-            if status['temp_files'] > 0:
-                print(f"   🔄 In progress: {status['temp_files']} temp files")
-            
-            # Show estimation info if available
-            if status.get('avg_bytes_per_sample'):
-                print(f"   📏 Estimation: {status['avg_bytes_per_sample']:.0f} bytes/sample (fast mode)")
-            
-            if status['estimated_target']:
-                progress_pct = (status['total_samples_generated'] / status['estimated_target']) * 100
-                print(f"   🎯 Progress: {progress_pct:.1f}% ({status['total_samples_generated']}/{status['estimated_target']})")
-            
-            if status['batch_size']:
-                print(f"   📏 Avg batch size: {status['batch_size']} samples")
-                
-            print(f"   🕐 Started: {start_str}")
-            print(f"   🕑 Last activity: {last_activity_str}")
-            print(f"   🏷️  Type: {status['dataset_type']}")
-            
-            # Calculate generation rate if we have timing info
-            if status['start_time'] and status['total_samples_generated'] > 0:
-                elapsed = time.time() - status['start_time']
-                rate = status['total_samples_generated'] / elapsed if elapsed > 0 else 0
-                print(f"   ⚡ Rate: {rate:.2f} samples/sec")
-                
-                if status['estimated_target'] and rate > 0:
-                    remaining = status['estimated_target'] - status['total_samples_generated']
-                    eta_seconds = remaining / rate
-                    if eta_seconds > 0:
-                        eta_str = f"{eta_seconds:.0f}s" if eta_seconds < 3600 else f"{eta_seconds/3600:.1f}h"
-                        print(f"   ⏰ ETA: {eta_str}")
+    time_span = data['newest_file'] - data['oldest_file']
+    if time_span <= 0:
+        return 0.0
     
-    def print_detailed_info(self, datasets: List[Dict]):
-        """Print detailed file-by-file breakdown"""
-        print(f"\n{'='*80}")
-        print("📋 DETAILED FILE BREAKDOWN")
-        print(f"{'='*80}")
+    return data['total_samples'] / time_span
+
+
+def print_report(directory: Path, data: Dict):
+    """Print a simple, clean report"""
+    print(f"\n{'='*60}")
+    print(f"📊 DATASET REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}")
+    
+    print(f"📁 Directory: {directory}")
+    print(f"💾 Total size: {format_bytes(data['directory_size'])}")
+    print(f"📦 H5 files: {data['total_files']}")
+    print(f"🔢 Total samples: {data['total_samples']:,}")
+    
+    if data['total_samples'] > 0:
+        avg_samples_per_file = data['total_samples'] / data['total_files']
+        avg_bytes_per_sample = data['directory_size'] / data['total_samples']
+        print(f"📊 Avg samples/file: {avg_samples_per_file:.0f}")
+        print(f"📏 Avg bytes/sample: {avg_bytes_per_sample:.0f}")
+    
+    # Timing information
+    if data['oldest_file'] and data['newest_file']:
+        oldest = datetime.fromtimestamp(data['oldest_file'])
+        newest = datetime.fromtimestamp(data['newest_file'])
+        print(f"🕐 Oldest file: {oldest.strftime('%H:%M:%S')}")
+        print(f"🕑 Newest file: {newest.strftime('%H:%M:%S')}")
         
-        for dataset in datasets:
-            print(f"\n📁 {dataset['name']}")
-            status = dataset['status']
+        # Generation rate
+        rate = compute_generation_rate(data)
+        if rate > 0:
+            print(f"⚡ Generation rate: {rate:.2f} samples/sec")
             
-            if status['file_details']:
-                print("   Files:")
-                for detail in status['file_details']:
-                    metadata_str = ""
-                    if detail['metadata']:
-                        batch_start = detail['metadata'].get('batch_start_idx', '?')
-                        metadata_str = f" (batch {batch_start})"
-                    
-                    # Show if this was estimated vs fully analyzed
-                    estimate_marker = " ~" if detail.get('estimated', False) else ""
-                    print(f"     📄 {detail['file']}: {detail['samples']}{estimate_marker} samples{metadata_str}")
-            else:
-                print("   No detailed file information available")
+            # Time since last update
+            time_since_last = time.time() - data['newest_file']
+            if time_since_last > 0:
+                minutes_since = time_since_last / 60
+                print(f"⏱️  Last update: {minutes_since:.1f} minutes ago")
+
+
+def monitor_directory(directory: Path, refresh_interval: int = 10):
+    """Continuously monitor a directory"""
+    print(f"🔍 Monitoring {directory} (refresh every {refresh_interval}s)")
+    print("Press Ctrl+C to stop\n")
     
-    def monitor_continuous(self):
-        """Continuously monitor datasets"""
-        print("🔍 Starting continuous dataset monitoring...")
-        print(f"📂 Watching directory: {self.dataset_base_dir}")
-        print("Press Ctrl+C to stop\n")
-        
-        try:
-            while True:
-                datasets = self.find_active_datasets()
-                
-                # Clear screen and show summary
-                os.system('clear' if os.name == 'posix' else 'cls')
-                self.print_dataset_summary(datasets)
-                
-                # Show detailed info periodically only if verbose
-                current_time = time.time()
-                if (self.verbose and 
-                    current_time - self.last_detailed_update > self.detailed_interval):
-                    self.print_detailed_info(datasets)
-                    self.last_detailed_update = current_time
-                
-                print(f"\n🔄 Refreshing every {self.refresh_interval}s... (Press Ctrl+C to stop)")
-                time.sleep(self.refresh_interval)
-                
-        except KeyboardInterrupt:
-            print("\n👋 Monitoring stopped by user")
-    
-    def show_once(self):
-        """Show current status once and exit"""
-        datasets = self.find_active_datasets()
-        self.print_dataset_summary(datasets)
-        if self.verbose:
-            self.print_detailed_info(datasets)
+    try:
+        while True:
+            # Clear screen
+            os.system('clear' if os.name == 'posix' else 'cls')
+            
+            # Scan and report
+            data = scan_directory(directory)
+            print_report(directory, data)
+            
+            print(f"\n🔄 Refreshing in {refresh_interval}s... (Ctrl+C to stop)")
+            time.sleep(refresh_interval)
+            
+    except KeyboardInterrupt:
+        print("\n👋 Monitoring stopped")
 
 
 def main():
-    """Main entry point for the job watcher"""
-    parser = argparse.ArgumentParser(description="Monitor SML dataset generation progress")
-    parser.add_argument("--dataset_dir", type=str, default="./datasets",
-                       help="Base directory containing datasets")
-    parser.add_argument("--once", action="store_true",
-                       help="Show status once and exit (don't monitor continuously)")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                       help="Show detailed file breakdown information")
+    """Main entry point"""
+    parser = argparse.ArgumentParser(description="Simple dataset sample counter")
+    parser.add_argument("directory", nargs="?", default=".", 
+                       help="Directory to scan (default: current directory)")
+    parser.add_argument("--watch", "-w", action="store_true",
+                       help="Continuously monitor the directory")
     parser.add_argument("--refresh", type=int, default=10,
-                       help="Refresh interval in seconds for continuous monitoring")
+                       help="Refresh interval in seconds for watch mode")
     
     args = parser.parse_args()
     
-    watcher = DatasetJobWatcher(args.dataset_dir, verbose=args.verbose)
-    watcher.refresh_interval = args.refresh
+    directory = Path(args.directory).resolve()
     
-    if args.once:
-        watcher.show_once()
+    if args.watch:
+        monitor_directory(directory, args.refresh)
     else:
-        watcher.monitor_continuous()
+        data = scan_directory(directory)
+        print_report(directory, data)
 
 
 if __name__ == "__main__":
