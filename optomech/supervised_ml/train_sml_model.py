@@ -20,11 +20,13 @@ import pickle
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn import DataParallel
 from torch.utils.data import Dataset, DataLoader, random_split
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from torchinfo import summary
 
 # Optional HDF5 support
 try:
@@ -138,6 +140,224 @@ class SMLModel(nn.Module):
         x = x.view(x.size(0), -1)  # Flatten
         x = self.classifier(x)
         return x
+
+
+class SMLResNet(nn.Module):
+    """ResNet-like model for predicting perfect actions from observations"""
+    
+    def __init__(self, input_channels=2, action_dim=15):
+        super(SMLResNet, self).__init__()
+        
+        # Initial conv layer
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        
+        # ResNet blocks
+        self.layer1 = self._make_layer(64, 64, 2)
+        self.layer2 = self._make_layer(64, 128, 2, stride=2)
+        self.layer3 = self._make_layer(128, 256, 2, stride=2)
+        
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(256, action_dim)
+        
+    def _make_layer(self, in_planes, planes, blocks, stride=1):
+        layers = []
+        if stride != 1 or in_planes != planes:
+            layers.append(nn.Conv2d(in_planes, planes, 1, stride=stride, bias=False))
+            layers.append(nn.BatchNorm2d(planes))
+        
+        for _ in range(blocks):
+            layers.extend([
+                nn.Conv2d(planes, planes, 3, padding=1, bias=False),
+                nn.BatchNorm2d(planes),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(planes, planes, 3, padding=1, bias=False),
+                nn.BatchNorm2d(planes),
+            ])
+        
+        return nn.Sequential(*layers)
+        
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+        
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
+class SMLSimple(nn.Module):
+    """Simple lightweight model for predicting perfect actions from observations"""
+    
+    def __init__(self, input_channels=2, action_dim=15):
+        super(SMLSimple, self).__init__()
+        
+        self.features = nn.Sequential(
+            # Conv block 1
+            nn.Conv2d(input_channels, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            # Conv block 2
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            # Conv block 3
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            # Conv block 4
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            # Conv block 5
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            nn.AdaptiveAvgPool2d((4, 4))
+        )
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(512 * 4 * 4, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(128, action_dim)
+        )
+        
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        x = self.classifier(x)
+        return x
+
+
+class SMLHRNet(nn.Module):
+    """HRNet-like model for predicting perfect actions from observations"""
+    
+    def __init__(self, input_channels=2, action_dim=15):
+        super(SMLHRNet, self).__init__()
+        
+        # Stem network
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=3, stride=2, padding=1)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        
+        # High-resolution branches
+        self.stage1 = self._make_stage(64, [32], [1])
+        self.stage2 = self._make_stage(32, [32, 64], [1, 2])
+        self.stage3 = self._make_stage([32, 64], [32, 64, 128], [1, 2, 4])
+        
+        # Fusion layers for combining multi-resolution features
+        self.fusion = nn.ModuleList([
+            nn.Conv2d(32, 32, 1),
+            nn.Conv2d(64, 32, 1),
+            nn.Conv2d(128, 32, 1)
+        ])
+        
+        # Final layers
+        self.final_conv = nn.Conv2d(32, 256, kernel_size=1)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(256, action_dim)
+        
+    def _make_stage(self, in_channels, out_channels_list, stride_list):
+        """Create a stage with multiple resolution branches"""
+        if isinstance(in_channels, int):
+            in_channels = [in_channels]
+            
+        branches = nn.ModuleList()
+        for i, (out_ch, stride) in enumerate(zip(out_channels_list, stride_list)):
+            if i < len(in_channels):
+                in_ch = in_channels[i]
+            else:
+                in_ch = in_channels[0]  # Use first channel for new branches
+                
+            branch = nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1),
+                nn.BatchNorm2d(out_ch),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(out_ch),
+                nn.ReLU(inplace=True)
+            )
+            branches.append(branch)
+        return branches
+        
+    def _fuse_layers(self, x_list, fusion_layers):
+        """Fuse features from different resolution branches"""
+        if len(x_list) == 1:
+            return x_list[0]
+            
+        # Upsample all features to highest resolution and fuse
+        target_size = x_list[0].shape[2:]
+        fused = None
+        
+        for i, (x, fusion) in enumerate(zip(x_list, fusion_layers)):
+            if x.shape[2:] != target_size:
+                x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=False)
+            x = fusion(x)
+            
+            if fused is None:
+                fused = x
+            else:
+                fused = fused + x
+                
+        return fused
+        
+    def forward(self, x):
+        # Stem
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        
+        # Stage 1
+        x1 = self.stage1[0](x)
+        
+        # Stage 2
+        x1_s2 = self.stage2[0](x1)
+        x2_s2 = self.stage2[1](x1)
+        
+        # Stage 3
+        x1_s3 = self.stage3[0](x1_s2)
+        x2_s3 = self.stage3[1](x2_s2)
+        x3_s3 = self.stage3[2](x2_s2)
+        
+        # Fuse multi-resolution features
+        x_fused = self._fuse_layers([x1_s3, x2_s3, x3_s3], self.fusion)
+        
+        # Final prediction
+        x = self.final_conv(x_fused)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        
+        return x
+
+
+def create_model(arch: str, input_channels: int, action_dim: int) -> nn.Module:
+    """Factory function to create different model architectures"""
+    if arch == "sml_cnn":
+        return SMLModel(input_channels=input_channels, action_dim=action_dim)
+    elif arch == "sml_resnet":
+        return SMLResNet(input_channels=input_channels, action_dim=action_dim)
+    elif arch == "sml_simple":
+        return SMLSimple(input_channels=input_channels, action_dim=action_dim)
+    elif arch == "sml_hrnet":
+        return SMLHRNet(input_channels=input_channels, action_dim=action_dim)
+    else:
+        raise ValueError(f"Unknown architecture: {arch}")
 
 
 def load_single_episode(episode_file: Path) -> List[Tuple[np.ndarray, np.ndarray]]:
@@ -561,6 +781,9 @@ def main():
                        help="Path to checkpoint file to resume training from")
     parser.add_argument("--log_dir", type=str, default="runs",
                        help="Base directory for TensorBoard logs, plots, and saved models")
+    parser.add_argument("--model_arch", type=str, default="sml_cnn", 
+                       choices=["sml_cnn", "sml_resnet", "sml_simple", "sml_hrnet"],
+                       help="Model architecture to use")
     
     args = parser.parse_args()
     
@@ -606,6 +829,12 @@ def main():
     # TensorBoard writer
     tb_writer = SummaryWriter(log_dir=str(log_dir))
     
+    # Log hyperparameters/flags to TensorBoard as a markdown table
+    tb_writer.add_text(
+        "hyperparameters",
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+    )
+    
     print("🚀 Starting SML Model Training")
     print("=" * 50)
     
@@ -647,7 +876,7 @@ def main():
     device, gpu_count = get_device(device_arg)
     
     input_channels = sample_obs.shape[0] if len(sample_obs.shape) == 3 else 1
-    model = SMLModel(input_channels=input_channels, action_dim=action_dim).to(device)
+    model = create_model(args.model_arch, input_channels=input_channels, action_dim=action_dim).to(device)
     
     # Enable DataParallel for multi-GPU training
     if gpu_count > 1 and device.type == "cuda" and not args.no_dataparallel:
@@ -668,6 +897,7 @@ def main():
     criterion = nn.MSELoss()
     
     print(f"\nModel architecture:")
+    print(f"  Architecture: {args.model_arch}")
     print(f"  Input channels: {input_channels}")
     print(f"  Action dimension: {action_dim}")
     
@@ -678,6 +908,24 @@ def main():
     
     if gpu_count > 1 and device.type == "cuda":
         print(f"  Parameters per GPU: ~{total_params // gpu_count:,}")
+    
+    # Log model summary to TensorBoard
+    try:
+        # Create a sample input for torchinfo summary
+        sample_obs_shape = sample_obs.shape
+        if len(sample_obs_shape) == 3:
+            sample_input_shape = (1, sample_obs_shape[0], sample_obs_shape[1], sample_obs_shape[2])
+        else:
+            sample_input_shape = (1, 1, sample_obs_shape[0], sample_obs_shape[1])
+        
+        model_summary = summary(param_model, input_size=sample_input_shape, verbose=0)
+        
+        # Convert summary to string and log to TensorBoard
+        summary_str = str(model_summary)
+        tb_writer.add_text("model_summary", f"```\n{summary_str}\n```")
+        print(f"  Model summary logged to TensorBoard")
+    except Exception as e:
+        print(f"  Warning: Could not generate model summary: {e}")
     
     # Training loop
     print(f"\n🏋️ Training for {config.num_epochs} epochs...")
