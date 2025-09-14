@@ -49,7 +49,7 @@ def run_dataset_generation(config: dict, dataset_dir: Path, job_id: int) -> bool
         cmd = [
             "poetry", "run", "python", 
             "optomech/supervised_ml/build_optomech_dataset.py",
-            "--num_samples", "10000",  # Fixed chunk size
+            "--num_samples", str(config["total_samples"]),  # Fixed chunk size
             "--dataset_save_path", str(dataset_dir),
             "--dataset_name", config["dataset_name"],
             "--write_frequency", str(config.get("write_frequency", 1000)),
