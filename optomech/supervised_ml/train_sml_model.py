@@ -346,6 +346,53 @@ class SMLHRNet(nn.Module):
         return x
 
 
+class SMLVanillaConv(nn.Module):
+    """Vanilla convolutional model with minimal parameters for rapid training"""
+    
+    def __init__(self, input_channels=2, action_dim=15):
+        super(SMLVanillaConv, self).__init__()
+        
+        # Five small conv blocks with flat scaling of 16 channels, no downsampling
+        self.features = nn.Sequential(
+            # Conv block 1
+            nn.Conv2d(input_channels, 16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            # Conv block 2
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            # Conv block 3
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            # Conv block 4
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            # Conv block 5
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            
+            # Global average pooling to reduce spatial dimensions
+            nn.AdaptiveAvgPool2d((8, 8))
+        )
+        
+        # Modest MLP for output (128-sized)
+        self.classifier = nn.Sequential(
+            nn.Linear(16 * 8 * 8, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(128, action_dim)
+        )
+        
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)  # Flatten
+        x = self.classifier(x)
+        return x
+
+
 def create_model(arch: str, input_channels: int, action_dim: int) -> nn.Module:
     """Factory function to create different model architectures"""
     if arch == "sml_cnn":
@@ -356,6 +403,8 @@ def create_model(arch: str, input_channels: int, action_dim: int) -> nn.Module:
         return SMLSimple(input_channels=input_channels, action_dim=action_dim)
     elif arch == "sml_hrnet":
         return SMLHRNet(input_channels=input_channels, action_dim=action_dim)
+    elif arch == "sml_vanilla":
+        return SMLVanillaConv(input_channels=input_channels, action_dim=action_dim)
     else:
         raise ValueError(f"Unknown architecture: {arch}")
 
@@ -782,8 +831,10 @@ def main():
     parser.add_argument("--log_dir", type=str, default="runs",
                        help="Base directory for TensorBoard logs, plots, and saved models")
     parser.add_argument("--model_arch", type=str, default="sml_cnn", 
-                       choices=["sml_cnn", "sml_resnet", "sml_simple", "sml_hrnet"],
+                       choices=["sml_cnn", "sml_resnet", "sml_simple", "sml_hrnet", "sml_vanilla"],
                        help="Model architecture to use")
+    parser.add_argument("--max_examples", type=int, default=None,
+                       help="Maximum number of examples to load (disables cache)")
     
     args = parser.parse_args()
     
@@ -840,7 +891,11 @@ def main():
     
     # Load and split dataset
     print("� Loading dataset...")
-    pairs = load_dataset_pairs_sequential(config.dataset_path, use_cache=True)
+    # Disable cache when max_examples is specified
+    use_cache = args.max_examples is None
+    if args.max_examples is not None:
+        print(f"  Max examples: {args.max_examples} (cache disabled)")
+    pairs = load_dataset_pairs_sequential(config.dataset_path, use_cache=use_cache, max_examples=args.max_examples)
     
     if len(pairs) == 0:
         print("❌ No valid observation-action pairs found!")
