@@ -349,41 +349,41 @@ class SMLHRNet(nn.Module):
 class SMLVanillaConv(nn.Module):
     """Vanilla convolutional model with minimal parameters for rapid training"""
     
-    def __init__(self, input_channels=2, action_dim=15):
+    def __init__(self, input_channels=2, action_dim=15, channel_scale=16, mlp_scale=128):
         super(SMLVanillaConv, self).__init__()
         
-        # Five small conv blocks with flat scaling of 16 channels, no downsampling
+        # Five small conv blocks with configurable channel scaling, no downsampling
         self.features = nn.Sequential(
             # Conv block 1
-            nn.Conv2d(input_channels, 16, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(input_channels, channel_scale, kernel_size=3, stride=1, padding=1),
             nn.ReLU(inplace=True),
             
             # Conv block 2
-            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(channel_scale, channel_scale, kernel_size=3, stride=1, padding=1),
             nn.ReLU(inplace=True),
             
             # Conv block 3
-            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(channel_scale, channel_scale, kernel_size=3, stride=1, padding=1),
             nn.ReLU(inplace=True),
             
             # Conv block 4
-            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(channel_scale, channel_scale, kernel_size=3, stride=1, padding=1),
             nn.ReLU(inplace=True),
             
             # Conv block 5
-            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(channel_scale, channel_scale, kernel_size=3, stride=1, padding=1),
             nn.ReLU(inplace=True),
             
             # Global average pooling to reduce spatial dimensions
             nn.AdaptiveAvgPool2d((8, 8))
         )
         
-        # Modest MLP for output (128-sized)
+        # Configurable MLP for output
         self.classifier = nn.Sequential(
-            nn.Linear(16 * 8 * 8, 128),
+            nn.Linear(channel_scale * 8 * 8, mlp_scale),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
-            nn.Linear(128, action_dim)
+            nn.Linear(mlp_scale, action_dim)
         )
         
     def forward(self, x):
@@ -393,7 +393,7 @@ class SMLVanillaConv(nn.Module):
         return x
 
 
-def create_model(arch: str, input_channels: int, action_dim: int) -> nn.Module:
+def create_model(arch: str, input_channels: int, action_dim: int, channel_scale: int = 16, mlp_scale: int = 128) -> nn.Module:
     """Factory function to create different model architectures"""
     if arch == "sml_cnn":
         return SMLModel(input_channels=input_channels, action_dim=action_dim)
@@ -404,7 +404,8 @@ def create_model(arch: str, input_channels: int, action_dim: int) -> nn.Module:
     elif arch == "sml_hrnet":
         return SMLHRNet(input_channels=input_channels, action_dim=action_dim)
     elif arch == "sml_vanilla":
-        return SMLVanillaConv(input_channels=input_channels, action_dim=action_dim)
+        return SMLVanillaConv(input_channels=input_channels, action_dim=action_dim, 
+                             channel_scale=channel_scale, mlp_scale=mlp_scale)
     else:
         raise ValueError(f"Unknown architecture: {arch}")
 
@@ -835,6 +836,10 @@ def main():
                        help="Model architecture to use")
     parser.add_argument("--max_examples", type=int, default=None,
                        help="Maximum number of examples to load (disables cache)")
+    parser.add_argument("--channel_scale", type=int, default=16,
+                       help="Number of channels for VanillaConv architecture")
+    parser.add_argument("--mlp_scale", type=int, default=128,
+                       help="Hidden layer size for VanillaConv MLP")
     
     args = parser.parse_args()
     
@@ -931,7 +936,8 @@ def main():
     device, gpu_count = get_device(device_arg)
     
     input_channels = sample_obs.shape[0] if len(sample_obs.shape) == 3 else 1
-    model = create_model(args.model_arch, input_channels=input_channels, action_dim=action_dim).to(device)
+    model = create_model(args.model_arch, input_channels=input_channels, action_dim=action_dim, 
+                        channel_scale=args.channel_scale, mlp_scale=args.mlp_scale).to(device)
     
     # Enable DataParallel for multi-GPU training
     if gpu_count > 1 and device.type == "cuda" and not args.no_dataparallel:
@@ -955,6 +961,9 @@ def main():
     print(f"  Architecture: {args.model_arch}")
     print(f"  Input channels: {input_channels}")
     print(f"  Action dimension: {action_dim}")
+    if args.model_arch == "sml_vanilla":
+        print(f"  Channel scale: {args.channel_scale}")
+        print(f"  MLP scale: {args.mlp_scale}")
     
     # Count parameters (handle DataParallel wrapper)
     param_model = model.module if isinstance(model, DataParallel) else model
