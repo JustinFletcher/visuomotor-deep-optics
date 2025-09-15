@@ -145,37 +145,35 @@ class SMLModel(nn.Module):
 class SMLResNetGN(nn.Module):
     def __init__(self, input_channels=2, action_dim=15):
         super().__init__()
-        gn64  = lambda: nn.GroupNorm(num_groups=32, num_channels=64)   # 32 or min(32, C)
-        gn128 = lambda: nn.GroupNorm(num_groups=32, num_channels=128)
-        gn256 = lambda: nn.GroupNorm(num_groups=32, num_channels=256)
 
         self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = gn64()  # was BatchNorm2d(64)
-        self.relu = nn.ReLU(inplace=False)  # avoid in-place with future residual adds
+        self.gn1 = nn.GroupNorm(num_groups=32, num_channels=64)
+        self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        self.layer1 = self._make_layer(64, 64,  gn=gn64,  blocks=2, stride=1)
-        self.layer2 = self._make_layer(64, 128, gn=gn128, blocks=2, stride=2)
-        self.layer3 = self._make_layer(128,256, gn=gn256, blocks=2, stride=2)
+        self.layer1 = self._make_layer(64, 64, blocks=2, stride=1)
+        self.layer2 = self._make_layer(64, 128, blocks=2, stride=2)
+        self.layer3 = self._make_layer(128, 256, blocks=2, stride=2)
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(256, action_dim)
         self.tanh = nn.Tanh()
 
-    def _make_layer(self, in_planes, planes, gn, blocks, stride=1):
+    def _make_layer(self, in_planes, planes, blocks, stride=1):
         layers = []
-        if stride != 1 or in_planes != planes:
-            layers += [nn.Conv2d(in_planes, planes, 1, stride=stride, bias=False), gn()]
-        for _ in range(blocks):
-            layers += [
-                nn.Conv2d(planes, planes, 3, padding=1, bias=False), gn(), nn.ReLU(inplace=False),
-                nn.Conv2d(planes, planes, 3, padding=1, bias=False), gn(), nn.ReLU(inplace=False),
-            ]
+        
+        # First block (may have downsample)
+        layers.append(BasicBlockGN(in_planes, planes, stride))
+        
+        # Additional blocks
+        for _ in range(1, blocks):
+            layers.append(BasicBlockGN(planes, planes, stride=1))
+        
         return nn.Sequential(*layers)
         
     def forward(self, x):
         x = self.conv1(x)
-        x = self.bn1(x)
+        x = self.gn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
         
@@ -188,6 +186,45 @@ class SMLResNetGN(nn.Module):
         x = self.fc(x)
         x = self.tanh(x)
         return x
+
+
+class BasicBlockGN(nn.Module):
+    """Basic ResNet block with GroupNorm"""
+    
+    def __init__(self, in_planes, planes, stride=1):
+        super().__init__()
+        
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.gn1 = nn.GroupNorm(num_groups=min(32, planes), num_channels=planes)
+        
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.gn2 = nn.GroupNorm(num_groups=min(32, planes), num_channels=planes)
+        
+        self.relu = nn.ReLU(inplace=True)
+        
+        # Shortcut connection
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=False),
+                nn.GroupNorm(num_groups=min(32, planes), num_channels=planes)
+            )
+    
+    def forward(self, x):
+        identity = x
+        
+        out = self.conv1(x)
+        out = self.gn1(out)
+        out = self.relu(out)
+        
+        out = self.conv2(out)
+        out = self.gn2(out)
+        
+        # Add residual connection
+        out += self.shortcut(identity)
+        out = self.relu(out)
+        
+        return out
 
 class SMLResNet(nn.Module):
     """ResNet-like model for predicting perfect actions from observations"""
