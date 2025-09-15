@@ -67,14 +67,13 @@ def make_env(env_id, flags):
         return thunk
 
 
-def compute_correction_target(optical_system, applied_action):
+def get_aberration_corrections(optical_system):
     """
     Compute the perfect correction target given the current optical system state and applied action.
     This represents the perfect action that should have been applied to correct aberrations.
     
     Args:
         optical_system: The optical system object from the environment
-        applied_action (np.ndarray): The random action that was applied to generate the observation
         
     Returns:
         np.ndarray: Perfect correction values as a flattened array
@@ -377,13 +376,18 @@ def build_dataset(args):
         
         # Get optical system and compute perfect correction target
         optical_system = env.optical_system  # Use unwrapped to avoid deprecation warning
-        perfect_action = compute_correction_target(optical_system, action)
-        
+        aberration_corrections = get_aberration_corrections(optical_system)
 
-        # Debug: Apply the correction and check reward improvement
-        # Note: This is just for validation - we don't use the corrected reward in training
-        corrected_action = action + perfect_action
-        
+
+        # We can't use the aberration_corrections or actions as a target for
+        # this next_obs, because the state that produced this observation
+        # is the aberrations plus the random action we just applied.
+        # The aggregate aberration is the action plus the aberrations.
+        # So, to get back to zero aberration, we need to negate the action
+        # and add the aberration corrections.
+        # Thus, the correction to get back to zero is:
+        corrected_action = -action + aberration_corrections
+
         # Check if any action values are outside the valid range before clipping
         action_low = env.action_space.low
         action_high = env.action_space.high
@@ -402,7 +406,9 @@ def build_dataset(args):
         
         # Clip the corrected action to valid action space bounds
         corrected_action = np.clip(corrected_action, action_low, action_high)
-        _, corrected_reward, _, _, _ = env.step(corrected_action - action)
+        # Move into the state that generated next_obs using action, then apply
+        # apply corrected action to verify reward improvement.
+        _, corrected_reward, _, _, _ = env.step(corrected_action + action)
         
         # Calculate global sample index for reporting
         global_sample_idx = existing_samples + local_sample_idx
