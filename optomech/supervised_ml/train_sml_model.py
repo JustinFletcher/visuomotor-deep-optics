@@ -721,7 +721,6 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
         # Track loss
         total_loss += loss.detach()
         num_batches += 1
-        print("e", flush=True)
     
     # Only convert to Python float at the end
     return (total_loss / num_batches).item()
