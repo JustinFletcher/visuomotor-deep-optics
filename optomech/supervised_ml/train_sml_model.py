@@ -699,30 +699,35 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
     model.train()
     total_loss = 0.0
     num_batches = 0
-    
-    for observations, actions in tqdm(dataloader, desc="Training", leave=False):
-        print("a", flush=True)
-        observations = observations.to(device)
-        actions = actions.to(device)
-        
-        print("b", flush=True)
-        # Forward pass
-        optimizer.zero_grad()
-        print("b.1", flush=True)
+
+    use_dp = isinstance(model, torch.nn.DataParallel)
+
+    for observations, actions in dataloader:
+        # With DataParallel: keep inputs on CPU; DP will scatter/move them.
+        # Without DP (single GPU / DDP rank local): move to device yourself.
+        if not use_dp:
+            observations = observations.to(device, non_blocking=True)
+            actions = actions.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        # Forward
         predictions = model(observations)
-        print("b.2", flush=True)
+
+        # If using DP, predictions live on output_device (default cuda:0).
+        # Move actions to that same device *after* forward.
+        if use_dp:
+            actions = actions.to(predictions.device, non_blocking=True)
+
         loss = criterion(predictions, actions)
-        
-        print("c", flush=True)
-        # Backward pass
+
+        # Backward + step
         loss.backward()
         optimizer.step()
-        
-        print("d", flush=True)
-        # Accumulate loss without .item() to avoid GPU/CPU sync
+
+        # Track loss
         total_loss += loss.detach()
         num_batches += 1
-
         print("e", flush=True)
     
     # Only convert to Python float at the end
