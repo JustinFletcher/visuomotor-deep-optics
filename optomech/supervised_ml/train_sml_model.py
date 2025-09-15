@@ -695,43 +695,59 @@ def get_device(device_str: str = "auto") -> tuple[torch.device, int]:
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
                 criterion: nn.Module, device: torch.device) -> float:
-    """Train for one epoch and return average loss"""
     model.train()
     total_loss = 0.0
     num_batches = 0
 
     use_dp = isinstance(model, torch.nn.DataParallel)
+    print(f"[train_epoch] use_dp={use_dp}", flush=True)
 
-    for observations, actions in dataloader:
-        # With DataParallel: keep inputs on CPU; DP will scatter/move them.
-        # Without DP (single GPU / DDP rank local): move to device yourself.
+    for batch_idx, (observations, actions) in enumerate(dataloader):
+        print(f"[batch {batch_idx}] start", flush=True)
+
         if not use_dp:
+            print("  moving inputs to device", flush=True)
             observations = observations.to(device, non_blocking=True)
             actions = actions.to(device, non_blocking=True)
+            print(f"  observations.device={observations.device}, "
+                  f"actions.device={actions.device}", flush=True)
+        else:
+            print("  using DP: keep inputs on CPU for scatter", flush=True)
+            print(f"  observations.device={observations.device}, "
+                  f"actions.device={actions.device}", flush=True)
 
         optimizer.zero_grad(set_to_none=True)
+        print("  after zero_grad", flush=True)
 
         # Forward
         predictions = model(observations)
+        print(f"  after forward: predictions.shape={predictions.shape}, "
+              f"predictions.device={predictions.device}", flush=True)
 
-        # If using DP, predictions live on output_device (default cuda:0).
-        # Move actions to that same device *after* forward.
         if use_dp:
             actions = actions.to(predictions.device, non_blocking=True)
+            print(f"  moved actions -> {actions.device}", flush=True)
 
         loss = criterion(predictions, actions)
+        print(f"  after criterion: loss={loss.detach().item():.6f}", flush=True)
 
         # Backward + step
         loss.backward()
+        print("  after backward", flush=True)
+
         optimizer.step()
+        print("  after optimizer.step", flush=True)
 
         # Track loss
         total_loss += loss.detach()
         num_batches += 1
-        print("e", flush=True)
-    
-    # Only convert to Python float at the end
-    return (total_loss / num_batches).item()
+        print(f"  accumulated loss so far={total_loss.item():.6f}", flush=True)
+
+        print(f"[batch {batch_idx}] end\n", flush=True)
+
+    avg_loss = (total_loss / num_batches).item()
+    print(f"[train_epoch] done. avg_loss={avg_loss:.6f}", flush=True)
+    return avg_loss
 
 
 def validate_epoch(model: nn.Module, dataloader: DataLoader, 
