@@ -723,7 +723,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
 def validate_epoch(model: nn.Module, dataloader: DataLoader, 
                   criterion: nn.Module, device: torch.device) -> float:
     """Validate for one epoch and return average loss"""
-    model.train()
+    model.eval()
     total_loss = 0.0
     num_batches = 0
     
@@ -742,6 +742,51 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader,
     
     # Only convert to Python float at the end
     return (total_loss / num_batches).item()
+
+
+def validate_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, 
+                               criterion: nn.Module, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray]:
+    """Validate for one epoch and return loss, MAE metrics, and error distribution"""
+    model.eval()
+    total_loss = 0.0
+    num_batches = 0
+    all_errors = []
+    
+    with torch.no_grad():
+        for observations, actions in tqdm(dataloader, desc="Validating", leave=False):
+            observations = observations.to(device)
+            actions = actions.to(device)
+            
+            # Forward pass
+            predictions = model(observations)
+            loss = criterion(predictions, actions)
+            
+            # Calculate MAE for each sample in the batch
+            mae_per_sample = torch.mean(torch.abs(predictions - actions), dim=1)  # [batch_size]
+            all_errors.extend(mae_per_sample.cpu().numpy())
+            
+            # Accumulate loss without .item() to avoid GPU/CPU sync
+            total_loss += loss.detach()
+            num_batches += 1
+    
+    # Convert to numpy for statistics
+    errors_array = np.array(all_errors)
+    
+    # Calculate MAE statistics
+    mae_metrics = {
+        'mae_mean': np.mean(errors_array),
+        'mae_median': np.median(errors_array),
+        'mae_min': np.min(errors_array),
+        'mae_max': np.max(errors_array),
+        'mae_std': np.std(errors_array),
+        'mae_q25': np.percentile(errors_array, 25),
+        'mae_q75': np.percentile(errors_array, 75)
+    }
+    
+    # Convert loss to Python float at the end
+    avg_loss = (total_loss / num_batches).item()
+    
+    return avg_loss, mae_metrics, errors_array
 
 
 def plot_training_curves(train_losses: List[float], val_losses: List[float], 
@@ -1027,13 +1072,25 @@ def main():
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
         train_losses.append(train_loss)
         
-        # Validate
-        val_loss = validate_epoch(model, val_loader, criterion, device)
+        # Validate with detailed metrics
+        val_loss, mae_metrics, error_distribution = validate_epoch_with_metrics(model, val_loader, criterion, device)
         val_losses.append(val_loss)
 
         # TensorBoard logging
         tb_writer.add_scalar('Loss/Train', train_loss, epoch)
         tb_writer.add_scalar('Loss/Val', val_loss, epoch)
+        
+        # Log MAE metrics
+        tb_writer.add_scalar('MAE/Mean', mae_metrics['mae_mean'], epoch)
+        tb_writer.add_scalar('MAE/Median', mae_metrics['mae_median'], epoch)
+        tb_writer.add_scalar('MAE/Min', mae_metrics['mae_min'], epoch)
+        tb_writer.add_scalar('MAE/Max', mae_metrics['mae_max'], epoch)
+        tb_writer.add_scalar('MAE/Std', mae_metrics['mae_std'], epoch)
+        tb_writer.add_scalar('MAE/Q25', mae_metrics['mae_q25'], epoch)
+        tb_writer.add_scalar('MAE/Q75', mae_metrics['mae_q75'], epoch)
+        
+        # Log error distribution histogram
+        tb_writer.add_histogram('Error_Distribution/Validation_MAE', error_distribution, epoch)
 
         # Calculate timing
         epoch_time = time.time() - epoch_start_time
@@ -1055,6 +1112,9 @@ def main():
 
         print(f"  Train Loss: {train_loss:.6f}")
         print(f"  Val Loss:   {val_loss:.6f}")
+        print(f"  MAE Mean:   {mae_metrics['mae_mean']:.6f}")
+        print(f"  MAE Median: {mae_metrics['mae_median']:.6f}")
+        print(f"  MAE Range:  [{mae_metrics['mae_min']:.6f}, {mae_metrics['mae_max']:.6f}]")
         print(f"  Epoch Time: {epoch_time:.1f}s")
         print(f"  ETA:        {eta_str}")
 
@@ -1091,8 +1151,11 @@ def main():
     
     # Test final model
     print(f"\n🧪 Testing final model...")
-    test_loss = validate_epoch(model, test_loader, criterion, device)
+    test_loss, test_mae_metrics, test_error_distribution = validate_epoch_with_metrics(model, test_loader, criterion, device)
     print(f"Test Loss: {test_loss:.6f}")
+    print(f"Test MAE Mean: {test_mae_metrics['mae_mean']:.6f}")
+    print(f"Test MAE Median: {test_mae_metrics['mae_median']:.6f}")
+    print(f"Test MAE Range: [{test_mae_metrics['mae_min']:.6f}, {test_mae_metrics['mae_max']:.6f}]")
     
     # Check if training loss decreased
     if len(train_losses) > 0:
@@ -1106,6 +1169,8 @@ def main():
         print(f"  Improvement:        {improvement:.1f}%")
         print(f"  Best val loss:      {best_val_loss:.6f}")
         print(f"  Final test loss:    {test_loss:.6f}")
+        print(f"  Test MAE mean:      {test_mae_metrics['mae_mean']:.6f}")
+        print(f"  Test MAE median:    {test_mae_metrics['mae_median']:.6f}")
         print(f"  Total training time: {total_training_time/60:.1f} minutes")
         print(f"  Avg epoch time:      {np.mean(epoch_times):.1f} seconds")
         
@@ -1126,6 +1191,14 @@ def main():
         plot_save_path = str(log_dir / "training_curves.png")
         plot_training_curves(train_losses, val_losses, plot_save_path)
         print(f"📈 Training curves saved to {plot_save_path}")
+
+    # Log final test metrics to TensorBoard
+    tb_writer.add_scalar('Final/Test_Loss', test_loss, config.num_epochs)
+    tb_writer.add_scalar('Final/Test_MAE_Mean', test_mae_metrics['mae_mean'], config.num_epochs)
+    tb_writer.add_scalar('Final/Test_MAE_Median', test_mae_metrics['mae_median'], config.num_epochs)
+    tb_writer.add_scalar('Final/Test_MAE_Min', test_mae_metrics['mae_min'], config.num_epochs)
+    tb_writer.add_scalar('Final/Test_MAE_Max', test_mae_metrics['mae_max'], config.num_epochs)
+    tb_writer.add_histogram('Final/Test_Error_Distribution', test_error_distribution, config.num_epochs)
 
     tb_writer.close()
     
