@@ -746,11 +746,12 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader,
 
 def validate_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, 
                                criterion: nn.Module, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray]:
-    """Validate for one epoch and return loss, MAE metrics, and error distribution"""
+    """Validate for one epoch and return loss, MAE metrics, and raw error distribution"""
     model.eval()
     total_loss = 0.0
     num_batches = 0
-    all_errors = []
+    all_mae_errors = []
+    all_raw_errors = []
     
     with torch.no_grad():
         for observations, actions in tqdm(dataloader, desc="Validating", leave=False):
@@ -761,32 +762,37 @@ def validate_epoch_with_metrics(model: nn.Module, dataloader: DataLoader,
             predictions = model(observations)
             loss = criterion(predictions, actions)
             
-            # Calculate MAE for each sample in the batch
-            mae_per_sample = torch.mean(torch.abs(predictions - actions), dim=1)  # [batch_size]
-            all_errors.extend(mae_per_sample.cpu().numpy())
+            # Calculate raw errors for histogram (predictions - actions)
+            raw_errors = predictions - actions  # [batch_size, action_dim]
+            all_raw_errors.extend(raw_errors.cpu().numpy().flatten())
+            
+            # Calculate MAE for each sample in the batch for statistics
+            mae_per_sample = torch.mean(torch.abs(raw_errors), dim=1)  # [batch_size]
+            all_mae_errors.extend(mae_per_sample.cpu().numpy())
             
             # Accumulate loss without .item() to avoid GPU/CPU sync
             total_loss += loss.detach()
             num_batches += 1
     
     # Convert to numpy for statistics
-    errors_array = np.array(all_errors)
+    mae_errors_array = np.array(all_mae_errors)
+    raw_errors_array = np.array(all_raw_errors)
     
     # Calculate MAE statistics
     mae_metrics = {
-        'mae_mean': np.mean(errors_array),
-        'mae_median': np.median(errors_array),
-        'mae_min': np.min(errors_array),
-        'mae_max': np.max(errors_array),
-        'mae_std': np.std(errors_array),
-        'mae_q25': np.percentile(errors_array, 25),
-        'mae_q75': np.percentile(errors_array, 75)
+        'mae_mean': np.mean(mae_errors_array),
+        'mae_median': np.median(mae_errors_array),
+        'mae_min': np.min(mae_errors_array),
+        'mae_max': np.max(mae_errors_array),
+        'mae_std': np.std(mae_errors_array),
+        'mae_q25': np.percentile(mae_errors_array, 25),
+        'mae_q75': np.percentile(mae_errors_array, 75)
     }
     
     # Convert loss to Python float at the end
     avg_loss = (total_loss / num_batches).item()
     
-    return avg_loss, mae_metrics, errors_array
+    return avg_loss, mae_metrics, raw_errors_array
 
 
 def plot_training_curves(train_losses: List[float], val_losses: List[float], 
@@ -970,16 +976,13 @@ def main():
     train_dataset = OptomechDataset(train_pairs)
     val_dataset = OptomechDataset(val_pairs)
     test_dataset = OptomechDataset(test_pairs)
-    
+    # DataLoader(ds, batch_size=..., shuffle=True, num_workers=0, pin_memory=False, persistent_workers=False)
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size, 
-                             shuffle=True, num_workers=0)
+                             shuffle=True, num_workers=0, pin_memory=False, persistent_workers=False)
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size, 
-                           shuffle=False, num_workers=0)
-    
-    # DEBUG: Test on the same distribution to isolate issues
-    # val_loader = train_loader
+                           shuffle=False, num_workers=0, pin_memory=False, persistent_workers=False)
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size, 
-                            shuffle=False, num_workers=0)
+                            shuffle=False, num_workers=0, pin_memory=False, persistent_workers=False)
     
     # Initialize model, optimizer, and criterion
     device_arg = "cpu" if args.force_cpu else config.device
@@ -1090,7 +1093,7 @@ def main():
         tb_writer.add_scalar('MAE/Q75', mae_metrics['mae_q75'], epoch)
         
         # Log error distribution histogram
-        tb_writer.add_histogram('Error_Distribution/Validation_MAE', error_distribution, epoch)
+        tb_writer.add_histogram('Error_Distribution/Validation_Errors', error_distribution, epoch)
 
         # Calculate timing
         epoch_time = time.time() - epoch_start_time
