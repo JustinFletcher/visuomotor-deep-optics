@@ -1028,7 +1028,7 @@ def main():
         train_losses.append(train_loss)
         
         # Validate
-        val_loss = validate_epoch(model, val_loader, criterion, device)
+        val_loss = validate_epoch(model, train_loader, criterion, device)
         val_losses.append(val_loss)
 
         # TensorBoard logging
