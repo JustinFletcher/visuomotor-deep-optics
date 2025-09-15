@@ -990,7 +990,7 @@ def main():
     
     input_channels = sample_obs.shape[0] if len(sample_obs.shape) == 3 else 1
     model = create_model(args.model_arch, input_channels=input_channels, action_dim=action_dim, 
-                        channel_scale=args.channel_scale, mlp_scale=args.mlp_scale).to(device)
+                        channel_scale=args.channel_scale, mlp_scale=args.mlp_scale).to('cuda')
     
     # Enable DataParallel for multi-GPU training
     if gpu_count > 1 and device.type == "cuda" and not args.no_dataparallel:
