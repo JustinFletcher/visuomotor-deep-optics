@@ -144,41 +144,34 @@ class SMLModel(nn.Module):
 
 
 class SMLResNet(nn.Module):
-    """ResNet-like model for predicting perfect actions from observations"""
-    
     def __init__(self, input_channels=2, action_dim=15):
-        super(SMLResNet, self).__init__()
-        
-        # Initial conv layer
-        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU(inplace=True)
+        super().__init__()
+        gn64  = lambda: nn.GroupNorm(num_groups=32, num_channels=64)   # 32 or min(32, C)
+        gn128 = lambda: nn.GroupNorm(num_groups=32, num_channels=128)
+        gn256 = lambda: nn.GroupNorm(num_groups=32, num_channels=256)
+
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = gn64()  # was BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=False)  # avoid in-place with future residual adds
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        
-        # ResNet blocks
-        self.layer1 = self._make_layer(64, 64, 2)
-        self.layer2 = self._make_layer(64, 128, 2, stride=2)
-        self.layer3 = self._make_layer(128, 256, 2, stride=2)
-        
+
+        self.layer1 = self._make_layer(64, 64,  gn=gn64,  blocks=2, stride=1)
+        self.layer2 = self._make_layer(64, 128, gn=gn128, blocks=2, stride=2)
+        self.layer3 = self._make_layer(128,256, gn=gn256, blocks=2, stride=2)
+
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(256, action_dim)
         self.tanh = nn.Tanh()
-        
-    def _make_layer(self, in_planes, planes, blocks, stride=1):
+
+    def _make_layer(self, in_planes, planes, gn, blocks, stride=1):
         layers = []
         if stride != 1 or in_planes != planes:
-            layers.append(nn.Conv2d(in_planes, planes, 1, stride=stride, bias=False))
-            layers.append(nn.BatchNorm2d(planes))
-        
+            layers += [nn.Conv2d(in_planes, planes, 1, stride=stride, bias=False), gn()]
         for _ in range(blocks):
-            layers.extend([
-                nn.Conv2d(planes, planes, 3, padding=1, bias=False),
-                nn.BatchNorm2d(planes),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(planes, planes, 3, padding=1, bias=False),
-                nn.BatchNorm2d(planes),
-            ])
-        
+            layers += [
+                nn.Conv2d(planes, planes, 3, padding=1, bias=False), gn(), nn.ReLU(inplace=False),
+                nn.Conv2d(planes, planes, 3, padding=1, bias=False), gn(), nn.ReLU(inplace=False),
+            ]
         return nn.Sequential(*layers)
         
     def forward(self, x):
@@ -691,82 +684,47 @@ def get_device(device_str: str = "auto") -> tuple[torch.device, int]:
         
         gpu_count = torch.cuda.device_count() if device.type == "cuda" else 1
         return device, gpu_count
-def _assert_dp_scatterable(x, label="observations", depth=0):
-    indent = "  " * depth
-    import torch
-    if isinstance(x, torch.Tensor):
-        print(f"{indent}[scatterable] {label}: Tensor {tuple(x.shape)} dtype={x.dtype} device={x.device}", flush=True)
-        return
-    if isinstance(x, (list, tuple)):
-        print(f"{indent}{label}: {type(x).__name__} len={len(x)}", flush=True)
-        for i, v in enumerate(x):
-            _assert_dp_scatterable(v, f"{label}[{i}]", depth+1)
-        return
-    if isinstance(x, dict):
-        print(f"{indent}{label}: dict keys={list(x.keys())}", flush=True)
-        for k, v in x.items():
-            _assert_dp_scatterable(v, f"{label}['{k}']", depth+1)
-        return
-    raise TypeError(f"Unscatterable in batch at {label}: {type(x)}")
+
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
                 criterion: nn.Module, device: torch.device) -> float:
+    """Train for one epoch and return average loss"""
     model.train()
     total_loss = 0.0
     num_batches = 0
 
     use_dp = isinstance(model, torch.nn.DataParallel)
-    print(f"[train_epoch] use_dp={use_dp}", flush=True)
 
-    for batch_idx, (observations, actions) in enumerate(dataloader):
-        print(f"[batch {batch_idx}] start", flush=True)
-
+    for observations, actions in dataloader:
+        # With DataParallel: keep inputs on CPU; DP will scatter/move them.
+        # Without DP (single GPU / DDP rank local): move to device yourself.
         if not use_dp:
-            print("  moving inputs to device", flush=True)
             observations = observations.to(device, non_blocking=True)
             actions = actions.to(device, non_blocking=True)
-            print(f"  observations.device={observations.device}, "
-                  f"actions.device={actions.device}", flush=True)
-        else:
-            print("  using DP: keep inputs on CPU for scatter", flush=True)
-            print(f"  observations.device={observations.device}, "
-                  f"actions.device={actions.device}", flush=True)
 
         optimizer.zero_grad(set_to_none=True)
-        print("  after zero_grad", flush=True)
-        print("  checking batch structure…", flush=True)
-        _assert_dp_scatterable(observations, "observations")
-        _assert_dp_scatterable(actions, "actions")
-        print("  batch structure ok", flush=True)
+
         # Forward
         predictions = model(observations)
-        print(f"  after forward: predictions.shape={predictions.shape}, "
-              f"predictions.device={predictions.device}", flush=True)
 
+        # If using DP, predictions live on output_device (default cuda:0).
+        # Move actions to that same device *after* forward.
         if use_dp:
             actions = actions.to(predictions.device, non_blocking=True)
-            print(f"  moved actions -> {actions.device}", flush=True)
 
         loss = criterion(predictions, actions)
-        print(f"  after criterion: loss={loss.detach().item():.6f}", flush=True)
 
         # Backward + step
         loss.backward()
-        print("  after backward", flush=True)
-
         optimizer.step()
-        print("  after optimizer.step", flush=True)
 
         # Track loss
         total_loss += loss.detach()
         num_batches += 1
-        print(f"  accumulated loss so far={total_loss.item():.6f}", flush=True)
-
-        print(f"[batch {batch_idx}] end\n", flush=True)
-
-    avg_loss = (total_loss / num_batches).item()
-    print(f"[train_epoch] done. avg_loss={avg_loss:.6f}", flush=True)
-    return avg_loss
+        print("e", flush=True)
+    
+    # Only convert to Python float at the end
+    return (total_loss / num_batches).item()
 
 
 def validate_epoch(model: nn.Module, dataloader: DataLoader, 
