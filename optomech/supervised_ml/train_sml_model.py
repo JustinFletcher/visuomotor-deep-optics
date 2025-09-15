@@ -448,6 +448,8 @@ def create_model(arch: str, input_channels: int, action_dim: int, channel_scale:
         return SMLModel(input_channels=input_channels, action_dim=action_dim)
     elif arch == "sml_resnet":
         return SMLResNet(input_channels=input_channels, action_dim=action_dim)
+    elif arch == "sml_resnet_gn":
+        return SMLResNetGN(input_channels=input_channels, action_dim=action_dim)
     elif arch == "sml_simple":
         return SMLSimple(input_channels=input_channels, action_dim=action_dim)
     elif arch == "sml_hrnet":
@@ -752,10 +754,10 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
         # With DataParallel: keep inputs on CPU; DP will scatter/move them.
         # Without DP (single GPU / DDP rank local): move to device yourself.
         if not use_dp:
-            observations = observations.to(device, non_blocking=True)
-            actions = actions.to(device, non_blocking=True)
+            observations = observations.to(device)
+            actions = actions.to(device)
 
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad()
 
         # Forward
         predictions = model(observations)
@@ -943,7 +945,7 @@ def main():
     parser.add_argument("--log_dir", type=str, default="runs",
                        help="Base directory for TensorBoard logs, plots, and saved models")
     parser.add_argument("--model_arch", type=str, default="sml_cnn", 
-                       choices=["sml_cnn", "sml_resnet", "sml_simple", "sml_hrnet", "sml_vanilla"],
+                       choices=["sml_cnn", "sml_resnet", "sml_resnet_gn", "sml_simple", "sml_hrnet", "sml_vanilla"],
                        help="Model architecture to use")
     parser.add_argument("--max_examples", type=int, default=None,
                        help="Maximum number of examples to load (disables cache)")
