@@ -928,11 +928,11 @@ def main():
     
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size, 
                              shuffle=True, num_workers=0)
-    # val_loader = DataLoader(val_dataset, batch_size=config.batch_size, 
-    #                        shuffle=False, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, 
+                           shuffle=False, num_workers=0)
     
     # DEBUG: Test on the same distribution to isolate issues
-    val_loader = train_loader
+    # val_loader = train_loader
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size, 
                             shuffle=False, num_workers=0)
     
@@ -1028,7 +1028,7 @@ def main():
         train_losses.append(train_loss)
         
         # Validate
-        val_loss = validate_epoch(model, train_loader, criterion, device)
+        val_loss = validate_epoch(model, val_loader, criterion, device)
         val_losses.append(val_loss)
 
         # TensorBoard logging
