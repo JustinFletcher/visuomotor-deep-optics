@@ -691,7 +691,23 @@ def get_device(device_str: str = "auto") -> tuple[torch.device, int]:
         
         gpu_count = torch.cuda.device_count() if device.type == "cuda" else 1
         return device, gpu_count
-
+def _assert_dp_scatterable(x, label="observations", depth=0):
+    indent = "  " * depth
+    import torch
+    if isinstance(x, torch.Tensor):
+        print(f"{indent}[scatterable] {label}: Tensor {tuple(x.shape)} dtype={x.dtype} device={x.device}", flush=True)
+        return
+    if isinstance(x, (list, tuple)):
+        print(f"{indent}{label}: {type(x).__name__} len={len(x)}", flush=True)
+        for i, v in enumerate(x):
+            _assert_dp_scatterable(v, f"{label}[{i}]", depth+1)
+        return
+    if isinstance(x, dict):
+        print(f"{indent}{label}: dict keys={list(x.keys())}", flush=True)
+        for k, v in x.items():
+            _assert_dp_scatterable(v, f"{label}['{k}']", depth+1)
+        return
+    raise TypeError(f"Unscatterable in batch at {label}: {type(x)}")
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
                 criterion: nn.Module, device: torch.device) -> float:
@@ -718,7 +734,10 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
 
         optimizer.zero_grad(set_to_none=True)
         print("  after zero_grad", flush=True)
-
+        print("  checking batch structure…", flush=True)
+        _assert_dp_scatterable(observations, "observations")
+        _assert_dp_scatterable(actions, "actions")
+        print("  batch structure ok", flush=True)
         # Forward
         predictions = model(observations)
         print(f"  after forward: predictions.shape={predictions.shape}, "
