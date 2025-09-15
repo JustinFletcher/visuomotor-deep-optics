@@ -932,8 +932,7 @@ def main():
     #                        shuffle=False, num_workers=0)
     
     # DEBUG: Test on the same distribution to isolate issues
-    val_loader = DataLoader(train_dataset, batch_size=config.batch_size, 
-                           shuffle=False, num_workers=0)
+    val_loader = train_loader
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size, 
                             shuffle=False, num_workers=0)
     
