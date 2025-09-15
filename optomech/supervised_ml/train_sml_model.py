@@ -723,7 +723,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
 def validate_epoch(model: nn.Module, dataloader: DataLoader, 
                   criterion: nn.Module, device: torch.device) -> float:
     """Validate for one epoch and return average loss"""
-    model.eval()
+    model.train()
     total_loss = 0.0
     num_batches = 0
     
