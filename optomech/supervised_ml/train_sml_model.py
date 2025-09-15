@@ -28,6 +28,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from torchinfo import summary
 
+
 # Optional HDF5 support
 try:
     import h5py
@@ -700,21 +701,27 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
     num_batches = 0
     
     for observations, actions in tqdm(dataloader, desc="Training", leave=False):
+        print("a", flush=True)
         observations = observations.to(device)
         actions = actions.to(device)
         
+        print("b", flush=True)
         # Forward pass
         optimizer.zero_grad()
         predictions = model(observations)
         loss = criterion(predictions, actions)
         
+        print("c", flush=True)
         # Backward pass
         loss.backward()
         optimizer.step()
         
+        print("d", flush=True)
         # Accumulate loss without .item() to avoid GPU/CPU sync
         total_loss += loss.detach()
         num_batches += 1
+
+        print("e", flush=True)
     
     # Only convert to Python float at the end
     return (total_loss / num_batches).item()
