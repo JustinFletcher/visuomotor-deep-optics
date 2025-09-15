@@ -708,7 +708,9 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
         print("b", flush=True)
         # Forward pass
         optimizer.zero_grad()
+        print("b.1", flush=True)
         predictions = model(observations)
+        print("b.2", flush=True)
         loss = criterion(predictions, actions)
         
         print("c", flush=True)
