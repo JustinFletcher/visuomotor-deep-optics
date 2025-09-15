@@ -161,6 +161,7 @@ class SMLResNet(nn.Module):
         
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(256, action_dim)
+        self.tanh = nn.Tanh()
         
     def _make_layer(self, in_planes, planes, blocks, stride=1):
         layers = []
@@ -192,6 +193,7 @@ class SMLResNet(nn.Module):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.fc(x)
+        x = self.tanh(x)
         return x
 
 
@@ -926,7 +928,11 @@ def main():
     
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size, 
                              shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, 
+    # val_loader = DataLoader(val_dataset, batch_size=config.batch_size, 
+    #                        shuffle=False, num_workers=0)
+    
+    # DEBUG: Test on the same distribution to isolate issues
+    val_loader = DataLoader(train_dataset, batch_size=config.batch_size, 
                            shuffle=False, num_workers=0)
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size, 
                             shuffle=False, num_workers=0)
