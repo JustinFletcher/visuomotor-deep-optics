@@ -7,7 +7,7 @@
 #SBATCH --output=./sml_1m.out
 #SBATCH --error=./sml_1m.err
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=7-00:00:00                # Maximum runtime (D-HH:MM:SS)
+#SBATCH --time=3-00:00:00                # Maximum runtime (D-HH:MM:SS)
 
 cd ~/visuomotor-deep-optics/
 
@@ -16,6 +16,6 @@ poetry run python optomech/supervised_ml/sml_job_manager_ultra_simple.py \
     --config optomech/supervised_ml/sml_job_config.json \
     --target_samples 1000000 \
     --dataset_name optomech-1m \
-    --check_interval 30 \
+    --check_interval 10 \
     --dataset_dir $WORKDIR/datasets/optomech-1m 
 
