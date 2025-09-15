@@ -142,8 +142,7 @@ class SMLModel(nn.Module):
         x = self.classifier(x)
         return x
 
-
-class SMLResNet(nn.Module):
+class SMLResNetGN(nn.Module):
     def __init__(self, input_channels=2, action_dim=15):
         super().__init__()
         gn64  = lambda: nn.GroupNorm(num_groups=32, num_channels=64)   # 32 or min(32, C)
@@ -172,6 +171,60 @@ class SMLResNet(nn.Module):
                 nn.Conv2d(planes, planes, 3, padding=1, bias=False), gn(), nn.ReLU(inplace=False),
                 nn.Conv2d(planes, planes, 3, padding=1, bias=False), gn(), nn.ReLU(inplace=False),
             ]
+        return nn.Sequential(*layers)
+        
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+        
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        x = self.tanh(x)
+        return x
+
+class SMLResNet(nn.Module):
+    """ResNet-like model for predicting perfect actions from observations"""
+    
+    def __init__(self, input_channels=2, action_dim=15):
+        super(SMLResNet, self).__init__()
+        
+        # Initial conv layer
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        
+        # ResNet blocks
+        self.layer1 = self._make_layer(64, 64, 2)
+        self.layer2 = self._make_layer(64, 128, 2, stride=2)
+        self.layer3 = self._make_layer(128, 256, 2, stride=2)
+        
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(256, action_dim)
+        self.tanh = nn.Tanh()
+        
+    def _make_layer(self, in_planes, planes, blocks, stride=1):
+        layers = []
+        if stride != 1 or in_planes != planes:
+            layers.append(nn.Conv2d(in_planes, planes, 1, stride=stride, bias=False))
+            layers.append(nn.BatchNorm2d(planes))
+        
+        for _ in range(blocks):
+            layers.extend([
+                nn.Conv2d(planes, planes, 3, padding=1, bias=False),
+                nn.BatchNorm2d(planes),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(planes, planes, 3, padding=1, bias=False),
+                nn.BatchNorm2d(planes),
+            ])
+        
         return nn.Sequential(*layers)
         
     def forward(self, x):
@@ -721,7 +774,6 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
         # Track loss
         total_loss += loss.detach()
         num_batches += 1
-    
     # Only convert to Python float at the end
     return (total_loss / num_batches).item()
 
