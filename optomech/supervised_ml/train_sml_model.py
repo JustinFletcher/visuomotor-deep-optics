@@ -790,19 +790,14 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
     for observations, actions in dataloader:
         # With DataParallel: keep inputs on CPU; DP will scatter/move them.
         # Without DP (single GPU / DDP rank local): move to device yourself.
-        if not use_dp:
-            observations = observations.to(device)
-            actions = actions.to(device)
+        observations = observations.to(device)
+        actions = actions.to(device)
 
         optimizer.zero_grad()
 
         # Forward
         predictions = model(observations)
 
-        # If using DP, predictions live on output_device (default cuda:0).
-        # Move actions to that same device *after* forward.
-        if use_dp:
-            actions = actions.to(predictions.device, non_blocking=True)
 
         loss = criterion(predictions, actions)
 
@@ -813,6 +808,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
         # Track loss
         total_loss += loss.detach()
         num_batches += 1
+
     # Only convert to Python float at the end
     return (total_loss / num_batches).item()
 
@@ -1210,6 +1206,11 @@ def main():
         else:
             eta_str = f"{eta_seconds:.0f}s"
 
+        # Log timing metrics to TensorBoard
+        tb_writer.add_scalar('Timing/Epoch_Time', epoch_time, epoch)
+        tb_writer.add_scalar('Timing/Average_Epoch_Time', avg_epoch_time, epoch)
+        tb_writer.add_scalar('Timing/ETA_Hours', eta_hours, epoch)
+
         print(f"  Train Loss: {train_loss:.6f}")
         print(f"  Val Loss:   {val_loss:.6f}")
         print(f"  MAE Mean:   {mae_metrics['mae_mean']:.6f}")
@@ -1246,6 +1247,15 @@ def main():
                     'config': config
                 }, config.model_save_path)
                 print(f"  ✅ New best model saved at {config.model_save_path}!")
+        
+        # Save training curves periodically (every 10 epochs or on best model)
+        if (epoch + 1) % 10 == 0 or val_loss < best_val_loss:
+            if config.plot_losses and len(train_losses) > 1:
+                plot_save_path = str(log_dir / "training_curves.png")
+                plot_training_curves(train_losses, val_losses, plot_save_path)
+                # Don't print every time to avoid spam
+                if (epoch + 1) % 100 == 0 or val_loss < best_val_loss:
+                    print(f"  📈 Training curves updated at {plot_save_path}")
     
     total_training_time = time.time() - training_start_time
     
