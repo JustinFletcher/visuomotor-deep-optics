@@ -787,7 +787,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
 
     use_dp = isinstance(model, torch.nn.DataParallel)
 
-    for observations, actions in dataloader:
+    for observations, actions in tqdm(dataloader, desc="Training", leave=False):
         # With DataParallel: keep inputs on CPU; DP will scatter/move them.
         # Without DP (single GPU / DDP rank local): move to device yourself.
         observations = observations.to(device)
