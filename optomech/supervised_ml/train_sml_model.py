@@ -986,6 +986,8 @@ def main():
                        help="Number of channels for VanillaConv architecture")
     parser.add_argument("--mlp_scale", type=int, default=128,
                        help="Hidden layer size for VanillaConv MLP")
+    parser.add_argument("--run_name", type=str, default=None,
+                       help="Optional run name to append to UUID-based directory name")
     
     args = parser.parse_args()
     
@@ -1011,7 +1013,14 @@ def main():
     
     # Set up log directory for this run
     run_id = str(uuid.uuid4())[:8]
-    log_dir = Path(args.log_dir) / f"run_{run_id}"
+    if args.run_name:
+        # Sanitize run name for filesystem compatibility
+        safe_run_name = "".join(c for c in args.run_name if c.isalnum() or c in ('-', '_')).strip()
+        log_dir_name = f"run_{run_id}_{safe_run_name}"
+    else:
+        log_dir_name = f"run_{run_id}"
+    
+    log_dir = Path(args.log_dir) / log_dir_name
     log_dir.mkdir(parents=True, exist_ok=True)
     print(f"📁 Logging to: {log_dir}")
 
