@@ -972,7 +972,8 @@ def main():
                        help="Disable DataParallel even with multiple GPUs")
     parser.add_argument("--force_cpu", action="store_true",
                        help="Force CPU training (useful for debugging GPU issues)")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--seed", type=int, default=random.randint(0, 999999), 
+                       help="Random seed (default: random)")
     parser.add_argument("--resume_from", type=str, default=None, 
                        help="Path to checkpoint file to resume training from")
     parser.add_argument("--log_dir", type=str, default="runs",
