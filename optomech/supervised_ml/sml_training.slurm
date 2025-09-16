@@ -16,8 +16,6 @@ cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
     "--device cuda:0 --max_examples 100_000"
-    "--device cuda:1 --max_examples 200_000"
-    "--device cuda:2 --max_examples 400_000"
 )
 
 # Run all variants in parallel
