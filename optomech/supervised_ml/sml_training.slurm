@@ -20,7 +20,6 @@ VARIANTS=(
     "--device cuda:2 --num_examples 400_000"
 )
 
-cd ~/visuomotor-deep-optics/
 # Run all variants in parallel
 for VARIANT in "${VARIANTS[@]}"; do
 
@@ -35,4 +34,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --no_dataparallel \
         $VARIANT &  # Run in background
 done
+
+
+wait
 
