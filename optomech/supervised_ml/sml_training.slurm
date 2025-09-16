@@ -23,5 +23,6 @@ poetry run python optomech/supervised_ml/train_sml_model.py \
     --learning_rate 3e-4 \
     --num_epochs 10000 \
     --log_dir ./runs/ \
+    --no_dataparallel \
     --device cuda:0
 
