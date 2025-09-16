@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--device cuda:0 --max_examples 100_000"
+    "--device cuda:0 --max_examples 100_000 --run_name sml_resnet_gn_100k_smx4_solo"
 )
 
 # Run all variants in parallel
