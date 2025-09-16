@@ -32,5 +32,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --learning_rate 1e-3 \
         --num_epochs 10000 \
         --log_dir ./runs/ \
-        --no_dataparallel
+        --no_dataparallel \
+        $VARIANT &  # Run in background
+done
 
