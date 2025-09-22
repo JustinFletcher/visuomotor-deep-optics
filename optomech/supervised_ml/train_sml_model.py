@@ -813,6 +813,66 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
     return (total_loss / num_batches).item()
 
 
+def train_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
+                            criterion: nn.Module, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray]:
+    """Train for one epoch and return loss, MAE metrics, and raw error distribution"""
+    model.train()
+    total_loss = 0.0
+    num_batches = 0
+    all_mae_errors = []
+    all_raw_errors = []
+
+    use_dp = isinstance(model, torch.nn.DataParallel)
+
+    for observations, actions in tqdm(dataloader, desc="Training", leave=False):
+        # With DataParallel: keep inputs on CPU; DP will scatter/move them.
+        # Without DP (single GPU / DDP rank local): move to device yourself.
+        observations = observations.to(device)
+        actions = actions.to(device)
+
+        optimizer.zero_grad()
+
+        # Forward
+        predictions = model(observations)
+        loss = criterion(predictions, actions)
+
+        # Calculate raw errors for histogram (predictions - actions)
+        raw_errors = predictions - actions  # [batch_size, action_dim]
+        all_raw_errors.extend(raw_errors.detach().cpu().numpy().flatten())
+        
+        # Calculate MAE for each sample in the batch for statistics
+        mae_per_sample = torch.mean(torch.abs(raw_errors), dim=1)  # [batch_size]
+        all_mae_errors.extend(mae_per_sample.detach().cpu().numpy())
+
+        # Backward + step
+        loss.backward()
+        optimizer.step()
+
+        # Track loss
+        total_loss += loss.detach()
+        num_batches += 1
+
+    # Convert to numpy for statistics
+    mae_errors_array = np.array(all_mae_errors)
+    raw_errors_array = np.array(all_raw_errors)
+    
+    # Calculate MAE statistics
+    mae_metrics = {
+        'mae_mean': np.mean(mae_errors_array),
+        'mae_median': np.median(mae_errors_array),
+        'mae_min': np.min(mae_errors_array),
+        'mae_max': np.max(mae_errors_array),
+        'mae_std': np.std(mae_errors_array),
+        'mae_q25': np.percentile(mae_errors_array, 25),
+        'mae_q75': np.percentile(mae_errors_array, 75)
+    }
+
+    # Convert loss to Python float at the end
+    avg_loss = (total_loss / num_batches).item()
+    
+    return avg_loss, mae_metrics, raw_errors_array
+
+
 def validate_epoch(model: nn.Module, dataloader: DataLoader, 
                   criterion: nn.Module, device: torch.device) -> float:
     """Validate for one epoch and return average loss"""
@@ -1174,29 +1234,37 @@ def main():
         epoch_start_time = time.time()
         print(f"\nEpoch {epoch+1}/{config.num_epochs}")
         
-        # Train
-        train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
+        # Train with detailed metrics
+        train_loss, train_mae_metrics, train_error_distribution = train_epoch_with_metrics(model, train_loader, optimizer, criterion, device)
         train_losses.append(train_loss)
         
         # Validate with detailed metrics
-        val_loss, mae_metrics, error_distribution = validate_epoch_with_metrics(model, val_loader, criterion, device)
+        val_loss, val_mae_metrics, val_error_distribution = validate_epoch_with_metrics(model, val_loader, criterion, device)
         val_losses.append(val_loss)
 
         # TensorBoard logging
         tb_writer.add_scalar('Loss/Train', train_loss, epoch)
         tb_writer.add_scalar('Loss/Val', val_loss, epoch)
         
-        # Log MAE metrics
-        tb_writer.add_scalar('MAE/Mean', mae_metrics['mae_mean'], epoch)
-        tb_writer.add_scalar('MAE/Median', mae_metrics['mae_median'], epoch)
-        tb_writer.add_scalar('MAE/Min', mae_metrics['mae_min'], epoch)
-        tb_writer.add_scalar('MAE/Max', mae_metrics['mae_max'], epoch)
-        tb_writer.add_scalar('MAE/Std', mae_metrics['mae_std'], epoch)
-        tb_writer.add_scalar('MAE/Q25', mae_metrics['mae_q25'], epoch)
-        tb_writer.add_scalar('MAE/Q75', mae_metrics['mae_q75'], epoch)
+        # Training Instrumentation
+        tb_writer.add_scalar('Training_Instrumentation/MAE_Mean', train_mae_metrics['mae_mean'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/MAE_Median', train_mae_metrics['mae_median'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/MAE_Min', train_mae_metrics['mae_min'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/MAE_Max', train_mae_metrics['mae_max'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/MAE_Std', train_mae_metrics['mae_std'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/MAE_Q25', train_mae_metrics['mae_q25'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/MAE_Q75', train_mae_metrics['mae_q75'], epoch)
+        tb_writer.add_histogram('Training_Instrumentation/Error_Distribution', train_error_distribution, epoch)
         
-        # Log error distribution histogram
-        tb_writer.add_histogram('Error_Distribution/Validation_Errors', error_distribution, epoch)
+        # Validation Instrumentation
+        tb_writer.add_scalar('Validation_Instrumentation/MAE_Mean', val_mae_metrics['mae_mean'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/MAE_Median', val_mae_metrics['mae_median'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/MAE_Min', val_mae_metrics['mae_min'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/MAE_Max', val_mae_metrics['mae_max'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/MAE_Std', val_mae_metrics['mae_std'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/MAE_Q25', val_mae_metrics['mae_q25'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/MAE_Q75', val_mae_metrics['mae_q75'], epoch)
+        tb_writer.add_histogram('Validation_Instrumentation/Error_Distribution', val_error_distribution, epoch)
 
         # Calculate timing
         epoch_time = time.time() - epoch_start_time
@@ -1223,9 +1291,12 @@ def main():
 
         print(f"  Train Loss: {train_loss:.6f}")
         print(f"  Val Loss:   {val_loss:.6f}")
-        print(f"  MAE Mean:   {mae_metrics['mae_mean']:.6f}")
-        print(f"  MAE Median: {mae_metrics['mae_median']:.6f}")
-        print(f"  MAE Range:  [{mae_metrics['mae_min']:.6f}, {mae_metrics['mae_max']:.6f}]")
+        print(f"  Train MAE Mean:   {train_mae_metrics['mae_mean']:.6f}")
+        print(f"  Train MAE Median: {train_mae_metrics['mae_median']:.6f}")
+        print(f"  Train MAE Range:  [{train_mae_metrics['mae_min']:.6f}, {train_mae_metrics['mae_max']:.6f}]")
+        print(f"  Val MAE Mean:     {val_mae_metrics['mae_mean']:.6f}")
+        print(f"  Val MAE Median:   {val_mae_metrics['mae_median']:.6f}")
+        print(f"  Val MAE Range:    [{val_mae_metrics['mae_min']:.6f}, {val_mae_metrics['mae_max']:.6f}]")
         print(f"  Epoch Time: {epoch_time:.1f}s")
         print(f"  ETA:        {eta_str}")
 
