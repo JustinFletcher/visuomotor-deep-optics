@@ -814,14 +814,14 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
 
 
 def train_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
-                            criterion: nn.Module, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray, Dict[str, np.ndarray]]:
-    """Train for one epoch and return loss, MAE metrics, raw error distribution, and per-action metrics"""
+                            criterion: nn.Module, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray, Dict[str, float]]:
+    """Train for one epoch and return loss, MAE metrics, raw error distribution, and absolute error metrics"""
     model.train()
     total_loss = 0.0
     num_batches = 0
     all_mae_errors = []
     all_raw_errors = []
-    all_abs_errors_per_action = []  # [batch_size, action_dim] accumulated
+    all_abs_errors = []  # All absolute errors across all actions (flattened)
 
     use_dp = isinstance(model, torch.nn.DataParallel)
 
@@ -841,12 +841,12 @@ def train_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, optimizer
         raw_errors = predictions - actions  # [batch_size, action_dim]
         all_raw_errors.extend(raw_errors.detach().cpu().numpy().flatten())
         
-        # Calculate absolute errors per action dimension
-        abs_errors_per_action = torch.abs(raw_errors)  # [batch_size, action_dim]
-        all_abs_errors_per_action.append(abs_errors_per_action.detach().cpu().numpy())
+        # Calculate absolute errors and store all individual action errors
+        abs_errors = torch.abs(raw_errors)  # [batch_size, action_dim]
+        all_abs_errors.extend(abs_errors.detach().cpu().numpy().flatten())
         
-        # Calculate MAE for each sample in the batch for statistics
-        mae_per_sample = torch.mean(abs_errors_per_action, dim=1)  # [batch_size]
+        # Calculate MAE for each sample in the batch for statistics (example-level)
+        mae_per_sample = torch.mean(abs_errors, dim=1)  # [batch_size]
         all_mae_errors.extend(mae_per_sample.detach().cpu().numpy())
 
         # Backward + step
@@ -860,16 +860,7 @@ def train_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, optimizer
     # Convert to numpy for statistics
     mae_errors_array = np.array(all_mae_errors)
     raw_errors_array = np.array(all_raw_errors)
-    
-    # Concatenate all absolute errors per action dimension
-    all_abs_errors_per_action = np.concatenate(all_abs_errors_per_action, axis=0)  # [total_samples, action_dim]
-    
-    # Calculate per-action dimension statistics
-    action_dim = all_abs_errors_per_action.shape[1]
-    per_action_metrics = {}
-    for action_idx in range(action_dim):
-        action_errors = all_abs_errors_per_action[:, action_idx]
-        per_action_metrics[f'action_{action_idx:02d}'] = action_errors
+    abs_errors_array = np.array(all_abs_errors)
     
     # Calculate MAE statistics (example-level aggregation)
     mae_metrics = {
@@ -881,11 +872,22 @@ def train_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, optimizer
         'mae_q25': np.percentile(mae_errors_array, 25),
         'mae_q75': np.percentile(mae_errors_array, 75)
     }
+    
+    # Calculate absolute error statistics (across all individual action values)
+    abs_error_metrics = {
+        'abs_error_mean': np.mean(abs_errors_array),
+        'abs_error_median': np.median(abs_errors_array),
+        'abs_error_min': np.min(abs_errors_array),
+        'abs_error_max': np.max(abs_errors_array),
+        'abs_error_std': np.std(abs_errors_array),
+        'abs_error_q25': np.percentile(abs_errors_array, 25),
+        'abs_error_q75': np.percentile(abs_errors_array, 75)
+    }
 
     # Convert loss to Python float at the end
     avg_loss = (total_loss / num_batches).item()
     
-    return avg_loss, mae_metrics, raw_errors_array, per_action_metrics
+    return avg_loss, mae_metrics, raw_errors_array, abs_error_metrics
 
 
 def validate_epoch(model: nn.Module, dataloader: DataLoader, 
@@ -913,14 +915,14 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader,
 
 
 def validate_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, 
-                               criterion: nn.Module, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray, Dict[str, np.ndarray]]:
-    """Validate for one epoch and return loss, MAE metrics, raw error distribution, and per-action metrics"""
+                               criterion: nn.Module, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray, Dict[str, float]]:
+    """Validate for one epoch and return loss, MAE metrics, raw error distribution, and absolute error metrics"""
     model.eval()
     total_loss = 0.0
     num_batches = 0
     all_mae_errors = []
     all_raw_errors = []
-    all_abs_errors_per_action = []  # [batch_size, action_dim] accumulated
+    all_abs_errors = []  # All absolute errors across all actions (flattened)
     
     with torch.no_grad():
         for observations, actions in tqdm(dataloader, desc="Validating", leave=False):
@@ -935,12 +937,12 @@ def validate_epoch_with_metrics(model: nn.Module, dataloader: DataLoader,
             raw_errors = predictions - actions  # [batch_size, action_dim]
             all_raw_errors.extend(raw_errors.cpu().numpy().flatten())
             
-            # Calculate absolute errors per action dimension
-            abs_errors_per_action = torch.abs(raw_errors)  # [batch_size, action_dim]
-            all_abs_errors_per_action.append(abs_errors_per_action.cpu().numpy())
+            # Calculate absolute errors and store all individual action errors
+            abs_errors = torch.abs(raw_errors)  # [batch_size, action_dim]
+            all_abs_errors.extend(abs_errors.cpu().numpy().flatten())
             
-            # Calculate MAE for each sample in the batch for statistics
-            mae_per_sample = torch.mean(abs_errors_per_action, dim=1)  # [batch_size]
+            # Calculate MAE for each sample in the batch for statistics (example-level)
+            mae_per_sample = torch.mean(abs_errors, dim=1)  # [batch_size]
             all_mae_errors.extend(mae_per_sample.cpu().numpy())
             
             # Accumulate loss without .item() to avoid GPU/CPU sync
@@ -950,16 +952,7 @@ def validate_epoch_with_metrics(model: nn.Module, dataloader: DataLoader,
     # Convert to numpy for statistics
     mae_errors_array = np.array(all_mae_errors)
     raw_errors_array = np.array(all_raw_errors)
-    
-    # Concatenate all absolute errors per action dimension
-    all_abs_errors_per_action = np.concatenate(all_abs_errors_per_action, axis=0)  # [total_samples, action_dim]
-    
-    # Calculate per-action dimension statistics
-    action_dim = all_abs_errors_per_action.shape[1]
-    per_action_metrics = {}
-    for action_idx in range(action_dim):
-        action_errors = all_abs_errors_per_action[:, action_idx]
-        per_action_metrics[f'action_{action_idx:02d}'] = action_errors
+    abs_errors_array = np.array(all_abs_errors)
     
     # Calculate MAE statistics (example-level aggregation)
     mae_metrics = {
@@ -972,10 +965,21 @@ def validate_epoch_with_metrics(model: nn.Module, dataloader: DataLoader,
         'mae_q75': np.percentile(mae_errors_array, 75)
     }
     
+    # Calculate absolute error statistics (across all individual action values)
+    abs_error_metrics = {
+        'abs_error_mean': np.mean(abs_errors_array),
+        'abs_error_median': np.median(abs_errors_array),
+        'abs_error_min': np.min(abs_errors_array),
+        'abs_error_max': np.max(abs_errors_array),
+        'abs_error_std': np.std(abs_errors_array),
+        'abs_error_q25': np.percentile(abs_errors_array, 25),
+        'abs_error_q75': np.percentile(abs_errors_array, 75)
+    }
+    
     # Convert loss to Python float at the end
     avg_loss = (total_loss / num_batches).item()
     
-    return avg_loss, mae_metrics, raw_errors_array, per_action_metrics
+    return avg_loss, mae_metrics, raw_errors_array, abs_error_metrics
 
 
 def plot_training_curves(train_losses: List[float], val_losses: List[float], 
@@ -1265,11 +1269,11 @@ def main():
         print(f"\nEpoch {epoch+1}/{config.num_epochs}")
         
         # Train with detailed metrics
-        train_loss, train_mae_metrics, train_error_distribution, train_per_action_metrics = train_epoch_with_metrics(model, train_loader, optimizer, criterion, device)
+        train_loss, train_mae_metrics, train_error_distribution, train_abs_error_metrics = train_epoch_with_metrics(model, train_loader, optimizer, criterion, device)
         train_losses.append(train_loss)
         
         # Validate with detailed metrics
-        val_loss, val_mae_metrics, val_error_distribution, val_per_action_metrics = validate_epoch_with_metrics(model, val_loader, criterion, device)
+        val_loss, val_mae_metrics, val_error_distribution, val_abs_error_metrics = validate_epoch_with_metrics(model, val_loader, criterion, device)
         val_losses.append(val_loss)
 
         # TensorBoard logging
@@ -1286,12 +1290,14 @@ def main():
         tb_writer.add_scalar('Training_Instrumentation/MAE_Q75', train_mae_metrics['mae_q75'], epoch)
         tb_writer.add_histogram('Training_Instrumentation/Error_Distribution', train_error_distribution, epoch)
         
-        # Training Instrumentation - Per-action absolute error statistics
-        for action_name, action_errors in train_per_action_metrics.items():
-            tb_writer.add_scalar(f'Training_Instrumentation/Action_AbsError_Mean/{action_name}', np.mean(action_errors), epoch)
-            tb_writer.add_scalar(f'Training_Instrumentation/Action_AbsError_Median/{action_name}', np.median(action_errors), epoch)
-            tb_writer.add_scalar(f'Training_Instrumentation/Action_AbsError_Std/{action_name}', np.std(action_errors), epoch)
-            tb_writer.add_histogram(f'Training_Instrumentation/Action_AbsError_Distribution/{action_name}', action_errors, epoch)
+        # Training Instrumentation - Action-level absolute error statistics
+        tb_writer.add_scalar('Training_Instrumentation/AbsError_Mean', train_abs_error_metrics['abs_error_mean'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/AbsError_Median', train_abs_error_metrics['abs_error_median'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/AbsError_Min', train_abs_error_metrics['abs_error_min'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/AbsError_Max', train_abs_error_metrics['abs_error_max'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/AbsError_Std', train_abs_error_metrics['abs_error_std'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/AbsError_Q25', train_abs_error_metrics['abs_error_q25'], epoch)
+        tb_writer.add_scalar('Training_Instrumentation/AbsError_Q75', train_abs_error_metrics['abs_error_q75'], epoch)
         
         # Validation Instrumentation - Example-level MAE
         tb_writer.add_scalar('Validation_Instrumentation/MAE_Mean', val_mae_metrics['mae_mean'], epoch)
@@ -1303,12 +1309,14 @@ def main():
         tb_writer.add_scalar('Validation_Instrumentation/MAE_Q75', val_mae_metrics['mae_q75'], epoch)
         tb_writer.add_histogram('Validation_Instrumentation/Error_Distribution', val_error_distribution, epoch)
         
-        # Validation Instrumentation - Per-action absolute error statistics
-        for action_name, action_errors in val_per_action_metrics.items():
-            tb_writer.add_scalar(f'Validation_Instrumentation/Action_AbsError_Mean/{action_name}', np.mean(action_errors), epoch)
-            tb_writer.add_scalar(f'Validation_Instrumentation/Action_AbsError_Median/{action_name}', np.median(action_errors), epoch)
-            tb_writer.add_scalar(f'Validation_Instrumentation/Action_AbsError_Std/{action_name}', np.std(action_errors), epoch)
-            tb_writer.add_histogram(f'Validation_Instrumentation/Action_AbsError_Distribution/{action_name}', action_errors, epoch)
+        # Validation Instrumentation - Action-level absolute error statistics
+        tb_writer.add_scalar('Validation_Instrumentation/AbsError_Mean', val_abs_error_metrics['abs_error_mean'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/AbsError_Median', val_abs_error_metrics['abs_error_median'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/AbsError_Min', val_abs_error_metrics['abs_error_min'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/AbsError_Max', val_abs_error_metrics['abs_error_max'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/AbsError_Std', val_abs_error_metrics['abs_error_std'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/AbsError_Q25', val_abs_error_metrics['abs_error_q25'], epoch)
+        tb_writer.add_scalar('Validation_Instrumentation/AbsError_Q75', val_abs_error_metrics['abs_error_q75'], epoch)
 
         # Calculate timing
         epoch_time = time.time() - epoch_start_time
@@ -1341,6 +1349,8 @@ def main():
         print(f"  Val MAE Mean:     {val_mae_metrics['mae_mean']:.6f}")
         print(f"  Val MAE Median:   {val_mae_metrics['mae_median']:.6f}")
         print(f"  Val MAE Range:    [{val_mae_metrics['mae_min']:.6f}, {val_mae_metrics['mae_max']:.6f}]")
+        print(f"  Train AbsErr Mean: {train_abs_error_metrics['abs_error_mean']:.6f}")
+        print(f"  Val AbsErr Mean:   {val_abs_error_metrics['abs_error_mean']:.6f}")
         print(f"  Epoch Time: {epoch_time:.1f}s")
         print(f"  ETA:        {eta_str}")
 
@@ -1386,19 +1396,17 @@ def main():
     
     # Test final model
     print(f"\n🧪 Testing final model...")
-    test_loss, test_mae_metrics, test_error_distribution, test_per_action_metrics = validate_epoch_with_metrics(model, test_loader, criterion, device)
+    test_loss, test_mae_metrics, test_error_distribution, test_abs_error_metrics = validate_epoch_with_metrics(model, test_loader, criterion, device)
     print(f"Test Loss: {test_loss:.6f}")
     print(f"Test MAE Mean: {test_mae_metrics['mae_mean']:.6f}")
     print(f"Test MAE Median: {test_mae_metrics['mae_median']:.6f}")
     print(f"Test MAE Range: [{test_mae_metrics['mae_min']:.6f}, {test_mae_metrics['mae_max']:.6f}]")
     
-    # Print per-action summary
-    print(f"\nPer-action absolute error summary:")
-    for action_name, action_errors in test_per_action_metrics.items():
-        action_idx = int(action_name.split('_')[1])
-        mean_error = np.mean(action_errors)
-        median_error = np.median(action_errors)
-        print(f"  Action {action_idx:2d}: Mean={mean_error:.6f}, Median={median_error:.6f}")
+    # Print action-level absolute error summary
+    print(f"\nAction-level absolute error summary:")
+    print(f"  AbsError Mean: {test_abs_error_metrics['abs_error_mean']:.6f}")
+    print(f"  AbsError Median: {test_abs_error_metrics['abs_error_median']:.6f}")
+    print(f"  AbsError Range: [{test_abs_error_metrics['abs_error_min']:.6f}, {test_abs_error_metrics['abs_error_max']:.6f}]")
     
     # Check if training loss decreased
     if len(train_losses) > 0:
@@ -1443,12 +1451,12 @@ def main():
     tb_writer.add_scalar('Final/Test_MAE_Max', test_mae_metrics['mae_max'], config.num_epochs)
     tb_writer.add_histogram('Final/Test_Error_Distribution', test_error_distribution, config.num_epochs)
     
-    # Log final per-action test metrics
-    for action_name, action_errors in test_per_action_metrics.items():
-        tb_writer.add_scalar(f'Final/Test_Action_AbsError_Mean/{action_name}', np.mean(action_errors), config.num_epochs)
-        tb_writer.add_scalar(f'Final/Test_Action_AbsError_Median/{action_name}', np.median(action_errors), config.num_epochs)
-        tb_writer.add_scalar(f'Final/Test_Action_AbsError_Std/{action_name}', np.std(action_errors), config.num_epochs)
-        tb_writer.add_histogram(f'Final/Test_Action_AbsError_Distribution/{action_name}', action_errors, config.num_epochs)
+    # Log final absolute error test metrics
+    tb_writer.add_scalar('Final/Test_AbsError_Mean', test_abs_error_metrics['abs_error_mean'], config.num_epochs)
+    tb_writer.add_scalar('Final/Test_AbsError_Median', test_abs_error_metrics['abs_error_median'], config.num_epochs)
+    tb_writer.add_scalar('Final/Test_AbsError_Min', test_abs_error_metrics['abs_error_min'], config.num_epochs)
+    tb_writer.add_scalar('Final/Test_AbsError_Max', test_abs_error_metrics['abs_error_max'], config.num_epochs)
+    tb_writer.add_scalar('Final/Test_AbsError_Std', test_abs_error_metrics['abs_error_std'], config.num_epochs)
 
     tb_writer.close()
     
