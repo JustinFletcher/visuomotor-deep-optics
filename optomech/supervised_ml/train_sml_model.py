@@ -847,7 +847,7 @@ def train_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, optimizer
         
         # Calculate MAE for each sample in the batch for statistics
         mae_per_sample = torch.mean(abs_errors_per_action, dim=1)  # [batch_size]
-        all_mae_errors.extend(mae_per_sample.numpy())
+        all_mae_errors.extend(mae_per_sample.detach().cpu().numpy())
 
         # Backward + step
         loss.backward()
