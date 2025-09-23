@@ -1618,9 +1618,9 @@ def main():
     # Rollout instrumentation arguments
     parser.add_argument("--enable_rollouts", action="store_true",
                        help="Enable rollout instrumentation after training")
-    parser.add_argument("--rollout_seeds", type=int, default=32,
+    parser.add_argument("--rollout_seeds", type=int, default=10,
                        help="Number of random seeds for rollout evaluation")
-    parser.add_argument("--rollout_steps", type=int, default=250,
+    parser.add_argument("--rollout_steps", type=int, default=100,
                        help="Number of steps per rollout episode")
     parser.add_argument("--rollout_model_path", type=str, default=None,
                        help="Specific model path for rollouts (default: use most recent)")
