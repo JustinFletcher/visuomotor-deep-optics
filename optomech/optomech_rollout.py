@@ -119,6 +119,7 @@ class SMLModelInterface(ModelInterface):
         try:
             # Load the checkpoint saved by the training script
             checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
+            print(f"✅ Checkpoint loaded successfully, type: {type(checkpoint)}")
             
             # Check if it's a checkpoint dictionary (from training script)
             if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
@@ -134,19 +135,19 @@ class SMLModelInterface(ModelInterface):
                 # Extract input channels from the first conv layer
                 if 'features.0.weight' in state_dict:
                     input_channels = state_dict['features.0.weight'].shape[1]
-                    # DEBUG: print(f"Detected input_channels: {input_channels}")
+                    print(f"🔍 Detected input_channels: {input_channels}")
                 
                 # Extract action_dim from the final linear layer (classifier.6.weight)
                 if 'classifier.6.weight' in state_dict:
                     action_dim = state_dict['classifier.6.weight'].shape[0]
-                    # DEBUG: print(f"Detected action_dim: {action_dim}")
+                    print(f"🔍 Detected action_dim: {action_dim}")
                 
                 # Check config for additional parameters if available
                 if 'config' in checkpoint:
                     config = checkpoint['config']
                     if hasattr(config, 'action_dim'):
                         action_dim = config.action_dim
-                        # DEBUG: print(f"Config override action_dim: {action_dim}")
+                        print(f"🔍 Config override action_dim: {action_dim}")
                 
                 # Define the SMLModel class here to avoid import issues
                 import torch.nn as nn
@@ -191,7 +192,7 @@ class SMLModelInterface(ModelInterface):
                 
                 # Create model instance with detected parameters
                 self.model = SMLModel(input_channels=input_channels, action_dim=action_dim)
-                # DEBUG: print(f"Created SML model: input_channels={input_channels}, action_dim={action_dim}")
+                print(f"✅ Created SML model: input_channels={input_channels}, action_dim={action_dim}")
                 
                 # Load the saved state dict
                 self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -203,11 +204,16 @@ class SMLModelInterface(ModelInterface):
                 print("✅ Loaded complete model object")
                 
         except Exception as e:
+            print(f"❌ Error loading SML model: {e}")
             raise ValueError(f"Could not load SML model: {e}")
         
+        if self.model is None:
+            raise ValueError("Model loading failed - self.model is None")
+            
         self.model.to(self.device)
         self.model.eval()  # Set to evaluation mode
         self.has_hidden_state = False  # SML models are typically feedforward
+        print(f"✅ Model loaded and ready: {type(self.model)}")
         
     def predict(self, observation: np.ndarray, **kwargs) -> np.ndarray:
         """
@@ -220,14 +226,26 @@ class SMLModelInterface(ModelInterface):
         Returns:
             Predicted action
         """
+        # Debug: Check if model is None
+        if self.model is None:
+            raise ValueError("Model is None - load_model was not called or failed")
+        
         # Convert observation to tensor and add batch dimension if needed
         obs_tensor = torch.FloatTensor(observation).to(self.device)
         if len(obs_tensor.shape) == 3:  # Add batch dimension for single observation
             obs_tensor = obs_tensor.unsqueeze(0)
         
+        # Debug: Check tensor shapes
+        print(f"    DEBUG: obs_tensor shape: {obs_tensor.shape}")
+        print(f"    DEBUG: model first layer weight shape: {list(self.model.parameters())[0].shape}")
+        
         # Make prediction
         with torch.no_grad():
-            action_tensor = self.model(obs_tensor)
+            try:
+                action_tensor = self.model(obs_tensor)
+            except Exception as e:
+                print(f"    DEBUG: Error in model forward pass: {e}")
+                raise
             
         # Convert back to numpy and remove batch dimension
         action = action_tensor.cpu().numpy()
@@ -235,6 +253,10 @@ class SMLModelInterface(ModelInterface):
             action = action.squeeze(0)
             
         return action
+    
+    def get_action_scale(self) -> float:
+        """Get the action scale for SML models (default: 1.0 for normalized actions)."""
+        return 1.0
 
 
 class RLModelInterface(ModelInterface):
@@ -488,26 +510,40 @@ def create_model_interface(model_path: str, model_type: str, device: torch.devic
     model_type = model_type.lower()
     
     if model_type in ["sml", "supervised", "cnn", "resnet"]:
-        return SMLModelInterface(model_path, device)
+        interface = SMLModelInterface(model_path, device)
+        interface.load_model()
+        return interface
     elif model_type in ["rl", "ddpg", "td3", "sac", "ppo", "a2c"]:
-        return RLModelInterface(model_path, device, model_type)
+        interface = RLModelInterface(model_path, device, model_type)
+        interface.load_model()
+        return interface
     elif model_type in ["impala", "lstm", "recurrent"]:
-        return RLModelInterface(model_path, device, model_type)
+        interface = RLModelInterface(model_path, device, model_type)
+        interface.load_model()
+        return interface
     elif model_type == "custom":
-        return CustomModelInterface(model_path, device, **kwargs)
+        interface = CustomModelInterface(model_path, device, **kwargs)
+        interface.load_model()
+        return interface
     else:
         # Auto-detect based on file content
         print(f"🔍 Auto-detecting model type for: {model_path}")
         try:
             # Try RL model first (most common)
-            return RLModelInterface(model_path, device, "auto")
+            interface = RLModelInterface(model_path, device, "auto")
+            interface.load_model()
+            return interface
         except:
             try:
                 # Try SML model
-                return SMLModelInterface(model_path, device)
+                interface = SMLModelInterface(model_path, device)
+                interface.load_model()
+                return interface
             except:
                 # Fallback to custom
-                return CustomModelInterface(model_path, device)
+                interface = CustomModelInterface(model_path, device)
+                interface.load_model()
+                return interface
 
 
 # =============================================================================
@@ -527,7 +563,13 @@ def make_env(env_id: str, env_args: Namespace) -> Callable:
     """
     def thunk():
         if env_id == "optomech-v1":
-            env = gym.make(env_id, **vars(env_args))
+            # Safely extract environment arguments, filtering out None values
+            env_kwargs = {}
+            if env_args is not None:
+                for key, value in vars(env_args).items():
+                    if value is not None:
+                        env_kwargs[key] = value
+            env = gym.make(env_id, **env_kwargs)
         else:
             env = gym.make(env_id)
             
@@ -719,12 +761,20 @@ class UniversalRolloutEngine:
             if random_policy or self.model_interface is None:
                 actions = self._sample_random_actions(envs, num_envs)
             else:
-                actions = self._get_model_actions(obs, prior_actions, prior_rewards, 
-                                                exploration_noise, envs)
+                try:
+                    actions = self._get_model_actions(obs, prior_actions, prior_rewards, 
+                                                    exploration_noise, envs)
+                except Exception as e:
+                    print(f"    Error in _get_model_actions: {e}")
+                    raise
             
             # Step environment
-            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-            next_obs = self._preprocess_observation(next_obs)
+            try:
+                next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+                next_obs = self._preprocess_observation(next_obs)
+            except Exception as e:
+                print(f"    Error in envs.step: {e}")
+                raise
             
             # Track step-wise rewards for each environment
             for env_idx, reward in enumerate(rewards):
@@ -809,16 +859,22 @@ class UniversalRolloutEngine:
             Actions to take
         """
         # Get base actions from model
-        if self.model_interface.has_hidden_state:
-            # Recurrent model - pass additional context
-            actions = self.model_interface.predict(
-                obs, 
-                prior_action=prior_actions[0],  # Use first env's prior action
-                prior_reward=prior_rewards[0]   # Use first env's prior reward
-            )
-        else:
-            # Feedforward model - pass observation for first environment
-            actions = self.model_interface.predict(obs[0])  # Extract first env's observation
+        try:
+            if self.model_interface.has_hidden_state:
+                # Recurrent model - pass additional context
+                actions = self.model_interface.predict(
+                    obs, 
+                    prior_action=prior_actions[0],  # Use first env's prior action
+                    prior_reward=prior_rewards[0]   # Use first env's prior reward
+                )
+            else:
+                # Feedforward model - pass observation for first environment
+                actions = self.model_interface.predict(obs[0])  # Extract first env's observation
+        except Exception as e:
+            print(f"    Error in model_interface.predict: {e}")
+            print(f"    model_interface: {self.model_interface}")
+            print(f"    obs shape: {obs.shape if hasattr(obs, 'shape') else type(obs)}")
+            raise
         
         # Expand actions to match number of environments (for vectorized envs)
         num_envs = obs.shape[0]
