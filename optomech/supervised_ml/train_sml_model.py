@@ -1198,7 +1198,7 @@ def perform_rollout_instrumentation(
     with open(env_config_path, 'w') as f:
         json.dump(rollout_env_config, f, indent=2)
     
-    print(f"💾 Saved rollout environment config to: {env_config_path}")
+    print(f"💾 Saved rollout environment config to : {env_config_path}")
     
     # Run rollouts for each seed
     for seed in range(num_seeds):
