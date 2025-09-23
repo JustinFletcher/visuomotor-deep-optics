@@ -1921,7 +1921,10 @@ def main():
                     'val_loss': val_loss,
                     'train_losses': train_losses,
                     'val_losses': val_losses,
-                    'config': config
+                    'config': config,
+                    'model_arch': args.model_arch,
+                    'input_channels': input_channels,
+                    'action_dim': action_dim
                 }, config.model_save_path)
                 print(f"  ✅ New best model saved at {config.model_save_path}!")
         

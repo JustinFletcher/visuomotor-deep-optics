@@ -125,74 +125,125 @@ class SMLModelInterface(ModelInterface):
             if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                 print("✅ Loading SML model from checkpoint")
                 
-                # Extract model parameters from the checkpoint config if available
+                # Check checkpoint for model architecture and parameters
+                model_arch = "sml_cnn"  # default
                 input_channels = 2  # default
                 action_dim = 15     # default
                 
-                # Get the state_dict to infer parameters
-                state_dict = checkpoint['model_state_dict']
+                # Try to get values from top-level checkpoint data first (new format)
+                if 'model_arch' in checkpoint:
+                    model_arch = checkpoint['model_arch']
+                    print(f"✅ Found model architecture: {model_arch}")
+                if 'input_channels' in checkpoint:
+                    input_channels = checkpoint['input_channels']
+                if 'action_dim' in checkpoint:
+                    action_dim = checkpoint['action_dim']
                 
-                # Extract input channels from the first conv layer
-                if 'features.0.weight' in state_dict:
-                    input_channels = state_dict['features.0.weight'].shape[1]
-                    print(f"🔍 Detected input_channels: {input_channels}")
-                
-                # Extract action_dim from the final linear layer (classifier.6.weight)
-                if 'classifier.6.weight' in state_dict:
-                    action_dim = state_dict['classifier.6.weight'].shape[0]
-                    print(f"🔍 Detected action_dim: {action_dim}")
-                
-                # Check config for additional parameters if available
+                # Fallback: Try to get from config if available
                 if 'config' in checkpoint:
                     config = checkpoint['config']
                     if hasattr(config, 'action_dim'):
                         action_dim = config.action_dim
                         print(f"🔍 Config override action_dim: {action_dim}")
+                    if hasattr(config, 'model_arch'):
+                        model_arch = config.model_arch
+                        print(f"🔍 Config override model_arch: {model_arch}")
                 
-                # Define the SMLModel class here to avoid import issues
-                import torch.nn as nn
+                # Fallback: Extract parameters from state_dict
+                state_dict = checkpoint['model_state_dict']
                 
-                class SMLModel(nn.Module):
-                    """CNN model for predicting perfect actions from observations"""
+                # Extract input channels from the first conv layer
+                if 'features.0.weight' in state_dict:
+                    input_channels = state_dict['features.0.weight'].shape[1]
+                elif 'conv1.weight' in state_dict:
+                    input_channels = state_dict['conv1.weight'].shape[1]
+                print(f"🔍 Detected input_channels: {input_channels}")
+                
+                # Extract action_dim from the final linear layer
+                if 'classifier.6.weight' in state_dict:
+                    action_dim = state_dict['classifier.6.weight'].shape[0]
+                elif 'fc.weight' in state_dict:
+                    action_dim = state_dict['fc.weight'].shape[0]
+                print(f"🔍 Detected action_dim: {action_dim}")
+                
+                # Try to detect architecture from state_dict keys if config doesn't have it
+                if model_arch == "sml_cnn" and 'conv1.weight' in state_dict:
+                    if 'gn1.weight' in state_dict:
+                        model_arch = "sml_resnet_gn"
+                    else:
+                        model_arch = "sml_resnet"
+                    print(f"✅ Auto-detected model architecture from state_dict: {model_arch}")
+                
+                # Import model definitions from training script
+                try:
+                    import sys
+                    from pathlib import Path
+                    current_dir = Path(__file__).parent
+                    project_root = current_dir.parent
+                    sys.path.insert(0, str(project_root))
                     
-                    def __init__(self, input_channels=2, action_dim=15):
-                        super(SMLModel, self).__init__()
+                    # Import all model classes from the training script
+                    from optomech.supervised_ml.train_sml_model import (
+                        SMLModel, SMLResNet, SMLResNetGN, SMLSimple, 
+                        SMLHRNet, SMLVanillaConv, create_model
+                    )
+                    
+                    # Create model using the factory function
+                    self.model = create_model(
+                        arch=model_arch,
+                        input_channels=input_channels,
+                        action_dim=action_dim
+                    )
+                    print(f"✅ Created {model_arch} model: input_channels={input_channels}, action_dim={action_dim}")
+                    
+                except ImportError as e:
+                    print(f"⚠️  Could not import from training script: {e}")
+                    print("🔄 Falling back to basic SMLModel definition")
+                    
+                    # Fallback: Define basic SMLModel class here
+                    import torch.nn as nn
+                    
+                    class SMLModel(nn.Module):
+                        """CNN model for predicting perfect actions from observations"""
                         
-                        # CNN feature extractor
-                        self.features = nn.Sequential(
-                            nn.Conv2d(input_channels, 32, kernel_size=7, stride=2, padding=3),
-                            nn.ReLU(inplace=True),
-                            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-                            nn.Conv2d(32, 64, kernel_size=5, stride=2, padding=2),
-                            nn.ReLU(inplace=True),
-                            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-                            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-                            nn.ReLU(inplace=True),
-                            nn.MaxPool2d(kernel_size=2, stride=2),
-                            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-                            nn.ReLU(inplace=True),
-                            nn.AdaptiveAvgPool2d((4, 4))
-                        )
-                        
-                        self.classifier = nn.Sequential(
-                            nn.Dropout(0.5),
-                            nn.Linear(256 * 4 * 4, 512),
-                            nn.ReLU(inplace=True),
-                            nn.Dropout(0.3),
-                            nn.Linear(512, 128),
-                            nn.ReLU(inplace=True),
-                            nn.Linear(128, action_dim)
-                        )
-                        
-                    def forward(self, x):
-                        x = self.features(x)
-                        x = x.view(x.size(0), -1)
-                        x = self.classifier(x)
-                        return x
-                
-                # Create model instance with detected parameters
-                self.model = SMLModel(input_channels=input_channels, action_dim=action_dim)
-                print(f"✅ Created SML model: input_channels={input_channels}, action_dim={action_dim}")
+                        def __init__(self, input_channels=2, action_dim=15):
+                            super(SMLModel, self).__init__()
+                            
+                            # CNN feature extractor
+                            self.features = nn.Sequential(
+                                nn.Conv2d(input_channels, 32, kernel_size=7, stride=2, padding=3),
+                                nn.ReLU(inplace=True),
+                                nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+                                nn.Conv2d(32, 64, kernel_size=5, stride=2, padding=2),
+                                nn.ReLU(inplace=True),
+                                nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+                                nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+                                nn.ReLU(inplace=True),
+                                nn.MaxPool2d(kernel_size=2, stride=2),
+                                nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+                                nn.ReLU(inplace=True),
+                                nn.AdaptiveAvgPool2d((4, 4))
+                            )
+                            
+                            self.classifier = nn.Sequential(
+                                nn.Dropout(0.5),
+                                nn.Linear(256 * 4 * 4, 512),
+                                nn.ReLU(inplace=True),
+                                nn.Dropout(0.3),
+                                nn.Linear(512, 128),
+                                nn.ReLU(inplace=True),
+                                nn.Linear(128, action_dim)
+                            )
+                            
+                        def forward(self, x):
+                            x = self.features(x)
+                            x = x.view(x.size(0), -1)
+                            x = self.classifier(x)
+                            return x
+                    
+                    # Create fallback model instance
+                    self.model = SMLModel(input_channels=input_channels, action_dim=action_dim)
+                    print(f"✅ Created fallback SML model: input_channels={input_channels}, action_dim={action_dim}")
                 
                 # Load the saved state dict
                 self.model.load_state_dict(checkpoint['model_state_dict'])
