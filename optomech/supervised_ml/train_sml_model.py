@@ -17,6 +17,14 @@ from typing import List, Tuple, Dict
 from dataclasses import dataclass
 import pickle
 
+import matplotlib.pyplot as plt
+import subprocess
+import json
+from pathlib import Path
+from typing import List, Tuple, Dict
+from dataclasses import dataclass
+import pickle
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -1053,6 +1061,363 @@ def load_checkpoint(checkpoint_path: str, model: nn.Module, optimizer: optim.Opt
     return start_epoch, train_losses, val_losses, best_val_loss
 
 
+def find_most_recent_model(runs_dir: str = "runs") -> Tuple[str, str]:
+    """
+    Find the most recently saved model in the runs directory.
+    
+    Args:
+        runs_dir: Base directory containing training runs
+        
+    Returns:
+        Tuple of (model_path, run_directory)
+    """
+    runs_path = Path(runs_dir)
+    if not runs_path.exists():
+        raise FileNotFoundError(f"Runs directory not found: {runs_dir}")
+    
+    # Find all run directories
+    run_dirs = [d for d in runs_path.iterdir() if d.is_dir() and d.name.startswith('run_')]
+    
+    if not run_dirs:
+        raise FileNotFoundError(f"No run directories found in {runs_dir}")
+    
+    # Sort by modification time to get most recent
+    run_dirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    
+    # Look for model files in the most recent runs
+    for run_dir in run_dirs:
+        model_path = run_dir / "sml_model.pth"
+        if model_path.exists():
+            print(f"📁 Found most recent model: {model_path}")
+            return str(model_path), str(run_dir)
+    
+    raise FileNotFoundError(f"No model files found in any run directory")
+
+
+def load_dataset_config(dataset_path: str) -> Dict:
+    """
+    Load environment configuration from dataset job config.
+    
+    Args:
+        dataset_path: Path to dataset directory
+        
+    Returns:
+        Dictionary containing environment configuration
+    """
+    dataset_path = Path(dataset_path)
+    
+    # Look for job config file
+    possible_configs = [
+        dataset_path / f"{dataset_path.name}_job_config.json",
+        dataset_path / "job_config.json",
+        dataset_path / "dataset_job_config.json"
+    ]
+    
+    for config_path in possible_configs:
+        if config_path.exists():
+            print(f"📋 Loading dataset config: {config_path}")
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            return config
+    
+    raise FileNotFoundError(f"No job config found for dataset: {dataset_path}")
+
+
+def perform_rollout_instrumentation(
+    dataset_path: str,
+    model_path: str = None,
+    num_seeds: int = 32,
+    rollout_steps: int = 250,
+    runs_dir: str = "runs",
+    save_results: bool = True,
+    output_dir: str = None
+) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """
+    Perform rollout instrumentation using the most recent model.
+    
+    Args:
+        dataset_path: Path to dataset (used for environment config)
+        model_path: Path to model (if None, finds most recent)
+        num_seeds: Number of random seeds to evaluate
+        rollout_steps: Number of steps per rollout
+        runs_dir: Directory containing training runs
+        save_results: Whether to save results to disk
+        output_dir: Directory to save results (if None, uses model's run dir)
+        
+    Returns:
+        Tuple of (mean_rewards, std_rewards, metadata)
+    """
+    print("\n🎯 Starting Rollout Instrumentation")
+    print("=" * 50)
+    
+    # Find model if not provided
+    if model_path is None:
+        model_path, run_dir = find_most_recent_model(runs_dir)
+        if output_dir is None:
+            output_dir = run_dir
+    else:
+        run_dir = str(Path(model_path).parent)
+        if output_dir is None:
+            output_dir = run_dir
+    
+    # Load dataset configuration for environment setup
+    dataset_config = load_dataset_config(dataset_path)
+    
+    # Create output directory for results
+    output_path = Path(output_dir)
+    rollout_results_dir = output_path / "rollout_results"
+    rollout_results_dir.mkdir(exist_ok=True)
+    
+    print(f"🎲 Running {num_seeds} rollouts with {rollout_steps} steps each")
+    print(f"📊 Results will be saved to: {rollout_results_dir}")
+    
+    # Store rewards for all seeds and steps
+    all_episode_rewards = []  # Shape: [num_seeds, rollout_steps]
+    successful_seeds = []
+    
+    # Get the optomech_rollout.py path
+    optomech_rollout_path = Path(__file__).parent.parent / "optomech_rollout.py"
+    if not optomech_rollout_path.exists():
+        raise FileNotFoundError(f"optomech_rollout.py not found at: {optomech_rollout_path}")
+    
+    # Prepare base environment configuration from dataset config
+    env_config_path = rollout_results_dir / "rollout_env_config.json"
+    
+    # Create environment config based on dataset config
+    rollout_env_config = {
+        "env_id": dataset_config.get("env_id", "optomech-v1"),
+        "object_type": dataset_config.get("object_type", "single"),
+        "aperture_type": dataset_config.get("aperture_type", "elf"),
+        "reward_function": dataset_config.get("reward_function", "align"),
+        "observation_mode": dataset_config.get("observation_mode", "image_only"),
+        "focal_plane_image_size_pixels": dataset_config.get("focal_plane_image_size_pixels", 256),
+        "environment_flags": dataset_config.get("environment_flags", [])
+    }
+    
+    # Save environment config for rollout script
+    with open(env_config_path, 'w') as f:
+        json.dump(rollout_env_config, f, indent=2)
+    
+    print(f"💾 Saved rollout environment config to: {env_config_path}")
+    
+    # Run rollouts for each seed
+    for seed in range(num_seeds):
+        print(f"\n🔄 Running rollout {seed + 1}/{num_seeds} (seed={seed})")
+        
+        # Prepare rollout command
+        episode_save_dir = rollout_results_dir / f"seed_{seed:03d}"
+        episode_save_dir.mkdir(exist_ok=True)
+        
+        cmd = [
+            "python", str(optomech_rollout_path),
+            "--model_path", model_path,
+            "--model_type", "sml",
+            "--num_episodes", "1",
+            "--max_episode_steps", str(rollout_steps),
+            "--seed", str(seed),
+            "--env_vars_path", str(env_config_path),
+            "--save_path", str(episode_save_dir),
+            "--save_episodes", "true"
+        ]
+        
+        try:
+            # Run rollout subprocess
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout per rollout
+                cwd=str(Path(__file__).parent.parent)
+            )
+            
+            if result.returncode != 0:
+                print(f"  ⚠️  Rollout failed for seed {seed}")
+                print(f"  stderr: {result.stderr}")
+                continue
+            
+            # Load the saved episode data
+            episode_files = list(episode_save_dir.glob("episode_*.pkl"))
+            if not episode_files:
+                print(f"  ⚠️  No episode file found for seed {seed}")
+                continue
+            
+            # Load the most recent episode file
+            episode_file = max(episode_files, key=lambda x: x.stat().st_mtime)
+            
+            with open(episode_file, 'rb') as f:
+                episode_data = pickle.load(f)
+            
+            # Extract step-by-step rewards
+            episode_rewards = episode_data.get('rewards', [])
+            
+            if len(episode_rewards) < rollout_steps:
+                print(f"  ⚠️  Episode only had {len(episode_rewards)} steps, padding with zeros")
+                # Pad with the last reward value or zeros
+                last_reward = episode_rewards[-1] if episode_rewards else 0.0
+                episode_rewards.extend([last_reward] * (rollout_steps - len(episode_rewards)))
+            elif len(episode_rewards) > rollout_steps:
+                # Truncate to requested length
+                episode_rewards = episode_rewards[:rollout_steps]
+            
+            all_episode_rewards.append(episode_rewards)
+            successful_seeds.append(seed)
+            
+            print(f"  ✅ Rollout completed: {len(episode_rewards)} steps, "
+                  f"total reward: {sum(episode_rewards):.4f}")
+            
+        except subprocess.TimeoutExpired:
+            print(f"  ⏱️  Rollout timed out for seed {seed}")
+            continue
+        except Exception as e:
+            print(f"  ❌ Error running rollout for seed {seed}: {e}")
+            continue
+    
+    if not all_episode_rewards:
+        raise RuntimeError("No successful rollouts completed")
+    
+    # Convert to numpy array for analysis
+    all_episode_rewards = np.array(all_episode_rewards)  # Shape: [num_successful, rollout_steps]
+    
+    print(f"\n📈 Analysis of {len(successful_seeds)} successful rollouts:")
+    print(f"  Successful seeds: {successful_seeds}")
+    
+    # Calculate statistics across seeds for each timestep
+    mean_rewards = np.mean(all_episode_rewards, axis=0)  # Shape: [rollout_steps]
+    std_rewards = np.std(all_episode_rewards, axis=0)    # Shape: [rollout_steps]
+    
+    # Calculate cumulative rewards for additional analysis
+    cumulative_rewards = np.cumsum(all_episode_rewards, axis=1)
+    mean_cumulative = np.mean(cumulative_rewards, axis=0)
+    std_cumulative = np.std(cumulative_rewards, axis=0)
+    
+    # Print summary statistics
+    final_mean_reward = mean_rewards[-1]
+    final_std_reward = std_rewards[-1]
+    total_mean_return = mean_cumulative[-1]
+    total_std_return = std_cumulative[-1]
+    
+    print(f"  Final step reward: {final_mean_reward:.4f} ± {final_std_reward:.4f}")
+    print(f"  Total episode return: {total_mean_return:.4f} ± {total_std_return:.4f}")
+    print(f"  Mean step reward: {np.mean(mean_rewards):.4f}")
+    print(f"  Max step reward: {np.max(mean_rewards):.4f}")
+    print(f"  Min step reward: {np.min(mean_rewards):.4f}")
+    
+    # Create comprehensive plots
+    if save_results:
+        print(f"\n📊 Creating rollout analysis plots...")
+        
+        # Create figure with subplots
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+        
+        timesteps = np.arange(rollout_steps)
+        
+        # Plot 1: Step-wise rewards with error bars
+        ax1.plot(timesteps, mean_rewards, 'b-', linewidth=2, label='Mean Reward')
+        ax1.fill_between(timesteps, 
+                        mean_rewards - std_rewards, 
+                        mean_rewards + std_rewards, 
+                        alpha=0.3, color='blue', label='±1 Std Dev')
+        ax1.set_xlabel('Timestep')
+        ax1.set_ylabel('Reward')
+        ax1.set_title('Step-wise Reward Statistics')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Cumulative returns
+        ax2.plot(timesteps, mean_cumulative, 'g-', linewidth=2, label='Mean Cumulative Return')
+        ax2.fill_between(timesteps,
+                        mean_cumulative - std_cumulative,
+                        mean_cumulative + std_cumulative,
+                        alpha=0.3, color='green', label='±1 Std Dev')
+        ax2.set_xlabel('Timestep')
+        ax2.set_ylabel('Cumulative Return')
+        ax2.set_title('Cumulative Return Statistics')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Plot 3: Reward distribution heatmap (all seeds)
+        im = ax3.imshow(all_episode_rewards, aspect='auto', cmap='viridis', interpolation='nearest')
+        ax3.set_xlabel('Timestep')
+        ax3.set_ylabel('Seed')
+        ax3.set_title('Reward Heatmap Across All Seeds')
+        plt.colorbar(im, ax=ax3, label='Reward')
+        
+        # Plot 4: Final return distribution
+        final_returns = cumulative_rewards[:, -1]
+        ax4.hist(final_returns, bins=min(20, len(final_returns)), alpha=0.7, edgecolor='black')
+        ax4.axvline(np.mean(final_returns), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(final_returns):.2f}')
+        ax4.axvline(np.median(final_returns), color='orange', linestyle='--', linewidth=2, label=f'Median: {np.median(final_returns):.2f}')
+        ax4.set_xlabel('Total Episode Return')
+        ax4.set_ylabel('Frequency')
+        ax4.set_title('Distribution of Total Episode Returns')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save the plot
+        plot_path = rollout_results_dir / "rollout_analysis.png"
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"  📈 Saved analysis plot: {plot_path}")
+        
+        # Save the raw data
+        results_data = {
+            'successful_seeds': successful_seeds,
+            'all_episode_rewards': all_episode_rewards.tolist(),
+            'mean_rewards': mean_rewards.tolist(),
+            'std_rewards': std_rewards.tolist(),
+            'mean_cumulative': mean_cumulative.tolist(),
+            'std_cumulative': std_cumulative.tolist(),
+            'metadata': {
+                'model_path': model_path,
+                'dataset_path': dataset_path,
+                'num_seeds': num_seeds,
+                'rollout_steps': rollout_steps,
+                'successful_rollouts': len(successful_seeds),
+                'final_mean_reward': float(final_mean_reward),
+                'final_std_reward': float(final_std_reward),
+                'total_mean_return': float(total_mean_return),
+                'total_std_return': float(total_std_return),
+                'mean_step_reward': float(np.mean(mean_rewards)),
+                'max_step_reward': float(np.max(mean_rewards)),
+                'min_step_reward': float(np.min(mean_rewards))
+            }
+        }
+        
+        # Save results as JSON
+        results_path = rollout_results_dir / "rollout_results.json"
+        with open(results_path, 'w') as f:
+            json.dump(results_data, f, indent=2)
+        print(f"  💾 Saved results data: {results_path}")
+        
+        # Save results as pickle for easy loading
+        pickle_path = rollout_results_dir / "rollout_results.pkl"
+        with open(pickle_path, 'wb') as f:
+            pickle.dump(results_data, f)
+        print(f"  💾 Saved results pickle: {pickle_path}")
+        
+        plt.close()
+    
+    # Prepare metadata for return
+    metadata = {
+        'model_path': model_path,
+        'dataset_path': dataset_path,
+        'successful_seeds': successful_seeds,
+        'num_successful_rollouts': len(successful_seeds),
+        'rollout_steps': rollout_steps,
+        'final_mean_reward': float(final_mean_reward),
+        'final_std_reward': float(final_std_reward),
+        'total_mean_return': float(total_mean_return),
+        'total_std_return': float(total_std_return),
+        'output_dir': str(rollout_results_dir)
+    }
+    
+    print(f"\n🎉 Rollout instrumentation completed!")
+    print(f"📁 Results saved to: {rollout_results_dir}")
+    
+    return mean_rewards, std_rewards, metadata
+
+
 def main():
     """Main training function"""
     parser = argparse.ArgumentParser(description="Train SML model on Optomech dataset")
@@ -1083,6 +1448,16 @@ def main():
                        help="Hidden layer size for VanillaConv MLP")
     parser.add_argument("--run_name", type=str, default=None,
                        help="Optional run name to append to UUID-based directory name")
+    
+    # Rollout instrumentation arguments
+    parser.add_argument("--enable_rollouts", action="store_true",
+                       help="Enable rollout instrumentation after training")
+    parser.add_argument("--rollout_seeds", type=int, default=32,
+                       help="Number of random seeds for rollout evaluation")
+    parser.add_argument("--rollout_steps", type=int, default=250,
+                       help="Number of steps per rollout episode")
+    parser.add_argument("--rollout_model_path", type=str, default=None,
+                       help="Specific model path for rollouts (default: use most recent)")
     
     args = parser.parse_args()
     
@@ -1461,6 +1836,51 @@ def main():
     tb_writer.close()
     
     print("\n🎉 Training complete!")
+    
+    # Perform rollout instrumentation if enabled
+    if args.enable_rollouts:
+        print("\n🎯 Starting post-training rollout instrumentation...")
+        try:
+            # Use the current model path if not specified
+            rollout_model_path = args.rollout_model_path or config.model_save_path
+            
+            mean_rewards, std_rewards, rollout_metadata = perform_rollout_instrumentation(
+                dataset_path=config.dataset_path,
+                model_path=rollout_model_path,
+                num_seeds=args.rollout_seeds,
+                rollout_steps=args.rollout_steps,
+                runs_dir=args.log_dir,
+                save_results=True,
+                output_dir=str(log_dir)
+            )
+            
+            # Log rollout results to TensorBoard
+            tb_writer = SummaryWriter(log_dir=str(log_dir))
+            
+            # Log rollout summary statistics
+            tb_writer.add_scalar('Rollout/Final_Mean_Reward', rollout_metadata['final_mean_reward'], config.num_epochs)
+            tb_writer.add_scalar('Rollout/Final_Std_Reward', rollout_metadata['final_std_reward'], config.num_epochs)
+            tb_writer.add_scalar('Rollout/Total_Mean_Return', rollout_metadata['total_mean_return'], config.num_epochs)
+            tb_writer.add_scalar('Rollout/Total_Std_Return', rollout_metadata['total_std_return'], config.num_epochs)
+            tb_writer.add_scalar('Rollout/Successful_Seeds', rollout_metadata['num_successful_rollouts'], config.num_epochs)
+            
+            # Log the reward timeseries
+            for step, (mean_r, std_r) in enumerate(zip(mean_rewards, std_rewards)):
+                tb_writer.add_scalar('Rollout_Timeseries/Mean_Reward', mean_r, step)
+                tb_writer.add_scalar('Rollout_Timeseries/Std_Reward', std_r, step)
+            
+            tb_writer.close()
+            
+            print(f"✅ Rollout instrumentation completed!")
+            print(f"📊 Results: {rollout_metadata['total_mean_return']:.4f} ± {rollout_metadata['total_std_return']:.4f}")
+            print(f"📁 Detailed results saved to: {rollout_metadata['output_dir']}")
+            
+        except Exception as e:
+            print(f"❌ Rollout instrumentation failed: {e}")
+            print("Training results are still valid and saved.")
+    
+    print(f"\n📁 All results saved to: {log_dir}")
+    print("🎉 Script completed successfully!")
 
 
 if __name__ == "__main__":
