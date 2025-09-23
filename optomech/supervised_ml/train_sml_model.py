@@ -1125,7 +1125,6 @@ def load_dataset_config(dataset_path: str) -> Dict:
 
 
 def perform_rollout_instrumentation(
-    dataset_path: str,
     model_path: str = None,
     num_seeds: int = 32,
     rollout_steps: int = 250,
@@ -1137,7 +1136,6 @@ def perform_rollout_instrumentation(
     Perform rollout instrumentation using the most recent model.
     
     Args:
-        dataset_path: Path to dataset (used for environment config)
         model_path: Path to model (if None, finds most recent)
         num_seeds: Number of random seeds to evaluate
         rollout_steps: Number of steps per rollout
@@ -1161,8 +1159,22 @@ def perform_rollout_instrumentation(
         if output_dir is None:
             output_dir = run_dir
     
-    # Load dataset configuration for environment setup
-    dataset_config = load_dataset_config(dataset_path)
+    # Load environment configuration from sml_job_config.json
+    sml_config_path = Path("sml_job_config.json")
+    if sml_config_path.exists():
+        print(f"📋 Loading environment config from: {sml_config_path}")
+        with open(sml_config_path, 'r') as f:
+            dataset_config = json.load(f)
+    else:
+        print("⚠️  sml_job_config.json not found, using default environment settings")
+        dataset_config = {
+            "env_id": "optomech-v1",
+            "object_type": "single", 
+            "aperture_type": "elf",
+            "reward_function": "align",
+            "observation_mode": "image_only",
+            "focal_plane_image_size_pixels": 256
+        }
     
     # Create output directory for results
     output_path = Path(output_dir)
@@ -1371,7 +1383,6 @@ def perform_rollout_instrumentation(
             'std_cumulative': std_cumulative.tolist(),
             'metadata': {
                 'model_path': model_path,
-                'dataset_path': dataset_path,
                 'num_seeds': num_seeds,
                 'rollout_steps': rollout_steps,
                 'successful_rollouts': len(successful_seeds),
@@ -1402,7 +1413,6 @@ def perform_rollout_instrumentation(
     # Prepare metadata for return
     metadata = {
         'model_path': model_path,
-        'dataset_path': dataset_path,
         'successful_seeds': successful_seeds,
         'num_successful_rollouts': len(successful_seeds),
         'rollout_steps': rollout_steps,
@@ -1768,7 +1778,6 @@ def main():
                 rollout_model_path = args.rollout_model_path or config.model_save_path
                 
                 mean_rewards, std_rewards, rollout_metadata = perform_rollout_instrumentation(
-                    dataset_path=config.dataset_path,
                     model_path=rollout_model_path,
                     num_seeds=args.rollout_seeds,
                     rollout_steps=args.rollout_steps,
@@ -1893,7 +1902,6 @@ def main():
             rollout_model_path = args.rollout_model_path or config.model_save_path
             
             mean_rewards, std_rewards, rollout_metadata = perform_rollout_instrumentation(
-                dataset_path=config.dataset_path,
                 model_path=rollout_model_path,
                 num_seeds=args.rollout_seeds,
                 rollout_steps=args.rollout_steps,
