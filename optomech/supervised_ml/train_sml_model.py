@@ -1179,7 +1179,7 @@ def perform_rollout_instrumentation(
     # Create output directory for results
     output_path = Path(output_dir)
     rollout_results_dir = output_path / "rollout_results"
-    rollout_results_dir.mkdir(exist_ok=True)
+    rollout_results_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"🎲 Running {num_seeds} rollouts with {rollout_steps} steps each")
     print(f"📊 Results will be saved to: {rollout_results_dir}")
