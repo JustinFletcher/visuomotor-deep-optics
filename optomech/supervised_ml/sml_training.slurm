@@ -6,7 +6,7 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./sml_1m.out
 #SBATCH --error=./sml_1m.err
-#SBATCH --gres=gpu:A100-SXM4:8
+#SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=3-00:00:00               # Maximum runtime (24 hours)
 
 
@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--device cuda:0 --max_examples 1_000_000 --run_name sml_resnet_gn_1m_smx4_solo"
+    "--device cuda:0 --max_examples 1_000_000 --run_name sml_resnet_gn_1m_pcie_solo"
 )
 
 # Run all variants in parallel
