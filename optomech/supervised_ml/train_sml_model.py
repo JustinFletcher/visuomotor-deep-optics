@@ -1250,6 +1250,8 @@ def perform_rollout_instrumentation(
     
     # Create environment arguments from config
     env_args = Namespace()
+    
+    # Core required arguments from config
     env_args.env_id = dataset_config["env_id"]
     env_args.object_type = dataset_config["object_type"]
     env_args.aperture_type = dataset_config["aperture_type"]
@@ -1258,14 +1260,40 @@ def perform_rollout_instrumentation(
     env_args.focal_plane_image_size_pixels = dataset_config["focal_plane_image_size_pixels"]
     env_args.max_episode_steps = rollout_steps
     env_args.num_envs = 1
-    env_args.silence = True
     
-    # Register optomech environment
-    gym.envs.registration.register(
-        id='optomech-v1',
-        entry_point='optomech.optomech:OptomechEnv',
-        max_episode_steps=rollout_steps,
-    )
+    # Parse environment_flags from config and apply them
+    for flag in dataset_config.get("environment_flags", []):
+        if "=" in flag:
+            key, value = flag.replace("--", "").split("=", 1)
+            # Convert value to appropriate type
+            if value.lower() in ["true", "false"]:
+                value = value.lower() == "true"
+            elif value.isdigit():
+                value = int(value)
+            elif "." in value and value.replace(".", "").isdigit():
+                value = float(value)
+            setattr(env_args, key, value)
+        else:
+            # Boolean flag without value (e.g., --command_secondaries)
+            key = flag.replace("--", "")
+            setattr(env_args, key, True)
+    
+    # Only add minimal required arguments that don't have defaults
+    if not hasattr(env_args, 'report_time'):
+        env_args.report_time = False
+    if not hasattr(env_args, 'silence'):
+        env_args.silence = True
+    
+    # Register optomech environment (only if not already registered)
+    try:
+        gym.envs.registration.register(
+            id='optomech-v1',
+            entry_point='optomech.optomech:OptomechEnv',
+            max_episode_steps=rollout_steps,
+        )
+    except gym.error.Error:
+        # Environment already registered, that's fine
+        pass
     
     # Determine device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
