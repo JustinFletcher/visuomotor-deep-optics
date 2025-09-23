@@ -19,8 +19,6 @@ from dataclasses import dataclass
 import pickle
 
 import matplotlib.pyplot as plt
-import subprocess
-import json
 from pathlib import Path
 from typing import List, Tuple, Dict
 from dataclasses import dataclass
@@ -1149,6 +1147,26 @@ def perform_rollout_instrumentation(
     print("\n🎯 Starting Rollout Instrumentation")
     print("=" * 50)
     
+    # Import rollout functionality directly
+    try:
+        from optomech.optomech_rollout import UniversalRolloutEngine, create_model_interface
+        from argparse import Namespace
+        import gymnasium as gym
+    except ImportError as e:
+        print(f"❌ Failed to import rollout dependencies: {e}")
+        # Return empty results if imports fail
+        return np.array([]), np.array([]), {
+            'model_path': model_path or "unknown",
+            'successful_seeds': [],
+            'num_successful_rollouts': 0,
+            'rollout_steps': rollout_steps,
+            'final_mean_reward': 0.0,
+            'final_std_reward': 0.0,
+            'total_mean_return': 0.0,
+            'total_std_return': 0.0,
+            'output_dir': str(output_dir or "unknown")
+        }
+    
     # Find model if not provided
     if model_path is None:
         model_path, run_dir = find_most_recent_model(runs_dir)
@@ -1225,74 +1243,97 @@ def perform_rollout_instrumentation(
     
     print(f"💾 Saved rollout environment config to: {env_config_path}")
     
+    # Create environment arguments from config
+    env_args = Namespace()
+    env_args.env_id = dataset_config["env_id"]
+    env_args.object_type = dataset_config["object_type"]
+    env_args.aperture_type = dataset_config["aperture_type"]
+    env_args.reward_function = dataset_config["reward_function"]
+    env_args.observation_mode = dataset_config["observation_mode"]
+    env_args.focal_plane_image_size_pixels = dataset_config["focal_plane_image_size_pixels"]
+    env_args.max_episode_steps = rollout_steps
+    env_args.num_envs = 1
+    env_args.silence = True
+    
+    # Register optomech environment
+    gym.envs.registration.register(
+        id='optomech-v1',
+        entry_point='optomech.optomech:OptomechEnv',
+        max_episode_steps=rollout_steps,
+    )
+    
+    # Determine device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🖥️ Using device: {device}")
+    
+    # Create model interface
+    print(f"📦 Loading model from: {model_path}")
+    try:
+        model_interface = create_model_interface(
+            model_path=model_path,
+            model_type="sml",  # Supervised ML model
+            device=device
+        )
+        print(f"✅ Model loaded successfully: {model_interface.__class__.__name__}")
+    except Exception as e:
+        print(f"❌ Failed to load model: {e}")
+        # Return empty results if model loading fails
+        return np.array([]), np.array([]), {
+            'model_path': model_path,
+            'successful_seeds': [],
+            'num_successful_rollouts': 0,
+            'rollout_steps': rollout_steps,
+            'final_mean_reward': 0.0,
+            'final_std_reward': 0.0,
+            'total_mean_return': 0.0,
+            'total_std_return': 0.0,
+            'output_dir': str(rollout_results_dir)
+        }
+    
+    # Create rollout engine
+    rollout_engine = UniversalRolloutEngine(
+        model_interface=model_interface,
+        env_args=env_args
+    )
+    
     # Run rollouts for each seed
     for seed in range(num_seeds):
         print(f"\n🔄 Running rollout {seed + 1}/{num_seeds} (seed={seed})")
         
-        # Prepare rollout command
-        episode_save_dir = rollout_results_dir / f"seed_{seed:03d}"
-        episode_save_dir.mkdir(exist_ok=True)
-        
-        cmd = [
-            "python", str(optomech_rollout_path),
-            "--model_path", model_path,
-            "--model_type", "sml",
-            "--num_episodes", "1",
-            "--max_episode_steps", str(rollout_steps),
-            "--seed", str(seed),
-            "--env_vars_path", str(env_config_path),
-            "--save_path", str(episode_save_dir),
-            "--save_episodes", "true"
-        ]
-        
         try:
-            # Run rollout subprocess
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,  # 5 minute timeout per rollout
-                cwd=str(Path(__file__).parent.parent)
+            # Set random seed for reproducibility
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            
+            # Run rollout directly using the engine
+            episodic_returns, step_wise_rewards = rollout_engine.run_rollout(
+                num_episodes=1,
+                exploration_noise=0.0,
+                save_path=None,
+                save_episodes=False,
+                random_policy=False
             )
             
-            if result.returncode != 0:
-                print(f"  ⚠️  Rollout failed for seed {seed}")
-                print(f"  stderr: {result.stderr}")
-                continue
-            
-            # Load the saved episode data
-            episode_files = list(episode_save_dir.glob("episode_*.pkl"))
-            if not episode_files:
-                print(f"  ⚠️  No episode file found for seed {seed}")
-                continue
-            
-            # Load the most recent episode file
-            episode_file = max(episode_files, key=lambda x: x.stat().st_mtime)
-            
-            with open(episode_file, 'rb') as f:
-                episode_data = pickle.load(f)
-            
-            # Extract step-by-step rewards
-            episode_rewards = episode_data.get('rewards', [])
-            
-            if len(episode_rewards) < rollout_steps:
-                print(f"  ⚠️  Episode only had {len(episode_rewards)} steps, padding with zeros")
-                # Pad with the last reward value or zeros
-                last_reward = episode_rewards[-1] if episode_rewards else 0.0
-                episode_rewards.extend([last_reward] * (rollout_steps - len(episode_rewards)))
-            elif len(episode_rewards) > rollout_steps:
-                # Truncate to requested length
-                episode_rewards = episode_rewards[:rollout_steps]
-            
-            all_episode_rewards.append(episode_rewards)
-            successful_seeds.append(seed)
-            
-            print(f"  ✅ Rollout completed: {len(episode_rewards)} steps, "
-                  f"total reward: {sum(episode_rewards):.4f}")
-            
-        except subprocess.TimeoutExpired:
-            print(f"  ⏱️  Rollout timed out for seed {seed}")
-            continue
+            if len(episodic_returns) > 0 and len(step_wise_rewards) > 0:
+                episode_rewards = step_wise_rewards[0]  # Get first (and only) episode
+                
+                # Pad or truncate to exact rollout_steps length
+                if len(episode_rewards) < rollout_steps:
+                    # Pad with the last reward value
+                    last_reward = episode_rewards[-1] if episode_rewards else 0.0
+                    episode_rewards.extend([last_reward] * (rollout_steps - len(episode_rewards)))
+                elif len(episode_rewards) > rollout_steps:
+                    # Truncate to exact length
+                    episode_rewards = episode_rewards[:rollout_steps]
+                
+                all_episode_rewards.append(episode_rewards)
+                successful_seeds.append(seed)
+                
+                print(f"  ✅ Rollout completed: {len(episode_rewards)} steps, "
+                      f"total reward: {sum(episode_rewards):.4f}")
+            else:
+                print(f"  ⚠️  Rollout failed for seed {seed} - no rewards returned")
+                
         except Exception as e:
             print(f"  ❌ Error running rollout for seed {seed}: {e}")
             continue
