@@ -1283,6 +1283,8 @@ def perform_rollout_instrumentation(
         env_args.report_time = False
     if not hasattr(env_args, 'silence'):
         env_args.silence = True
+    if not hasattr(env_args, 'render_dpi'):
+        env_args.render_dpi = 100.0
     
     # Register optomech environment (only if not already registered)
     try:
