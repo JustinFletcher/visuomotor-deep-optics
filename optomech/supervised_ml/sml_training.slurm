@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--device cuda:0 --max_examples 100_000 --run_name sml_resnet_gn_100k_smx4_solo"
+    "--device cuda:0 --max_examples 1_000_000 --run_name sml_resnet_gn_1m_smx4_solo"
 )
 
 # Run all variants in parallel
@@ -30,6 +30,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_epochs 10000 \
         --log_dir ./runs/ \
         --no_dataparallel \
+        --enable_rollouts \
         $VARIANT &  # Run in background
 done
 
