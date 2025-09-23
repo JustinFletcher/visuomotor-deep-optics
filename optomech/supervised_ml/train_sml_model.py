@@ -1248,20 +1248,85 @@ def perform_rollout_instrumentation(
     
     print(f"💾 Saved rollout environment config to: {env_config_path}")
     
-    # Create environment arguments from config
+    # Create environment arguments from config with comprehensive defaults
     env_args = Namespace()
     
-    # Core required arguments from config
+    # Set all default values based on the Args class from build_optomech_dataset.py
+    # This ensures we have all required attributes with sensible defaults
+    default_values = {
+        # Core environment settings
+        'env_id': 'optomech-v1',
+        'total_timesteps': 100_000_000,
+        'action_type': 'none',
+        'object_type': 'single',
+        'aperture_type': 'elf',
+        'max_episode_steps': rollout_steps,
+        'num_envs': 1,
+        'observation_mode': 'image_only',
+        'focal_plane_image_size_pixels': 256,
+        'observation_window_size': 2,
+        'num_tensioners': 0,
+        'num_atmosphere_layers': 0,
+        'optomech_version': 'test',
+        'reward_function': 'strehl',
+        'silence': True,  # Keep quiet during rollouts
+        
+        # Control settings
+        'incremental_control': False,
+        'command_tensioners': False,
+        'command_secondaries': False,
+        'command_tip_tilt': False,
+        'command_dm': False,
+        'discrete_control': False,
+        'discrete_control_steps': 128,
+        
+        # Rendering and logging
+        'render': False,
+        'render_frequency': 1,
+        'render_dpi': 100.0,
+        'record_env_state_info': False,
+        'write_env_state_info': False,
+        'write_state_interval': 1,
+        'state_info_save_dir': './tmp/',
+        'report_time': False,
+        
+        # Simulation timing
+        'ao_loop_active': False,
+        'ao_interval_ms': 1.0,
+        'control_interval_ms': 2.0,
+        'frame_interval_ms': 4.0,
+        'decision_interval_ms': 8.0,
+        
+        # Optomech modeling toggles
+        'init_differential_motion': False,
+        'simulate_differential_motion': False,
+        'randomize_dm': False,
+        'model_wind_diff_motion': False,
+        'model_gravity_diff_motion': False,
+        'model_temp_diff_motion': False,
+        
+        # Hardware
+        'gpu_list': '0',
+        
+        # Extended object parameters
+        'extended_object_image_file': '.\\resources\\sample_image.png',
+        'extended_object_distance': None,
+        'extended_object_extent': None,
+    }
+    
+    # Apply all defaults first
+    for key, value in default_values.items():
+        setattr(env_args, key, value)
+    
+    # Override with values from config
     env_args.env_id = dataset_config["env_id"]
     env_args.object_type = dataset_config["object_type"]
     env_args.aperture_type = dataset_config["aperture_type"]
     env_args.reward_function = dataset_config["reward_function"]
     env_args.observation_mode = dataset_config["observation_mode"]
     env_args.focal_plane_image_size_pixels = dataset_config["focal_plane_image_size_pixels"]
-    env_args.max_episode_steps = rollout_steps
-    env_args.num_envs = 1
     
-    # Parse environment_flags from config and apply them
+    # Parse environment_flags from config and apply them (these take highest precedence)
     for flag in dataset_config.get("environment_flags", []):
         if "=" in flag:
             key, value = flag.replace("--", "").split("=", 1)
@@ -1277,14 +1342,6 @@ def perform_rollout_instrumentation(
             # Boolean flag without value (e.g., --command_secondaries)
             key = flag.replace("--", "")
             setattr(env_args, key, True)
-    
-    # Only add minimal required arguments that don't have defaults
-    if not hasattr(env_args, 'report_time'):
-        env_args.report_time = False
-    if not hasattr(env_args, 'silence'):
-        env_args.silence = True
-    if not hasattr(env_args, 'render_dpi'):
-        env_args.render_dpi = 100.0
     
     # Register optomech environment (only if not already registered)
     try:
