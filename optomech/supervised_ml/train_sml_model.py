@@ -1149,12 +1149,12 @@ def perform_rollout_instrumentation(
     
     # Import rollout functionality directly
     try:
-        # Add parent directory to path to import optomech_rollout
+        # Add the parent directory to the path for imports
         current_dir = Path(__file__).parent
-        parent_dir = current_dir.parent
-        sys.path.insert(0, str(parent_dir))
+        project_root = current_dir.parent.parent
+        sys.path.insert(0, str(project_root))
         
-        from optomech_rollout import UniversalRolloutEngine, create_model_interface
+        from optomech.optomech_rollout import UniversalRolloutEngine, create_model_interface
         from argparse import Namespace
         import gymnasium as gym
     except ImportError as e:
@@ -1183,7 +1183,7 @@ def perform_rollout_instrumentation(
             output_dir = run_dir
     
     # Load environment configuration from sml_job_config.json
-    sml_config_path = Path("sml_job_config.json")
+    sml_config_path = Path("optomech/supervised_ml/sml_job_config.json")
     if sml_config_path.exists():
         print(f"📋 Loading environment config from: {sml_config_path}")
         with open(sml_config_path, 'r') as f:
@@ -1199,6 +1199,7 @@ def perform_rollout_instrumentation(
             "focal_plane_image_size_pixels": config_data.get("focal_plane_image_size_pixels", 256),
             "environment_flags": config_data.get("environment_flags", [])
         }
+        print(f"🔍 Environment flags from config: {dataset_config['environment_flags']}")
     else:
         print("⚠️  sml_job_config.json not found, using default environment settings")
         dataset_config = {
@@ -1337,11 +1338,20 @@ def perform_rollout_instrumentation(
                 value = int(value)
             elif "." in value and value.replace(".", "").isdigit():
                 value = float(value)
+            print(f"🔧 Setting env_args.{key} = {value} (type: {type(value).__name__})")
             setattr(env_args, key, value)
         else:
             # Boolean flag without value (e.g., --command_secondaries)
             key = flag.replace("--", "")
+            print(f"🔧 Setting env_args.{key} = True")
             setattr(env_args, key, True)
+    
+    # Debug: Print the critical interval values
+    print(f"🔍 Final interval values:")
+    print(f"  ao_interval_ms: {getattr(env_args, 'ao_interval_ms', 'NOT_SET')}")
+    print(f"  control_interval_ms: {getattr(env_args, 'control_interval_ms', 'NOT_SET')}")
+    print(f"  frame_interval_ms: {getattr(env_args, 'frame_interval_ms', 'NOT_SET')}")
+    print(f"  decision_interval_ms: {getattr(env_args, 'decision_interval_ms', 'NOT_SET')}")
     
     # Register optomech environment (only if not already registered)
     try:
@@ -1718,7 +1728,7 @@ def main():
     
     input_channels = sample_obs.shape[0] if len(sample_obs.shape) == 3 else 1
     model = create_model(args.model_arch, input_channels=input_channels, action_dim=action_dim, 
-                        channel_scale=args.channel_scale, mlp_scale=args.mlp_scale).to('cuda')
+                        channel_scale=args.channel_scale, mlp_scale=args.mlp_scale).to(device)
     
     # Enable DataParallel for multi-GPU training
     if gpu_count > 1 and device.type == "cuda" and not args.no_dataparallel:
