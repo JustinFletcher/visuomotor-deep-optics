@@ -12,6 +12,7 @@ import argparse
 from torch.utils.tensorboard import SummaryWriter
 import uuid
 import time
+import shutil
 from pathlib import Path
 from typing import List, Tuple, Dict
 from dataclasses import dataclass
@@ -1198,7 +1199,7 @@ def perform_rollout_instrumentation(
     with open(env_config_path, 'w') as f:
         json.dump(rollout_env_config, f, indent=2)
     
-    print(f"💾 Saved rollout environment config to : {env_config_path}")
+    print(f"💾 Saved rollout environment config to: {env_config_path}")
     
     # Run rollouts for each seed
     for seed in range(num_seeds):
@@ -1743,7 +1744,8 @@ def main():
             print(f"  GPU Memory: {allocated:.1f}/{cached:.1f}GB")
         
         # Save best model
-        if val_loss < best_val_loss:
+        is_new_best = val_loss < best_val_loss
+        if is_new_best:
             best_val_loss = val_loss
             if config.save_model:
                 torch.save({
@@ -1757,6 +1759,52 @@ def main():
                     'config': config
                 }, config.model_save_path)
                 print(f"  ✅ New best model saved at {config.model_save_path}!")
+        
+        # Perform rollout instrumentation if enabled
+        if args.enable_rollouts:
+            print(f"  🎯 Running epoch {epoch+1} rollout instrumentation...")
+            try:
+                # Use the current best model path if not specified
+                rollout_model_path = args.rollout_model_path or config.model_save_path
+                
+                mean_rewards, std_rewards, rollout_metadata = perform_rollout_instrumentation(
+                    dataset_path=config.dataset_path,
+                    model_path=rollout_model_path,
+                    num_seeds=args.rollout_seeds,
+                    rollout_steps=args.rollout_steps,
+                    runs_dir=args.log_dir,
+                    save_results=True,
+                    output_dir=str(log_dir / f"rollouts_epoch_{epoch+1}")
+                )
+                
+                # Log rollout results to TensorBoard for this epoch
+                tb_writer.add_scalar('Rollout/Mean_Episode_Reward', rollout_metadata['total_mean_return'], epoch)
+                tb_writer.add_scalar('Rollout/Std_Episode_Reward', rollout_metadata['total_std_return'], epoch)
+                tb_writer.add_scalar('Rollout/Final_Step_Mean_Reward', rollout_metadata['final_mean_reward'], epoch)
+                tb_writer.add_scalar('Rollout/Final_Step_Std_Reward', rollout_metadata['final_std_reward'], epoch)
+                tb_writer.add_scalar('Rollout/Successful_Seeds', rollout_metadata['num_successful_rollouts'], epoch)
+                
+                # If this is the best model so far, save rollout plots separately
+                if is_new_best:
+                    best_rollout_dir = log_dir / "best_model_rollouts"
+                    best_rollout_dir.mkdir(exist_ok=True)
+                    
+                    # Copy the rollout plots to the best model directory
+                    rollout_dir = Path(rollout_metadata['output_dir'])
+                    
+                    for plot_file in rollout_dir.glob("*.png"):
+                        shutil.copy2(plot_file, best_rollout_dir / f"best_{plot_file.name}")
+                    
+                    for data_file in rollout_dir.glob("*.json"):
+                        shutil.copy2(data_file, best_rollout_dir / f"best_{data_file.name}")
+                    
+                    print(f"  📊 Best model rollout plots saved to: {best_rollout_dir}")
+                
+                print(f"  ✅ Rollout completed! Episode reward: {rollout_metadata['total_mean_return']:.4f} ± {rollout_metadata['total_std_return']:.4f}")
+                
+            except Exception as e:
+                print(f"  ❌ Rollout instrumentation failed: {e}")
+                print("  Training will continue normally.")
         
         # Save training curves periodically (every 10 epochs or on best model)
         if (epoch + 1) % 10 == 0 or val_loss < best_val_loss:
