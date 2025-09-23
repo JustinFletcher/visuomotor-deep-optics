@@ -1149,7 +1149,12 @@ def perform_rollout_instrumentation(
     
     # Import rollout functionality directly
     try:
-        from optomech.optomech_rollout import UniversalRolloutEngine, create_model_interface
+        # Add parent directory to path to import optomech_rollout
+        current_dir = Path(__file__).parent
+        parent_dir = current_dir.parent
+        sys.path.insert(0, str(parent_dir))
+        
+        from optomech_rollout import UniversalRolloutEngine, create_model_interface
         from argparse import Namespace
         import gymnasium as gym
     except ImportError as e:
