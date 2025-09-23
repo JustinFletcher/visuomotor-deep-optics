@@ -1164,7 +1164,18 @@ def perform_rollout_instrumentation(
     if sml_config_path.exists():
         print(f"📋 Loading environment config from: {sml_config_path}")
         with open(sml_config_path, 'r') as f:
-            dataset_config = json.load(f)
+            config_data = json.load(f)
+        
+        # Extract environment configuration
+        dataset_config = {
+            "env_id": config_data.get("env_id", "optomech-v1"),
+            "object_type": config_data.get("object_type", "single"),
+            "aperture_type": config_data.get("aperture_type", "elf"),
+            "reward_function": config_data.get("reward_function", "align"),
+            "observation_mode": config_data.get("observation_mode", "image_only"),
+            "focal_plane_image_size_pixels": config_data.get("focal_plane_image_size_pixels", 256),
+            "environment_flags": config_data.get("environment_flags", [])
+        }
     else:
         print("⚠️  sml_job_config.json not found, using default environment settings")
         dataset_config = {
@@ -1173,7 +1184,8 @@ def perform_rollout_instrumentation(
             "aperture_type": "elf",
             "reward_function": "align",
             "observation_mode": "image_only",
-            "focal_plane_image_size_pixels": 256
+            "focal_plane_image_size_pixels": 256,
+            "environment_flags": []
         }
     
     # Create output directory for results
