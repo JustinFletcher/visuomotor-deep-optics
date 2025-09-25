@@ -214,7 +214,7 @@ class SMLResNetGN(nn.Module):
         self.input_crop_size = input_crop_size
         # Input group default
         self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.gn1 = nn.GroupNorm(num_groups=8, num_channels=64)  # Use 8 groups for 64 channels
+        self.gn1 = nn.GroupNorm(num_groups=16, num_channels=64)  # Use 16 groups for 64 channels
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         # Input group default
@@ -227,10 +227,10 @@ class SMLResNetGN(nn.Module):
         self.layer1 = self._make_layer(64, 64, blocks=2, stride=1)
         self.layer2 = self._make_layer(64, 128, blocks=2, stride=1)
         self.layer3 = self._make_layer(128, 256, blocks=2, stride=2)
-        self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
+        # self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512, action_dim)  # Changed from 256 to 512
+        self.fc = nn.Linear(256, action_dim)  # Changed from 256 to 512
         self.tanh = nn.Tanh()
 
     def _make_layer(self, in_planes, planes, blocks, stride=1):
@@ -258,7 +258,7 @@ class SMLResNetGN(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        x = self.layer4(x)  # Added layer4 forward pass
+        # x = self.layer4(x)  # Added layer4 forward pass
         
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
@@ -643,7 +643,7 @@ def load_single_episode(episode_file: Path) -> List[Tuple[np.ndarray, np.ndarray
     return pairs
 
 
-def load_dataset_pairs_sequential(dataset_path: str, use_cache: bool = True, max_examples: int = None) -> List[Tuple[np.ndarray, np.ndarray]]:
+def load_dataset_pairs_sequential(dataset_path: str, use_cache: bool = True, max_examples: int = None, cache_data: bool = False) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
     Load dataset with sequential processing, supporting HDF5, NPZ, and JSON formats
     
@@ -651,22 +651,35 @@ def load_dataset_pairs_sequential(dataset_path: str, use_cache: bool = True, max
         dataset_path: Path to dataset directory
         use_cache: Whether to use cached data if available
         max_examples: Maximum number of examples to load (stops early if specified)
+        cache_data: Force caching even when max_examples is set
         
     Returns:
         List of (observation, perfect_action) tuples
     """
     dataset_path = Path(dataset_path)
     
-    # Skip cache when limiting examples
-    cache_file = dataset_path / "processed_pairs_cache.pkl"
-    if use_cache and max_examples is None and cache_file.exists():
-        print("📦 Loading cached data...")
+    # Create different cache files based on max_examples to avoid conflicts
+    if max_examples is not None:
+        cache_file = dataset_path / f"processed_pairs_cache_{max_examples}.pkl"
+    else:
+        cache_file = dataset_path / "processed_pairs_cache.pkl"
+    
+    # Load from cache if available and caching is enabled
+    if use_cache and cache_file.exists():
+        print(f"📦 Loading cached data from {cache_file.name}...")
         try:
             start_time = time.time()
             with open(cache_file, 'rb') as f:
-                pairs = pickle.load(f)
+                cached_pairs = pickle.load(f)
             load_time = time.time() - start_time
-            print(f"✅ Loaded {len(pairs)} cached pairs in {load_time:.1f}s")
+            
+            # If we have max_examples, slice the cached data appropriately
+            if max_examples is not None:
+                pairs = cached_pairs[:max_examples]
+                print(f"✅ Loaded {len(pairs)} pairs (limited from {len(cached_pairs)} cached) in {load_time:.1f}s")
+            else:
+                pairs = cached_pairs
+                print(f"✅ Loaded {len(pairs)} cached pairs in {load_time:.1f}s")
             return pairs
         except Exception as e:
             print(f"Warning: Cache loading failed: {e}, loading fresh...")
@@ -754,10 +767,11 @@ def load_dataset_pairs_sequential(dataset_path: str, use_cache: bool = True, max
         print(f"⏱️  Loading time: {load_time:.1f}s")
         print(f"📊 Speed: {len(pairs)/load_time:.1f} pairs/second")
     
-    # Cache results only if we loaded the full dataset
-    if use_cache and len(pairs) > 0 and max_examples is None:
+    # Cache results if caching is enabled and we have data
+    should_cache = use_cache and len(pairs) > 0 and (max_examples is None or cache_data)
+    if should_cache:
         try:
-            print("💾 Caching processed data...")
+            print(f"💾 Caching processed data to {cache_file.name}...")
             cache_start = time.time()
             with open(cache_file, 'wb') as f:
                 pickle.dump(pairs, f)
@@ -769,18 +783,19 @@ def load_dataset_pairs_sequential(dataset_path: str, use_cache: bool = True, max
     return pairs
 
 
-def load_dataset_pairs(dataset_path: str) -> List[Tuple[np.ndarray, np.ndarray]]:
+def load_dataset_pairs(dataset_path: str, cache_data: bool = False) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
     Load all observation-action pairs from dataset directory.
     
     Args:
         dataset_path: Path to dataset directory
+        cache_data: Force caching even when max_examples is set
         
     Returns:
         List of (observation, perfect_action) tuples
     """
     # Use the sequential loading (simple and reliable)
-    return load_dataset_pairs_sequential(dataset_path, use_cache=True)
+    return load_dataset_pairs_sequential(dataset_path, use_cache=True, cache_data=cache_data)
 
 
 def split_dataset(pairs: List[Tuple[np.ndarray, np.ndarray]], 
@@ -848,7 +863,7 @@ def get_device(device_str: str = "auto") -> tuple[torch.device, int]:
                 print("Could not check GPU memory")
             
             if gpu_count > 1:
-                print(f"Found {gpu_count} CUDA GPUs - DataParallel will be enabled")
+                print(f"Found {gpu_count} CUDA GPUs")
                 for i in range(gpu_count):
                     print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
             return device, gpu_count
@@ -1708,6 +1723,8 @@ def main():
                        help="Optional run name to append to UUID-based directory name")
     parser.add_argument("--center_crop_size", type=int, default=None,
                        help="Center crop images to n×n pixels (default: no cropping). Recommended: 128")
+    parser.add_argument("--cache_data", action="store_true",
+                       help="Force caching of loaded data even when max_examples is set")
     
     # Rollout instrumentation arguments
     parser.add_argument("--enable_rollouts", action="store_true",
@@ -1782,10 +1799,12 @@ def main():
     # Load and split dataset
     print("� Loading dataset...")
     # Disable cache when max_examples is specified
-    use_cache = args.max_examples is None
+    # Determine cache usage - enable if explicitly requested or if no max_examples limit
+    use_cache = args.cache_data or (args.max_examples is None)
     if args.max_examples is not None:
-        print(f"  Max examples: {args.max_examples} (cache disabled)")
-    pairs = load_dataset_pairs_sequential(config.dataset_path, use_cache=use_cache, max_examples=args.max_examples)
+        cache_status = "cache enabled" if args.cache_data else "cache disabled"
+        print(f"  Max examples: {args.max_examples} ({cache_status})")
+    pairs = load_dataset_pairs_sequential(config.dataset_path, use_cache=use_cache, max_examples=args.max_examples, cache_data=args.cache_data)
     
     if len(pairs) == 0:
         print("❌ No valid observation-action pairs found!")
@@ -1819,11 +1838,11 @@ def main():
     test_dataset = OptomechDataset(test_pairs)
     # DataLoader(ds, batch_size=..., shuffle=True, num_workers=0, pin_memory=False, persistent_workers=False)
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size, 
-                             shuffle=True, num_workers=0, pin_memory=False, persistent_workers=False)
+                             shuffle=True, num_workers=8, pin_memory=False, persistent_workers=True)
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size, 
-                           shuffle=False, num_workers=0, pin_memory=False, persistent_workers=False)
+                           shuffle=False, num_workers=8, pin_memory=False, persistent_workers=True)
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size, 
-                            shuffle=False, num_workers=0, pin_memory=False, persistent_workers=False)
+                            shuffle=False, num_workers=8, pin_memory=False, persistent_workers=False)
     
     # Initialize model, optimizer, and criterion
     device_arg = "cpu" if args.force_cpu else config.device
@@ -1865,8 +1884,6 @@ def main():
     total_params = sum(p.numel() for p in param_model.parameters())
     print(f"  Total parameters: {total_params:,}")
     
-    if gpu_count > 1 and device.type == "cuda":
-        print(f"  Parameters per GPU: ~{total_params // gpu_count:,}")
     
     # Log model summary to TensorBoard
     try:
