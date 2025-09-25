@@ -36,6 +36,59 @@ from tqdm import tqdm
 from torchinfo import summary
 
 
+def center_crop_transform(tensor, crop_size):
+    """
+    Center crop a tensor to crop_size × crop_size pixels.
+    
+    Args:
+        tensor: Input tensor of shape [channels, height, width] or [batch, channels, height, width]
+        crop_size: Size of the center crop (crop_size × crop_size)
+        
+    Returns:
+        Center-cropped tensor of shape [channels, crop_size, crop_size] or [batch, channels, crop_size, crop_size]
+    """
+    if len(tensor.shape) == 3:
+        # Single image: [C, H, W]
+        c, h, w = tensor.shape
+        
+        if crop_size > min(h, w):
+            raise ValueError(f"Crop size {crop_size} is larger than image dimensions {h}×{w}")
+        
+        # Calculate center crop coordinates
+        center_h, center_w = h // 2, w // 2
+        half_crop = crop_size // 2
+        
+        start_h = center_h - half_crop
+        end_h = start_h + crop_size
+        start_w = center_w - half_crop
+        end_w = start_w + crop_size
+        
+        # Perform center crop
+        return tensor[:, start_h:end_h, start_w:end_w]
+        
+    elif len(tensor.shape) == 4:
+        # Batch of images: [N, C, H, W]
+        n, c, h, w = tensor.shape
+        
+        if crop_size > min(h, w):
+            raise ValueError(f"Crop size {crop_size} is larger than image dimensions {h}×{w}")
+        
+        # Calculate center crop coordinates
+        center_h, center_w = h // 2, w // 2
+        half_crop = crop_size // 2
+        
+        start_h = center_h - half_crop
+        end_h = start_h + crop_size
+        start_w = center_w - half_crop
+        end_w = start_w + crop_size
+        
+        # Perform center crop
+        return tensor[:, :, start_h:end_h, start_w:end_w]
+    
+    else:
+        raise ValueError(f"Expected 3D tensor [C, H, W] or 4D tensor [N, C, H, W], got shape {tensor.shape}")
+
+
 # Optional HDF5 support
 try:
     import h5py
@@ -101,13 +154,15 @@ class OptomechDataset(Dataset):
 class SMLModel(nn.Module):
     """CNN model for predicting perfect actions from observations"""
     
-    def __init__(self, input_channels=2, action_dim=15):
+    def __init__(self, input_channels=2, action_dim=15, input_crop_size=None):
         """
         Args:
             input_channels: Number of observation channels (2 for real/imag)
             action_dim: Dimension of action space (15 for optomech segments)
+            input_crop_size: If specified, center crop input to this size (e.g., 128)
         """
         super(SMLModel, self).__init__()
+        self.input_crop_size = input_crop_size
         
         # CNN feature extractor
         self.features = nn.Sequential(
@@ -144,14 +199,19 @@ class SMLModel(nn.Module):
         )
         
     def forward(self, x):
+        # Apply center cropping if specified
+        if self.input_crop_size is not None:
+            x = center_crop_transform(x, self.input_crop_size)
+        
         x = self.features(x)
         x = x.view(x.size(0), -1)  # Flatten
         x = self.classifier(x)
         return x
 
 class SMLResNetGN(nn.Module):
-    def __init__(self, input_channels=2, action_dim=15):
+    def __init__(self, input_channels=2, action_dim=15, input_crop_size=None):
         super().__init__()
+        self.input_crop_size = input_crop_size
         # Input group default
         # self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         # self.gn1 = nn.GroupNorm(num_groups=8, num_channels=64)  # Use 8 groups for 64 channels
@@ -186,6 +246,10 @@ class SMLResNetGN(nn.Module):
         return nn.Sequential(*layers)
         
     def forward(self, x):
+        # Apply center cropping if specified
+        if self.input_crop_size is not None:
+            x = center_crop_transform(x, self.input_crop_size)
+        
         x = self.conv1(x)
         x = self.gn1(x)
         x = self.relu(x)
@@ -244,8 +308,9 @@ class BasicBlockGN(nn.Module):
 class SMLResNet(nn.Module):
     """ResNet-like model for predicting perfect actions from observations"""
     
-    def __init__(self, input_channels=2, action_dim=15):
+    def __init__(self, input_channels=2, action_dim=15, input_crop_size=None):
         super(SMLResNet, self).__init__()
+        self.input_crop_size = input_crop_size
         
         # Initial conv layer
         self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3)
@@ -280,6 +345,10 @@ class SMLResNet(nn.Module):
         return nn.Sequential(*layers)
         
     def forward(self, x):
+        # Apply center cropping if specified
+        if self.input_crop_size is not None:
+            x = center_crop_transform(x, self.input_crop_size)
+        
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -299,8 +368,9 @@ class SMLResNet(nn.Module):
 class SMLSimple(nn.Module):
     """Simple lightweight model for predicting perfect actions from observations"""
     
-    def __init__(self, input_channels=2, action_dim=15):
+    def __init__(self, input_channels=2, action_dim=15, input_crop_size=None):
         super(SMLSimple, self).__init__()
+        self.input_crop_size = input_crop_size
         
         self.features = nn.Sequential(
             # Conv block 1
@@ -334,6 +404,10 @@ class SMLSimple(nn.Module):
         )
         
     def forward(self, x):
+        # Apply center cropping if specified
+        if self.input_crop_size is not None:
+            x = center_crop_transform(x, self.input_crop_size)
+        
         x = self.features(x)
         x = x.view(x.size(0), -1)
         x = self.classifier(x)
@@ -343,8 +417,9 @@ class SMLSimple(nn.Module):
 class SMLHRNet(nn.Module):
     """HRNet-like model for predicting perfect actions from observations"""
     
-    def __init__(self, input_channels=2, action_dim=15):
+    def __init__(self, input_channels=2, action_dim=15, input_crop_size=None):
         super(SMLHRNet, self).__init__()
+        self.input_crop_size = input_crop_size
         
         # Stem network
         self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=3, stride=2, padding=1)
@@ -415,6 +490,10 @@ class SMLHRNet(nn.Module):
         return fused
         
     def forward(self, x):
+        # Apply center cropping if specified
+        if self.input_crop_size is not None:
+            x = center_crop_transform(x, self.input_crop_size)
+        
         # Stem
         x = self.conv1(x)
         x = self.bn1(x)
@@ -450,8 +529,9 @@ class SMLHRNet(nn.Module):
 class SMLVanillaConv(nn.Module):
     """Vanilla convolutional model with minimal parameters for rapid training"""
     
-    def __init__(self, input_channels=2, action_dim=15, channel_scale=16, mlp_scale=128):
+    def __init__(self, input_channels=2, action_dim=15, channel_scale=16, mlp_scale=128, input_crop_size=None):
         super(SMLVanillaConv, self).__init__()
+        self.input_crop_size = input_crop_size
         
         # Five small conv blocks with configurable channel scaling, no downsampling
         self.features = nn.Sequential(
@@ -488,27 +568,31 @@ class SMLVanillaConv(nn.Module):
         )
         
     def forward(self, x):
+        # Apply center cropping if specified
+        if self.input_crop_size is not None:
+            x = center_crop_transform(x, self.input_crop_size)
+        
         x = self.features(x)
         x = x.view(x.size(0), -1)  # Flatten
         x = self.classifier(x)
         return x
 
 
-def create_model(arch: str, input_channels: int, action_dim: int, channel_scale: int = 16, mlp_scale: int = 128) -> nn.Module:
+def create_model(arch: str, input_channels: int, action_dim: int, channel_scale: int = 16, mlp_scale: int = 128, input_crop_size: int = None) -> nn.Module:
     """Factory function to create different model architectures"""
     if arch == "sml_cnn":
-        return SMLModel(input_channels=input_channels, action_dim=action_dim)
+        return SMLModel(input_channels=input_channels, action_dim=action_dim, input_crop_size=input_crop_size)
     elif arch == "sml_resnet":
-        return SMLResNet(input_channels=input_channels, action_dim=action_dim)
+        return SMLResNet(input_channels=input_channels, action_dim=action_dim, input_crop_size=input_crop_size)
     elif arch == "sml_resnet_gn":
-        return SMLResNetGN(input_channels=input_channels, action_dim=action_dim)
+        return SMLResNetGN(input_channels=input_channels, action_dim=action_dim, input_crop_size=input_crop_size)
     elif arch == "sml_simple":
-        return SMLSimple(input_channels=input_channels, action_dim=action_dim)
+        return SMLSimple(input_channels=input_channels, action_dim=action_dim, input_crop_size=input_crop_size)
     elif arch == "sml_hrnet":
-        return SMLHRNet(input_channels=input_channels, action_dim=action_dim)
+        return SMLHRNet(input_channels=input_channels, action_dim=action_dim, input_crop_size=input_crop_size)
     elif arch == "sml_vanilla":
         return SMLVanillaConv(input_channels=input_channels, action_dim=action_dim, 
-                             channel_scale=channel_scale, mlp_scale=mlp_scale)
+                             channel_scale=channel_scale, mlp_scale=mlp_scale, input_crop_size=input_crop_size)
     else:
         raise ValueError(f"Unknown architecture: {arch}")
 
@@ -1622,6 +1706,8 @@ def main():
                        help="Hidden layer size for VanillaConv MLP")
     parser.add_argument("--run_name", type=str, default=None,
                        help="Optional run name to append to UUID-based directory name")
+    parser.add_argument("--center_crop_size", type=int, default=None,
+                       help="Center crop images to n×n pixels (default: no cropping). Recommended: 128")
     
     # Rollout instrumentation arguments
     parser.add_argument("--enable_rollouts", action="store_true",
@@ -1712,13 +1798,22 @@ def main():
     
     # Check observation shape
     sample_obs = pairs[0][0]
-    print(f"Observation shape: {sample_obs.shape}")
+    print(f"Original observation shape: {sample_obs.shape}")
+    
+    # Update effective observation shape for model creation if center cropping is specified
+    effective_obs_shape = sample_obs.shape
+    if args.center_crop_size is not None:
+        print(f"📏 Model will center crop images to {args.center_crop_size}×{args.center_crop_size} pixels")
+        # Update effective observation shape for model creation
+        if len(sample_obs.shape) == 3:
+            effective_obs_shape = (sample_obs.shape[0], args.center_crop_size, args.center_crop_size)
+        print(f"Effective observation shape: {effective_obs_shape}")
     
     train_pairs, val_pairs, test_pairs = split_dataset(
         pairs, config.train_split, config.val_split, config.test_split, config.seed
     )
     
-    # Create datasets and dataloaders
+    # Create datasets and dataloaders (no transform needed - cropping is done in model)
     train_dataset = OptomechDataset(train_pairs)
     val_dataset = OptomechDataset(val_pairs)
     test_dataset = OptomechDataset(test_pairs)
@@ -1734,9 +1829,10 @@ def main():
     device_arg = "cpu" if args.force_cpu else config.device
     device, gpu_count = get_device(device_arg)
     
-    input_channels = sample_obs.shape[0] if len(sample_obs.shape) == 3 else 1
+    input_channels = effective_obs_shape[0] if len(effective_obs_shape) == 3 else 1
     model = create_model(args.model_arch, input_channels=input_channels, action_dim=action_dim, 
-                        channel_scale=args.channel_scale, mlp_scale=args.mlp_scale).to(device)
+                        channel_scale=args.channel_scale, mlp_scale=args.mlp_scale, 
+                        input_crop_size=args.center_crop_size).to(device)
     
     # Enable DataParallel for multi-GPU training
     if gpu_count > 1 and device.type == "cuda" and not args.no_dataparallel:
