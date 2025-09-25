@@ -6,8 +6,8 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./sml_1m.out
 #SBATCH --error=./sml_1m.err
-#SBATCH --gres=gpu:A100-SXM4:8
-#SBATCH --time=7-00:00:00               # Maximum runtime (24 hours)
+#SBATCH --gres=gpu:A100-PCIe:8
+#SBATCH --time=5-00:00:00               # Maximum runtime (5 days)
 
 
 

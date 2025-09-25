@@ -287,8 +287,8 @@ class SMLModelInterface(ModelInterface):
             obs_tensor = obs_tensor.unsqueeze(0)
         
         # Debug: Check tensor shapes
-        print(f"    DEBUG: obs_tensor shape: {obs_tensor.shape}")
-        print(f"    DEBUG: model first layer weight shape: {list(self.model.parameters())[0].shape}")
+        # print(f"    DEBUG: obs_tensor shape: {obs_tensor.shape}")
+        # print(f"    DEBUG: model first layer weight shape: {list(self.model.parameters())[0].shape}")
         
         # Make prediction
         with torch.no_grad():
@@ -728,7 +728,8 @@ class UniversalRolloutEngine:
                    exploration_noise: float = 0.0,
                    save_path: Optional[str] = None,
                    save_episodes: bool = False,
-                   random_policy: bool = False) -> Tuple[List[float], List[List[float]]]:
+                   random_policy: bool = False,
+                   zero_policy: bool = False) -> Tuple[List[float], List[List[float]]]:
         """
         Run rollout evaluation for specified number of episodes.
         
@@ -738,6 +739,7 @@ class UniversalRolloutEngine:
             save_path: Directory to save episode data (optional)
             save_episodes: Whether to save detailed episode information
             random_policy: Whether to use random actions instead of model
+            zero_policy: Whether to use all-zeros actions instead of model
             
         Returns:
             Tuple of (episodic_returns, step_wise_rewards)
@@ -745,7 +747,12 @@ class UniversalRolloutEngine:
             - step_wise_rewards: List of episodes, each containing step-by-step rewards
         """
         print(f"🎬 Starting rollout evaluation for {num_episodes} episodes")
-        print(f"🎯 Model: {'Random Policy' if random_policy else self.model_interface.__class__.__name__}")
+        if zero_policy:
+            print(f"🎯 Model: Zero Policy (all-zeros actions)")
+        elif random_policy:
+            print(f"🎯 Model: Random Policy")
+        else:
+            print(f"🎯 Model: {self.model_interface.__class__.__name__}")
         print(f"🔊 Exploration noise: {exploration_noise}")
         
         # Setup environment
@@ -808,8 +815,10 @@ class UniversalRolloutEngine:
             if save_episodes and save_path:
                 self._create_episode_directories(env_uuids, save_path)
             
-            # Get actions from model or random policy
-            if random_policy or self.model_interface is None:
+            # Get actions from model, random policy, or zero policy
+            if zero_policy:
+                actions = self._sample_zero_actions(envs, num_envs)
+            elif random_policy or self.model_interface is None:
                 actions = self._sample_random_actions(envs, num_envs)
             else:
                 try:
@@ -892,6 +901,40 @@ class UniversalRolloutEngine:
     def _sample_random_actions(self, envs: gym.vector.VectorEnv, num_envs: int) -> np.ndarray:
         """Sample random actions from the action space."""
         return np.array([envs.single_action_space.sample() for _ in range(num_envs)])
+    
+    def _sample_zero_actions(self, envs: gym.vector.VectorEnv, num_envs: int) -> np.ndarray:
+        """Sample all-zeros actions within valid action space bounds."""
+        action_space = envs.single_action_space
+        action_shape = action_space.shape
+        
+        # If action space has bounds, check if zeros are valid
+        if hasattr(action_space, 'low') and hasattr(action_space, 'high'):
+            low = action_space.low
+            high = action_space.high
+            
+            # Check if zero is within bounds for each dimension
+            zero_valid = np.all((0.0 >= low) & (0.0 <= high))
+            
+            if zero_valid:
+                # Use actual zeros if they're valid, with correct dtype
+                zero_actions = np.zeros((num_envs,) + action_shape, dtype=action_space.dtype)
+                
+                # Double check with action_space.contains()
+                test_action = zero_actions[0]
+                contains_check = action_space.contains(test_action)
+                if not contains_check:
+                    # Fallback to middle of action space
+                    middle_action = (low + high) / 2.0
+                    zero_actions = np.tile(middle_action, (num_envs, 1))
+            else:
+                # Use middle of action space instead
+                middle_action = (low + high) / 2.0
+                zero_actions = np.tile(middle_action, (num_envs, 1))
+        else:
+            # No bounds information, use zeros
+            zero_actions = np.zeros((num_envs,) + action_shape, dtype=action_space.dtype)
+        
+        return zero_actions
     
     def _get_model_actions(self, obs: np.ndarray, prior_actions: np.ndarray, 
                           prior_rewards: np.ndarray, exploration_noise: float,
@@ -1186,6 +1229,9 @@ class RolloutArgs:
     random_policy: bool = False
     """Use random actions instead of model predictions"""
     
+    zero_policy: bool = False
+    """Use all-zeros actions instead of model predictions"""
+    
     # Environment configuration
     env_id: str = "optomech-v1"
     """Environment identifier"""
@@ -1301,9 +1347,13 @@ def main(args: RolloutArgs) -> None:
         device = torch.device(args.device)
         print(f"🔧 Using specified device: {device}")
     
+    # Validate policy flags
+    if args.zero_policy and args.random_policy:
+        raise ValueError("Cannot enable both --zero_policy and --random_policy")
+    
     # Create model interface
     model_interface = None
-    if args.model_path and not args.random_policy:
+    if args.model_path and not args.random_policy and not args.zero_policy:
         print(f"🧠 Loading model: {args.model_path}")
         model_interface = create_model_interface(
             args.model_path, 
@@ -1311,6 +1361,8 @@ def main(args: RolloutArgs) -> None:
             device or torch.device('cpu')
         )
         model_interface.load_model()
+    elif args.zero_policy:
+        print("🔷 Using zero policy (all-zeros actions)")
     elif args.random_policy:
         print("🎲 Using random policy (no model loaded)")
     else:
@@ -1325,12 +1377,13 @@ def main(args: RolloutArgs) -> None:
     )
     
     # Run evaluation
-    returns = engine.run_rollout(
+    episodic_returns, step_wise_rewards = engine.run_rollout(
         num_episodes=args.num_episodes,
         exploration_noise=args.exploration_noise,
         save_path=args.save_path,
         save_episodes=args.save_episodes,
-        random_policy=args.random_policy
+        random_policy=args.random_policy,
+        zero_policy=args.zero_policy
     )
     
     # Save summary results
@@ -1346,12 +1399,12 @@ def main(args: RolloutArgs) -> None:
         # Save results
         results_file = save_path / "rollout_results.json"
         results = {
-            "episodic_returns": returns,
-            "mean_return": float(np.mean(returns)),
-            "std_return": float(np.std(returns)),
-            "min_return": float(np.min(returns)),
-            "max_return": float(np.max(returns)),
-            "num_episodes": len(returns)
+            "episodic_returns": episodic_returns.tolist() if hasattr(episodic_returns, 'tolist') else list(episodic_returns),
+            "mean_return": float(np.mean(episodic_returns)),
+            "std_return": float(np.std(episodic_returns)),
+            "min_return": float(np.min(episodic_returns)),
+            "max_return": float(np.max(episodic_returns)),
+            "num_episodes": len(episodic_returns)
         }
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)

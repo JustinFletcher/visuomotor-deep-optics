@@ -152,18 +152,25 @@ class SMLModel(nn.Module):
 class SMLResNetGN(nn.Module):
     def __init__(self, input_channels=2, action_dim=15):
         super().__init__()
-
-        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.gn1 = nn.GroupNorm(num_groups=32, num_channels=64)
+        # Input group default
+        # self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        # self.gn1 = nn.GroupNorm(num_groups=8, num_channels=64)  # Use 8 groups for 64 channels
+        # self.relu = nn.ReLU(inplace=True)
+        # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        # Input group default
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=3, stride=1, padding=3, bias=False)
+        self.gn1 = nn.GroupNorm(num_groups=8, num_channels=64)  # Use 8 groups for 64 channels
         self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
 
+        # ResNet18 layer configuration: [2, 2, 2, 2] blocks
         self.layer1 = self._make_layer(64, 64, blocks=2, stride=1)
-        self.layer2 = self._make_layer(64, 128, blocks=2, stride=2)
+        self.layer2 = self._make_layer(64, 128, blocks=2, stride=1)
         self.layer3 = self._make_layer(128, 256, blocks=2, stride=2)
+        self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(256, action_dim)
+        self.fc = nn.Linear(512, action_dim)  # Changed from 256 to 512
         self.tanh = nn.Tanh()
 
     def _make_layer(self, in_planes, planes, blocks, stride=1):
@@ -187,6 +194,7 @@ class SMLResNetGN(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
+        x = self.layer4(x)  # Added layer4 forward pass
         
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
@@ -202,10 +210,10 @@ class BasicBlockGN(nn.Module):
         super().__init__()
         
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.gn1 = nn.GroupNorm(num_groups=min(32, planes), num_channels=planes)
+        self.gn1 = nn.GroupNorm(num_groups=min(32, planes//4), num_channels=planes)  # Better group sizing
         
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.gn2 = nn.GroupNorm(num_groups=min(32, planes), num_channels=planes)
+        self.gn2 = nn.GroupNorm(num_groups=min(32, planes//4), num_channels=planes)  # Better group sizing
         
         self.relu = nn.ReLU(inplace=True)
         
@@ -214,7 +222,7 @@ class BasicBlockGN(nn.Module):
         if stride != 1 or in_planes != planes:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=False),
-                nn.GroupNorm(num_groups=min(32, planes), num_channels=planes)
+                nn.GroupNorm(num_groups=min(32, planes//4), num_channels=planes)  # Better group sizing
             )
     
     def forward(self, x):
