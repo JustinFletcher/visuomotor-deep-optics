@@ -213,7 +213,7 @@ class SMLResNetGN(nn.Module):
         super().__init__()
         self.input_crop_size = input_crop_size
         # Input group default
-        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=5, stride=1, padding=3, bias=False)
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.gn1 = nn.GroupNorm(num_groups=8, num_channels=64)  # Use 8 groups for 64 channels
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)

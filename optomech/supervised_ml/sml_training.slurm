@@ -6,8 +6,8 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./sml_1m.out
 #SBATCH --error=./sml_1m.err
-#SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=5-00:00:00               # Maximum runtime (5 days)
+#SBATCH --gres=gpu:A100-SMX4:8
+#SBATCH --time=7-00:00:00               # Maximum runtime (5 days)
 
 
 
@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--device cuda:0 --max_examples 1_000_000 --run_name sml_resnet_gn_1m_smx4_solo"
+    "--device cuda:0 --max_examples 1_000_000 --run_name sml_resnet_gn_1m_smx4_solo_cropped"
 )
 
 # Run all variants in parallel
@@ -25,12 +25,13 @@ for VARIANT in "${VARIANTS[@]}"; do
     poetry run python optomech/supervised_ml/train_sml_model.py \
         --dataset_path /wdata/scratch/fletch/datasets/optomech-1m/optomech-1m \
         --model_arch sml_resnet_gn \
-        --batch_size 2048 \
+        --batch_size 1024 \
         --learning_rate 1e-3 \
         --num_epochs 10000 \
         --log_dir ./runs/ \
         --no_dataparallel \
         --enable_rollouts \
+        --center_crop_size 128 \
         $VARIANT &  # Run in background
 done
 
