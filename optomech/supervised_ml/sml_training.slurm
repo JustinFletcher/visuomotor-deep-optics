@@ -30,9 +30,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_epochs 500 \
         --log_dir ./runs/ \
         --no_dataparallel \
-        --max_examples 20_000 \
         --center_crop_size 128 \
-        --cache_data \
         $VARIANT &  # Run in background
 done
 
