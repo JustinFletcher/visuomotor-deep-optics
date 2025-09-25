@@ -7,7 +7,7 @@
 #SBATCH --output=./sml_1m.out
 #SBATCH --error=./sml_1m.err
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=7-00:00:00               # Maximum runtime (7 days)
+#SBATCH --time=4-00:00:00               # Maximum runtime (7 days)
 
 
 
