@@ -6,8 +6,8 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./sml_1m.out
 #SBATCH --error=./sml_1m.err
-#SBATCH --gres=gpu:A100-SXM4:8
-#SBATCH --time=7-00:00:00               # Maximum runtime (5 days)
+#SBATCH --gres=gpu:A100-PCIe:8
+#SBATCH --time=7-00:00:00               # Maximum runtime (7 days)
 
 
 
@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--device cuda:0 --max_examples 1_000_000 --run_name sml_resnet_gn_1m_smx4_solo_cropped"
+    "--device cuda:0 --run_name sml_resnet_gn_1m_solo_cropped"
 )
 
 # Run all variants in parallel
@@ -31,6 +31,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --log_dir ./runs/ \
         --no_dataparallel \
         --enable_rollouts \
+        --max_examples 1_000_000 \
         --center_crop_size 128 \
         $VARIANT &  # Run in background
 done
