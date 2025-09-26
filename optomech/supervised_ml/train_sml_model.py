@@ -230,7 +230,7 @@ class SMLResNetGN(nn.Module):
         self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(256, action_dim)  # Changed from 256 to 512
+        self.fc = nn.Linear(512, action_dim)  # Changed from 256 to 512
         self.tanh = nn.Tanh()
 
     def _make_layer(self, in_planes, planes, blocks, stride=1):
