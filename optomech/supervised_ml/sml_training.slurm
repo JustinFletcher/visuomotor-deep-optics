@@ -6,7 +6,7 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./sml_1m.out
 #SBATCH --error=./sml_1m.err
-#SBATCH --gres=gpu:A100-PCIe:2
+#SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=1-00:00:00               # Maximum runtime (7 days)
 
 
@@ -30,6 +30,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num_epochs 500 \
         --log_dir ./runs/ \
         --no_dataparallel \
+        --enable_rollouts \
         --center_crop_size 128 \
         $VARIANT &  # Run in background
 done
