@@ -227,7 +227,7 @@ class SMLResNetGN(nn.Module):
         self.layer1 = self._make_layer(64, 64, blocks=2, stride=1)
         self.layer2 = self._make_layer(64, 128, blocks=2, stride=1)
         self.layer3 = self._make_layer(128, 256, blocks=2, stride=2)
-        # self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
+        self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(256, action_dim)  # Changed from 256 to 512
@@ -258,7 +258,7 @@ class SMLResNetGN(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        # x = self.layer4(x)  # Added layer4 forward pass
+        x = self.layer4(x)  # Added layer4 forward pass
         
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
