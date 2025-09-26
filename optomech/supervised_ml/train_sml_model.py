@@ -213,10 +213,10 @@ class SMLResNetGN(nn.Module):
         super().__init__()
         self.input_crop_size = input_crop_size
         # Input group default
-        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=1, padding=3, bias=False)
         self.gn1 = nn.GroupNorm(num_groups=16, num_channels=64)  # Use 16 groups for 64 channels
         self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
         # Input group default
         # self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
         # self.gn1 = nn.GroupNorm(num_groups=8, num_channels=64)  # Use 8 groups for 64 channels
@@ -227,10 +227,10 @@ class SMLResNetGN(nn.Module):
         self.layer1 = self._make_layer(64, 64, blocks=2, stride=1)
         self.layer2 = self._make_layer(64, 128, blocks=2, stride=1)
         self.layer3 = self._make_layer(128, 256, blocks=2, stride=2)
-        # self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
+        self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(256, action_dim)  # Changed from 256 to 512
+        self.fc = nn.Linear(512, action_dim)  # Changed from 256 to 512
         self.tanh = nn.Tanh()
 
     def _make_layer(self, in_planes, planes, blocks, stride=1):
@@ -258,7 +258,7 @@ class SMLResNetGN(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        # x = self.layer4(x)  # Added layer4 forward pass
+        x = self.layer4(x)  # Added layer4 forward pass
         
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
