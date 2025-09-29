@@ -89,6 +89,71 @@ def center_crop_transform(tensor, crop_size):
         raise ValueError(f"Expected 3D tensor [C, H, W] or 4D tensor [N, C, H, W], got shape {tensor.shape}")
 
 
+def log_cosh_loss(predictions, targets):
+    """
+    Log-Cosh loss function.
+    
+    This loss function behaves like MSE for small errors and MAE for large errors,
+    providing good sensitivity around zero without exploding gradients.
+    
+    Args:
+        predictions: Model predictions
+        targets: Ground truth targets
+        
+    Returns:
+        Log-cosh loss value
+    """
+    error = predictions - targets
+    return torch.mean(torch.log(torch.cosh(error)))
+
+
+def huber_loss(predictions, targets, delta=0.1):
+    """
+    Huber loss function with configurable delta.
+    
+    Quadratic for small errors (|error| <= delta), linear for large errors.
+    Small delta makes it very sensitive to small deviations around zero.
+    
+    Args:
+        predictions: Model predictions
+        targets: Ground truth targets
+        delta: Threshold for switching from quadratic to linear loss
+        
+    Returns:
+        Huber loss value
+    """
+    error = torch.abs(predictions - targets)
+    is_small_error = error <= delta
+    squared_loss = 0.5 * error**2
+    linear_loss = delta * error - 0.5 * delta**2
+    return torch.mean(torch.where(is_small_error, squared_loss, linear_loss))
+
+
+def create_loss_function(loss_type, huber_delta=0.1):
+    """
+    Factory function to create loss functions.
+    
+    Args:
+        loss_type: Type of loss function ('mse', 'mae', 'smooth_l1', 'log_cosh', 'huber')
+        huber_delta: Delta parameter for Huber loss
+        
+    Returns:
+        Loss function
+    """
+    if loss_type == 'mse':
+        return nn.MSELoss()
+    elif loss_type == 'mae':
+        return nn.L1Loss()
+    elif loss_type == 'smooth_l1':
+        return nn.SmoothL1Loss()
+    elif loss_type == 'log_cosh':
+        return log_cosh_loss
+    elif loss_type == 'huber':
+        return lambda pred, target: huber_loss(pred, target, delta=huber_delta)
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}. Supported: mse, mae, smooth_l1, log_cosh, huber")
+
+
 # Optional HDF5 support
 try:
     import h5py
@@ -213,7 +278,7 @@ class SMLResNetGN(nn.Module):
         super().__init__()
         self.input_crop_size = input_crop_size
         # Input group default
-        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=3, stride=1, padding=3, bias=False)
         self.gn1 = nn.GroupNorm(num_groups=16, num_channels=64)  # Use 16 groups for 64 channels
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -227,10 +292,10 @@ class SMLResNetGN(nn.Module):
         self.layer1 = self._make_layer(64, 64, blocks=2, stride=1)
         self.layer2 = self._make_layer(64, 128, blocks=2, stride=1)
         self.layer3 = self._make_layer(128, 256, blocks=2, stride=2)
-        self.layer4 = self._make_layer(256, 256, blocks=2, stride=2)  # Added missing layer4
+        self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc1 = nn.Linear(256, 256)  # Changed from 256 to 512
+        self.fc1 = nn.Linear(512, 256)  # Changed from 256 to 512
         self.tanh1 = nn.Tanh()
         self.fc2 = nn.Linear(256, action_dim)  # Changed from 256 to 512
         self.tanh = nn.Tanh()
@@ -255,7 +320,7 @@ class SMLResNetGN(nn.Module):
         x = self.conv1(x)
         x = self.gn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        # x = self.maxpool(x)
         
         x = self.layer1(x)
         x = self.layer2(x)
