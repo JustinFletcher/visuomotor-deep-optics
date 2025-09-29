@@ -32,6 +32,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --no_dataparallel \
         --enable_rollouts \
         --center_crop_size 128 \
+        --loss_type log_cosh \
         $VARIANT &  # Run in background
 done
 
