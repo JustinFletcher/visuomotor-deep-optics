@@ -962,7 +962,7 @@ def get_device(device_str: str = "auto") -> tuple[torch.device, int]:
 
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
-                criterion: nn.Module, device: torch.device) -> float:
+                criterion, device: torch.device) -> float:
     """Train for one epoch and return average loss"""
     model.train()
     total_loss = 0.0
@@ -997,7 +997,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
 
 
 def train_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
-                            criterion: nn.Module, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray, Dict[str, float]]:
+                            criterion, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray, Dict[str, float]]:
     """Train for one epoch and return loss, MAE metrics, raw error distribution, and absolute error metrics"""
     model.train()
     total_loss = 0.0
@@ -1074,7 +1074,7 @@ def train_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, optimizer
 
 
 def validate_epoch(model: nn.Module, dataloader: DataLoader, 
-                  criterion: nn.Module, device: torch.device) -> float:
+                  criterion, device: torch.device) -> float:
     """Validate for one epoch and return average loss"""
     model.eval()
     total_loss = 0.0
@@ -1098,7 +1098,7 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader,
 
 
 def validate_epoch_with_metrics(model: nn.Module, dataloader: DataLoader, 
-                               criterion: nn.Module, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray, Dict[str, float]]:
+                               criterion, device: torch.device) -> Tuple[float, Dict[str, float], np.ndarray, Dict[str, float]]:
     """Validate for one epoch and return loss, MAE metrics, raw error distribution, and absolute error metrics"""
     model.eval()
     total_loss = 0.0
@@ -1795,6 +1795,13 @@ def main():
     parser.add_argument("--cache_data", action="store_true",
                        help="Force caching of loaded data even when max_examples is set")
     
+    # Loss function arguments
+    parser.add_argument("--loss_type", type=str, default="mse",
+                       choices=["mse", "mae", "smooth_l1", "log_cosh", "huber"],
+                       help="Loss function type (default: mse)")
+    parser.add_argument("--huber_delta", type=float, default=0.1,
+                       help="Delta parameter for Huber loss (default: 0.1)")
+    
     # Rollout instrumentation arguments
     parser.add_argument("--enable_rollouts", action="store_true",
                        help="Enable rollout instrumentation after training")
@@ -1938,10 +1945,13 @@ def main():
                 print(f"  GPU {i} memory: {memory:.1f} GB")
     
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
-    criterion = nn.MSELoss()
+    criterion = create_loss_function(args.loss_type, huber_delta=args.huber_delta)
     
     print(f"\nModel architecture:")
     print(f"  Architecture: {args.model_arch}")
+    print(f"  Loss function: {args.loss_type}")
+    if args.loss_type == "huber":
+        print(f"  Huber delta: {args.huber_delta}")
     print(f"  Input channels: {input_channels}")
     print(f"  Action dimension: {action_dim}")
     if args.model_arch == "sml_vanilla":
