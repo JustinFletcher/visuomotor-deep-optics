@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--device cuda:0 --run_name sml_resnet_gn_1m_solo_cropped"
+    "--device cuda:0 --run_name sml_resnet_gn_1m_logcosh_cropped"
 )
 
 # Run all variants in parallel
