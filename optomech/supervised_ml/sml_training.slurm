@@ -27,8 +27,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_arch sml_resnet_gn \
         --batch_size 256 \
         --learning_rate 1e-4 \
-        --num_epochs 2000 \
-        --max_examples 100000 \
+        --num_epochs 10000 \
         --log_dir ./runs/ \
         --no_dataparallel \
         --enable_rollouts \
