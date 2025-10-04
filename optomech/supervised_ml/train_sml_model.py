@@ -1521,6 +1521,9 @@ def perform_rollout_instrumentation(
             key = flag.replace("--", "")
             print(f"🔧 Setting env_args.{key} = True")
             setattr(env_args, key, True)
+
+    # Finally, manually set the incremental_control to True for rollouts
+    env_args.incremental_control = True
     
     # Debug: Print the critical interval values
     print(f"🔍 Final interval values:")
