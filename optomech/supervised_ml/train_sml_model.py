@@ -278,10 +278,10 @@ class SMLResNetGN(nn.Module):
         super().__init__()
         self.input_crop_size = input_crop_size
         # Input group default
-        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=3, stride=2, padding=3, bias=False)
-        self.gn1 = nn.GroupNorm(num_groups=16, num_channels=64)  # Use 16 groups for 64 channels
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, stride=1, padding=3, bias=False)
+        self.gn1 = nn.GroupNorm(num_groups=16, num_channels=32)  # Use 16 groups for 32 channels
         self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
         # Input group default
         # self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
         # self.gn1 = nn.GroupNorm(num_groups=8, num_channels=64)  # Use 8 groups for 64 channels
@@ -289,15 +289,15 @@ class SMLResNetGN(nn.Module):
         # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
 
         # ResNet18 layer configuration: [2, 2, 2, 2] blocks
-        self.layer1 = self._make_layer(64, 64, blocks=2, stride=1)
-        self.layer2 = self._make_layer(64, 128, blocks=2, stride=1)
-        self.layer3 = self._make_layer(128, 256, blocks=2, stride=2)
-        self.layer4 = self._make_layer(256, 512, blocks=2, stride=2)  # Added missing layer4
+        self.layer1 = self._make_layer(32, 32, blocks=2, stride=1)
+        self.layer2 = self._make_layer(32, 64, blocks=2, stride=1)
+        self.layer3 = self._make_layer(64, 128, blocks=2, stride=2)
+        self.layer4 = self._make_layer(128, 256, blocks=2, stride=2)  # Added missing layer4
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc1 = nn.Linear(512, 256)  # Changed from 256 to 512
+        self.fc1 = nn.Linear(256, 128)  # Changed from 256 to 128
         self.tanh1 = nn.Tanh()
-        self.fc2 = nn.Linear(256, action_dim)  # Changed from 256 to 512
+        self.fc2 = nn.Linear(128, action_dim)  # Changed from 256 to 128
         self.tanh = nn.Tanh()
 
     def _make_layer(self, in_planes, planes, blocks, stride=1):
