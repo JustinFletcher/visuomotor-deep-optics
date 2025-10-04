@@ -25,7 +25,7 @@ for VARIANT in "${VARIANTS[@]}"; do
     poetry run python optomech/supervised_ml/train_sml_model.py \
         --dataset_path /wdata/scratch/fletch/datasets/optomech-1m/optomech-1m \
         --model_arch sml_resnet_gn \
-        --batch_size 256 \
+        --batch_size 64 \
         --learning_rate 1e-4 \
         --num_epochs 10000 \
         --log_dir ./runs/ \
