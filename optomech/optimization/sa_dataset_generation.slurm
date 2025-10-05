@@ -6,7 +6,7 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./sa_dataset_1k,out
 #SBATCH --error=./sa_dataset_1m.err
-#SBATCH --gres=gpu:A100-PCIe:8
+#SBATCH --gres=gpu:A100-SXM4:8
 #SBATCH --time=2-00:00:00             # Maximum runtime (2 days)
 
 # Change to the project directory
