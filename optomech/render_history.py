@@ -57,7 +57,13 @@ def cli_main(flags):
     Path(renders_path).mkdir(parents=True, exist_ok=True)
     
     # Get a list of all pickle files in the episode directory.
+    print("Gathering step info pickle files from %s" % episode_file)
     step_info_pickle_filenames = glob.glob(os.path.join(episode_file, "*.pkl"))
+    print(f"Found {len(step_info_pickle_filenames)} step info pickle files.")
+
+    # Add a test here ensuring some files were found.
+    if len(step_info_pickle_filenames) == 0:
+        raise RuntimeError("No step info pickle files found in %s" % episode_file)
 
     # Iterate over each pickled dict loading each into memory, keyed by step index.
     # step_info_dicts = dict()
@@ -79,7 +85,6 @@ def cli_main(flags):
     for step_info_pickle_filename in step_info_pickle_filenames:
         with open(step_info_pickle_filename, 'rb') as f:
             a = pickle.load(f)
-            # print(a)
             if a['state_content'][0]['segmented_mirror_surfaces']:
                 b = a['state_content'][0]['segmented_mirror_surfaces'][0]
                 if surface_min is None or np.min(b) < surface_min:
@@ -104,7 +109,7 @@ def cli_main(flags):
             step_index= info_dict["step_index"] 
             step_info_dict = info_dict
 
-        # DEBUG: print("Rendering step %d" % step_index)
+        DEBUG: print("Rendering step %d" % step_index)
 
         # If the step index is not a multiple of the render interval, skip it.
         if step_index % flags.render_interval != 0:

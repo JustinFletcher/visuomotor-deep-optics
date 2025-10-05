@@ -1380,6 +1380,106 @@ class OpticalSystem(object):
                 segment_tilt_displacement
             )
 
+    def get_ptt_state(self):    
+        
+        ptt_state = list()
+
+        for segment_id in range(self.num_apertures):
+
+            (segment_piston,
+             segment_tip,
+             segment_tilt) = self.segmented_mirror.get_segment_actuators(segment_id)
+
+            ptt_state.append((segment_piston, segment_tip, segment_tilt))
+
+        return ptt_state
+
+
+    def get_displacement_correction(self):
+        """
+        Get the normalized actions that would correct current PTT displacements back to baseline.
+        
+        Returns:
+            List of tuples: [(piston_correction, tip_correction, tilt_correction), ...] 
+            for each segment, where each correction is in normalized [-1, 1] range.
+            Positive values indicate the action needed to return to baseline.
+        """
+        # Get current PTT state
+        current_ptt_state = self.get_ptt_state()
+        
+        # Initialize correction actions list
+        correction_actions = []
+        
+        # Define maximum correction ranges (same as in command_secondaries)
+        max_piston_correction_micron = 2.5
+        max_tip_correction_as = 20.0
+        max_tilt_correction_as = 20.0
+        
+        max_piston_correction_meters = max_piston_correction_micron * 1e-6
+        max_tip_correction_radians = max_tip_correction_as * np.pi / (180 * 3600)
+        max_tilt_correction_radians = max_tilt_correction_as * np.pi / (180 * 3600)
+        
+        for segment_id in range(self.num_apertures):
+            # Get current displacements
+            current_piston, current_tip, current_tilt = current_ptt_state[segment_id]
+            
+            # Calculate correction needed (negative of displacement to return to baseline)
+            piston_correction_meters = -current_piston
+            tip_correction_radians = -current_tip
+            tilt_correction_radians = -current_tilt
+
+            # Normalize to [-1, 1] range based on maximum correction limits
+            piston_correction_normalized = piston_correction_meters / max_piston_correction_meters
+            tip_correction_normalized = tip_correction_radians / max_tip_correction_radians
+            tilt_correction_normalized = tilt_correction_radians / max_tilt_correction_radians
+            
+            # Clip to valid range in case displacement exceeds maximum correction capability
+            piston_correction_normalized = np.clip(piston_correction_normalized, -1.0, 1.0)
+            tip_correction_normalized = np.clip(tip_correction_normalized, -1.0, 1.0)
+            tilt_correction_normalized = np.clip(tilt_correction_normalized, -1.0, 1.0)
+            
+            correction_actions.append((
+                piston_correction_normalized,
+                tip_correction_normalized, 
+                tilt_correction_normalized
+            ))
+        
+        return correction_actions
+
+
+    def get_displacement_from_baseline(self):
+        """
+        Get the current displacement from baseline for each segment in physical units.
+        
+        Returns:
+            List of tuples: [(piston_displacement, tip_displacement, tilt_displacement), ...]
+            where displacements are in meters for piston and radians for tip/tilt.
+        """
+        current_ptt_state = self.get_ptt_state()
+        displacements = []
+        
+        for segment_id in range(self.num_apertures):
+            # Get current displacements
+            current_piston, current_tip, current_tilt = current_ptt_state[segment_id]
+            
+            # Get baseline displacements
+            baseline_piston = self.segment_baseline_dict[segment_id]["piston"]
+            baseline_tip = self.segment_baseline_dict[segment_id]["tip"]
+            baseline_tilt = self.segment_baseline_dict[segment_id]["tilt"]
+            
+            # Calculate displacement from baseline
+            piston_displacement = current_piston - baseline_piston
+            tip_displacement = current_tip - baseline_tip
+            tilt_displacement = current_tilt - baseline_tilt
+            
+            displacements.append((
+                piston_displacement,
+                tip_displacement,
+                tilt_displacement
+            ))
+        
+        return displacements
+
 
     def command_tensioners(self, tensioner_commands):
 
@@ -1436,7 +1536,7 @@ class OpticalSystem(object):
         segments_ptt_commands = secondaries_commands
     
         # Cannonical
-        max_piston_correction_micron = 10.0
+        max_piston_correction_micron = 2.5
         max_tip_correction_as = 20.0
         max_tilt_correction_as = 20.0
 

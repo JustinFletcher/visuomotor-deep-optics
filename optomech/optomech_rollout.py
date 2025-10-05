@@ -21,6 +21,7 @@ Key Features:
 - Comprehensive episode recording and statistics
 - Support for multiple evaluation episodes
 - Detailed logging and progress tracking
+- Environment configuration support (including incremental control mode)
 """
 
 import os
@@ -1261,6 +1262,9 @@ class RolloutArgs:
     # Environment-specific arguments (will be passed through)
     max_episode_steps: int = 250
     """Maximum steps per episode"""
+    
+    incremental_control: bool = False
+    """Enable incremental control mode in the environment"""
     
     seed: Optional[int] = None
     """Random seed for reproducibility"""

@@ -1,0 +1,15 @@
+{
+  "total_samples": 100000,
+  "samples_per_job": 5000,
+  "max_workers": 4,
+  "timeout_minutes": 120,
+  "base_dataset_dir": "./datasets",
+  "dataset_name": "sa_dataset_1m",
+  "write_frequency": 500,
+  "job_config_file": "job_config.json",
+  "init_temperature": 100.0,
+  "std_dev_patience": 10,
+  "sparsity_patience": 100000000000000,
+  "temperature_patience": 1000000000000000,
+  "init_std_dev": 1.0
+}

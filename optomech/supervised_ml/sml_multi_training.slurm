@@ -34,7 +34,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --model_arch sml_resnet_gn \
         --batch_size 4096 \
         --learning_rate 1e-3 \
-        --num_epochs 10000 \
+        --num_epochs 500 \
         --log_dir ./runs/ \
         --no_dataparallel \
         --enable_rollouts \
