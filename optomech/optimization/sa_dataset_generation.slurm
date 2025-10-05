@@ -23,7 +23,7 @@ for VARIANT in "${VARIANTS[@]}"; do
     # Launch SA dataset generation
     poetry run python optomech/optimization/sa_job_manager_simple.py \
         --config optomech/optimization/sa_job_config.json \
-        --dataset_dir /wdata/scratch/fletch/datasets/ \
+        --dataset_dir /wdata/scratch/fletch/datasets/sa_dataset_1m \
         $VARIANT &  # Run in background
 done
 

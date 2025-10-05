@@ -22,6 +22,39 @@ Each saved sample contains:
 - reward: Reward achieved by the SA action
 - temperature: SA temperature when action was accepted
 - acceptance_delta: Cost delta that was accepted
+- episode_id: UUID identifying which optimization episode the sample belongs to
+- episode_step: Sequential step number within the episode (starts at 0 for each episode)
+
+Episode Grouping:
+The episode_id field allows grouping transitions from the same optimization episode together.
+Each episode starts with episode_step=0 and increments with each accepted transition.
+Episodes reset when the environment terminates/truncates (max_episode_steps reached).
+
+Example usage for grouping by episode:
+    import h5py
+    import numpy as np
+    from collections import defaultdict
+    
+    # Load episode data
+    with h5py.File('batch_file.h5', 'r') as f:
+        episode_ids = f['episode_ids'][:]
+        episode_steps = f['episode_steps'][:]
+        sa_actions = f['sa_actions'][:]
+        # ... load other arrays
+    
+    # Group by episode
+    episodes = defaultdict(list)
+    for i in range(len(episode_ids)):
+        episode_id = episode_ids[i].decode('utf-8') if isinstance(episode_ids[i], bytes) else episode_ids[i]
+        episodes[episode_id].append({
+            'step': episode_steps[i], 
+            'sa_action': sa_actions[i],
+            'index': i  # Original index for accessing other arrays
+        })
+    
+    # Sort each episode by step number
+    for episode_id in episodes:
+        episodes[episode_id].sort(key=lambda x: x['step'])
 
 This enables training models for:
 1. Behavior Cloning: Learn to mimic successful SA actions
@@ -435,9 +468,13 @@ def build_sa_dataset(args):
         observations = np.array([pair['observation'] for pair in sample_pairs], dtype=np.uint16)
         sa_actions = np.array([pair['sa_action'] for pair in sample_pairs], dtype=np.float32)
         perfect_actions = np.array([pair['perfect_action'] for pair in sample_pairs], dtype=np.float32)
+        sa_incremental_actions = np.array([pair['sa_incremental_action'] for pair in sample_pairs], dtype=np.float32)
+        perfect_incremental_actions = np.array([pair['perfect_incremental_action'] for pair in sample_pairs], dtype=np.float32)
         rewards = np.array([pair['reward'] for pair in sample_pairs], dtype=np.float32)
         temperatures = np.array([pair['temperature'] for pair in sample_pairs], dtype=np.float32)
         acceptance_deltas = np.array([pair['acceptance_delta'] for pair in sample_pairs], dtype=np.float32)
+        episode_ids = [pair['episode_id'] for pair in sample_pairs]  # Keep as strings for UUID storage
+        episode_steps = np.array([pair['episode_step'] for pair in sample_pairs], dtype=np.int32)
         
         # Create UUID-based filename to prevent parallel job collisions
         batch_uuid = str(uuid.uuid4())
@@ -452,9 +489,16 @@ def build_sa_dataset(args):
                 f.create_dataset('observations', data=observations, compression='gzip', compression_opts=6)
                 f.create_dataset('sa_actions', data=sa_actions, compression='gzip', compression_opts=6)
                 f.create_dataset('perfect_actions', data=perfect_actions, compression='gzip', compression_opts=6)
+                f.create_dataset('sa_incremental_actions', data=sa_incremental_actions, compression='gzip', compression_opts=6)
+                f.create_dataset('perfect_incremental_actions', data=perfect_incremental_actions, compression='gzip', compression_opts=6)
                 f.create_dataset('rewards', data=rewards, compression='gzip', compression_opts=6)
                 f.create_dataset('temperatures', data=temperatures, compression='gzip', compression_opts=6)
                 f.create_dataset('acceptance_deltas', data=acceptance_deltas, compression='gzip', compression_opts=6)
+                f.create_dataset('episode_steps', data=episode_steps, compression='gzip', compression_opts=6)
+                
+                # Store episode IDs as variable-length strings
+                dt = h5py.string_dtype(encoding='utf-8')
+                f.create_dataset('episode_ids', data=episode_ids, dtype=dt, compression='gzip', compression_opts=6)
                 
                 # Store metadata as attributes
                 f.attrs['batch_size'] = len(sample_pairs)
@@ -483,9 +527,13 @@ def build_sa_dataset(args):
                 observations=observations,
                 sa_actions=sa_actions,
                 perfect_actions=perfect_actions,
+                sa_incremental_actions=sa_incremental_actions,
+                perfect_incremental_actions=perfect_incremental_actions,
                 rewards=rewards,
                 temperatures=temperatures,
                 acceptance_deltas=acceptance_deltas,
+                episode_ids=np.array(episode_ids, dtype='U36'),  # 36 chars for UUID strings
+                episode_steps=episode_steps,
                 batch_size=len(sample_pairs),
                 batch_uuid=batch_uuid,
                 global_sample_count=global_sample_count,
@@ -523,6 +571,10 @@ def build_sa_dataset(args):
     obs, info = env.reset()
     action_size = env.action_space.shape[0]
     
+    # Episode tracking for grouping transitions
+    current_episode_id = str(uuid.uuid4())  # Unique ID for this episode
+    episode_step = 0  # Step counter within current episode
+    
     # Start with random action
     actions = env.action_space.sample()
     obs, rewards, _, _, infos = env.step(actions)
@@ -535,6 +587,7 @@ def build_sa_dataset(args):
     temperature_step = 0
     accepted_samples = 0
     total_steps = 0
+    previous_accepted_action = None  # Track previous accepted action for incremental computation
     
     # Track timing for progress reporting
     start_time = time.time()
@@ -629,15 +682,28 @@ def build_sa_dataset(args):
             optical_system = env.optical_system
             perfect_action = get_perfect_correction_action(optical_system)
             
+            # Compute incremental actions (difference from previous accepted action)
+            if previous_accepted_action is not None:
+                sa_incremental_action = candidate_actions - previous_accepted_action
+                perfect_incremental_action = perfect_action - previous_accepted_action
+            else:
+                # For the first accepted action, incremental is the action itself (no previous reference)
+                sa_incremental_action = candidate_actions.copy()
+                perfect_incremental_action = perfect_action.copy()
+            
             # Store accepted transition with both SA action and perfect action
             obs_uint16 = np.clip(next_obs, 0, 65535).astype(np.uint16)
             sample_pair = {
-                'observation': obs_uint16.tolist(),              # Observation after SA action
-                'sa_action': candidate_actions.tolist(),        # Action chosen by SA (behavior cloning target)
-                'perfect_action': perfect_action.tolist(),      # Perfect correcting action (correction learning target)
-                'reward': float(candidate_rewards),             # Reward achieved
-                'temperature': float(temperature),              # SA temperature at acceptance
-                'acceptance_delta': float(cost_delta)           # Cost delta that was accepted
+                'observation': obs_uint16.tolist(),                        # Observation after SA action
+                'sa_action': candidate_actions.tolist(),                  # Action chosen by SA (behavior cloning target)
+                'perfect_action': perfect_action.tolist(),                # Perfect correcting action (correction learning target)
+                'sa_incremental_action': sa_incremental_action.tolist(),  # SA action increment from previous
+                'perfect_incremental_action': perfect_incremental_action.tolist(),  # Perfect action increment from previous
+                'reward': float(candidate_rewards),                       # Reward achieved
+                'temperature': float(temperature),                        # SA temperature at acceptance
+                'acceptance_delta': float(cost_delta),                    # Cost delta that was accepted
+                'episode_id': current_episode_id,                         # Episode identifier for grouping
+                'episode_step': episode_step                              # Step within episode
             }
             sample_pairs.append(sample_pair)
             
@@ -645,6 +711,10 @@ def build_sa_dataset(args):
             actions = candidate_actions
             obs = next_obs
             accepted_samples += 1
+            episode_step += 1  # Increment step counter within episode
+            
+            # Update previous accepted action for next incremental computation
+            previous_accepted_action = candidate_actions.copy()
             
             # Write batch to disk if we've accumulated enough samples
             if len(sample_pairs) >= args.write_frequency:
@@ -688,6 +758,10 @@ def build_sa_dataset(args):
             actions = env.action_space.sample()
             obs, rewards, _, _, infos = env.step(actions)
             current_cost = -rewards
+            
+            # Start new episode with fresh ID and reset step counter
+            current_episode_id = str(uuid.uuid4())
+            episode_step = 0
 
     # Write any remaining samples as final batch
     if sample_pairs:
