@@ -24,6 +24,7 @@ Each saved sample contains:
 - acceptance_delta: Cost delta that was accepted
 - episode_id: UUID identifying which optimization episode the sample belongs to
 - episode_step: Sequential step number within the episode (starts at 0 for each episode)
+- optimization_step: Total SA optimization step counter (includes both accepted and rejected steps)
 
 Episode Grouping:
 The episode_id field allows grouping transitions from the same optimization episode together.
@@ -308,6 +309,8 @@ class Args:
     sparsity_patience: int = 100000000000000
     temperature_patience: int = 1000000000000000
     init_std_dev: float = 1.0
+    scale_patience: int = 100000000000000  # Steps before changing scale multiplier
+    scale_stickiness: float = 1.0  # Default scale multiplier (sticky, persists until patience exceeded)
 
 
 def cli_main(args):
@@ -331,9 +334,18 @@ def build_sa_dataset(args):
     # Load job config file for environment settings
     job_config_path = args.job_config_file
     if not os.path.isabs(job_config_path):
-        # If relative path, look in the optimization folder first
-        optimization_dir = Path(__file__).parent
-        job_config_path = optimization_dir / args.job_config_file
+        # If relative path, look relative to current working directory first
+        if os.path.exists(job_config_path):
+            job_config_path = os.path.abspath(job_config_path)
+        else:
+            # If not found, try relative to the optimization folder
+            optimization_dir = Path(__file__).parent
+            potential_path = optimization_dir / args.job_config_file
+            if os.path.exists(potential_path):
+                job_config_path = potential_path
+            else:
+                # Keep original path for error reporting
+                job_config_path = os.path.abspath(job_config_path)
     
     if os.path.exists(job_config_path):
         print(f"📋 Loading environment config from: {job_config_path}")
@@ -475,6 +487,7 @@ def build_sa_dataset(args):
         acceptance_deltas = np.array([pair['acceptance_delta'] for pair in sample_pairs], dtype=np.float32)
         episode_ids = [pair['episode_id'] for pair in sample_pairs]  # Keep as strings for UUID storage
         episode_steps = np.array([pair['episode_step'] for pair in sample_pairs], dtype=np.int32)
+        optimization_steps = np.array([pair['optimization_step'] for pair in sample_pairs], dtype=np.int32)
         
         # Create UUID-based filename to prevent parallel job collisions
         batch_uuid = str(uuid.uuid4())
@@ -495,6 +508,7 @@ def build_sa_dataset(args):
                 f.create_dataset('temperatures', data=temperatures, compression='gzip', compression_opts=6)
                 f.create_dataset('acceptance_deltas', data=acceptance_deltas, compression='gzip', compression_opts=6)
                 f.create_dataset('episode_steps', data=episode_steps, compression='gzip', compression_opts=6)
+                f.create_dataset('optimization_steps', data=optimization_steps, compression='gzip', compression_opts=6)
                 
                 # Store episode IDs as variable-length strings
                 dt = h5py.string_dtype(encoding='utf-8')
@@ -534,6 +548,7 @@ def build_sa_dataset(args):
                 acceptance_deltas=acceptance_deltas,
                 episode_ids=np.array(episode_ids, dtype='U36'),  # 36 chars for UUID strings
                 episode_steps=episode_steps,
+                optimization_steps=optimization_steps,
                 batch_size=len(sample_pairs),
                 batch_uuid=batch_uuid,
                 global_sample_count=global_sample_count,
@@ -568,33 +583,23 @@ def build_sa_dataset(args):
     print("=" * 60)
 
     # Initialize SA variables
-    obs, info = env.reset()
     action_size = env.action_space.shape[0]
     
-    # Episode tracking for grouping transitions
-    current_episode_id = str(uuid.uuid4())  # Unique ID for this episode
-    episode_step = 0  # Step counter within current episode
-    
-    # Start with random action
-    actions = env.action_space.sample()
-    obs, rewards, _, _, infos = env.step(actions)
-    
-    current_cost = -rewards
-    best_reward = rewards
-    best_action = actions
-    
-    steps_since_acceptance = 0
-    temperature_step = 0
     accepted_samples = 0
     total_steps = 0
     previous_accepted_action = None  # Track previous accepted action for incremental computation
     
+    # Track cost deltas for the last 100 steps for progress reporting
+    recent_cost_deltas = []
+    
     # Track timing for progress reporting
     start_time = time.time()
+    last_print_time = start_time
+    last_print_steps = 0
 
     print(f"Starting SA optimization to collect {samples_needed} accepted transitions...")
     
-    # Run SA until we have enough accepted samples
+    # Outer loop: run multiple episodes until we have enough accepted samples
     while accepted_samples < samples_needed:
         # Check periodically if another job has completed the target
         if accepted_samples % 100 == 0 and accepted_samples > 0:
@@ -603,165 +608,224 @@ def build_sa_dataset(args):
                 print(f"🎯 Target reached by other jobs! Current total: {current_total}")
                 break
         
-        # Simulated annealing temperature scheduling
-        if steps_since_acceptance > args.temperature_patience:
-            temperature_step = 1
-        else:
-            temperature_step += 1
-        temperature = args.init_temperature / temperature_step
+        # Start new episode
+        obs, info = env.reset()
+        current_episode_id = str(uuid.uuid4())  # Unique ID for this episode
+        episode_step = 0  # Step counter within current episode
+        
+        # Start with random action for this episode
+        actions = env.action_space.sample()
+        obs, rewards, terminations, truncations, infos = env.step(actions)
+        
+        current_cost = -rewards
+        best_reward = rewards
+        best_action = actions
+        
+        steps_since_acceptance = 0
+        temperature_step = 0
+        
+        # Scale patience tracking (sticky scale multiplier)
+        steps_since_scale_change = 0
+        current_scale = args.scale_stickiness  # Start with default scale
+        
+        # Inner loop: run SA within this episode until max_episode_steps or episode ends
+        for step_in_episode in range(args.max_episode_steps - 1):  # -1 because we already took one step above
+            # Check if we have enough samples
+            if accepted_samples >= samples_needed:
+                break
+                
+            # Check if episode terminated or truncated
+            if terminations or truncations:
+                print(f"Episode {current_episode_id[:8]} ended at step {episode_step} (term: {terminations}, trunc: {truncations})")
+                break
+            # Simulated annealing temperature scheduling
+            if steps_since_acceptance > args.temperature_patience:
+                temperature_step = 1
+            else:
+                temperature_step += 1
+            temperature = args.init_temperature / temperature_step
 
-        # Adaptive std_dev scheduling
-        if steps_since_acceptance > args.std_dev_patience:
-            std_dev = args.init_std_dev * np.array([
-                np.random.choice([
-                    np.random.uniform(1e+2, 1e+3),
-                    np.random.uniform(1e+1, 1e+2),
-                    np.random.uniform(1e+1, 1e-0),
+            # temperature = args.init_temperature / np.log(temperature_step+1)
+
+            # Adaptive std_dev scheduling
+            if steps_since_acceptance > args.std_dev_patience:
+                std_dev = args.init_std_dev * np.array([
+                    np.random.choice([
+                        np.random.uniform(1e-0, 1e-1),
+                        np.random.uniform(1e-1, 1e-2),
+                        np.random.uniform(1e-2, 1e-3),
+                        np.random.uniform(1e-3, 1e-4),
+                        np.random.uniform(1e-4, 1e-5),
+                        0.0
+                    ], size=1, replace=True)
+                    for _ in range(action_size)
+                ], dtype=np.float32).flatten()
+            else:
+                std_dev = args.init_std_dev
+            
+            # Scale patience scheduling (sticky scale multiplier)
+            if steps_since_acceptance > args.scale_patience + 1000:
+                # Choose a new scale multiplier when patience is exceeded
+                current_scale = np.random.choice([
+                    1.0,
                     np.random.uniform(1e-0, 1e-1),
                     np.random.uniform(1e-1, 1e-2),
                     np.random.uniform(1e-2, 1e-3),
-                    np.random.uniform(1e-3, 1e-4),
-                    np.random.uniform(1e-4, 1e-5),
-                    np.random.uniform(1e-5, 1e-6),
-                    np.random.uniform(1e-6, 1e-7),
-                    np.random.uniform(1e-7, 1e-8),
-                    0.0
-                ], size=1, replace=True)
-                for _ in range(action_size)
-            ], dtype=np.float32).flatten()
-        else:
-            std_dev = args.init_std_dev
-
-        # Action perturbation strategy selection
-        fsa = False  # Use Cauchy for fast simulated annealing
-        gsa = False  # Set True to use q-Gaussian for generalized simulated annealing
-
-        if gsa:
-            q = 1.5
-            T = 1.0
-            candidate_actions = actions + sample_q_gaussian_action(env.action_space, T, q, scale=std_dev)
-        elif fsa:
-            candidate_actions = actions + std_dev * sample_cauchy_action(env.action_space)
-        else:
-            candidate_actions = actions + sample_normal_action(env.action_space, std_dev=std_dev)
-
-        # Action sparsity scheduling
-        if steps_since_acceptance > args.sparsity_patience:
-            sparsity = np.random.uniform(0.0, 1.0)
-        else:
-            sparsity = 0.0
-        sparsity_size = np.min([int(candidate_actions.shape[0] * sparsity), candidate_actions.shape[0]-1])
-        if sparsity_size > 0:
-            zero_out = np.random.choice(candidate_actions.shape[0], size=sparsity_size, replace=False)
-            candidate_actions[zero_out] = 0.0
-
-        # Clip actions to action space bounds
-        candidate_actions = np.clip(candidate_actions, env.action_space.low, env.action_space.high)
-
-        # Step the environment with candidate action
-        next_obs, candidate_rewards, terminations, truncations, step_infos = env.step(candidate_actions)
-
-        # Update best reward and action if improved
-        if candidate_rewards > best_reward:
-            best_reward = candidate_rewards
-            best_action = candidate_actions.copy()
-
-        # Compute cost and cost delta
-        candidate_cost = -candidate_rewards
-        cost_delta = candidate_cost - current_cost
-
-        # Acceptance criteria: accept if cost is reduced or with probability ~exp(-delta/T)
-        accepted = False
-        if (cost_delta <= 0.0) or (np.exp(-cost_delta / temperature) > random.uniform(0.0, 1.0)):
-            # Accept the transition
-            current_cost = candidate_cost
-            steps_since_acceptance = 0
-            accepted = True
+                ])
+                steps_since_scale_change = 0  # Reset scale patience counter
             
-            # Get perfect correction action for this state
-            optical_system = env.optical_system
-            perfect_action = get_perfect_correction_action(optical_system)
-            
-            # Compute incremental actions (difference from previous accepted action)
-            if previous_accepted_action is not None:
-                sa_incremental_action = candidate_actions - previous_accepted_action
-                perfect_incremental_action = perfect_action - previous_accepted_action
+            # Apply the sticky scale to std_dev (single multiplier for all dimensions)
+            std_dev = std_dev * current_scale
+
+            # Action perturbation strategy selection
+            fsa = False  # Use Cauchy for fast simulated annealing
+            gsa = False  # Set True to use q-Gaussian for generalized simulated annealing
+
+            if gsa:
+                q = 1.5
+                T = 1.0
+                candidate_actions = actions + sample_q_gaussian_action(env.action_space, T, q, scale=std_dev)
+            elif fsa:
+                candidate_actions = actions + std_dev * sample_cauchy_action(env.action_space)
             else:
-                # For the first accepted action, incremental is the action itself (no previous reference)
-                sa_incremental_action = candidate_actions.copy()
-                perfect_incremental_action = perfect_action.copy()
+                candidate_actions = actions + sample_normal_action(env.action_space, std_dev=std_dev)
+
+            # Action sparsity scheduling
+            if steps_since_acceptance > args.sparsity_patience:
+                sparsity = np.random.uniform(0.0, 1.0)
+            else:
+                sparsity = 0.0
+            sparsity_size = np.min([int(candidate_actions.shape[0] * sparsity), candidate_actions.shape[0]-1])
+            if sparsity_size > 0:
+                zero_out = np.random.choice(candidate_actions.shape[0], size=sparsity_size, replace=False)
+                candidate_actions[zero_out] = 0.0
+
+            # Clip actions to action space bounds
+            candidate_actions = np.clip(candidate_actions, env.action_space.low, env.action_space.high)
+
+            # Step the environment with candidate action
+            next_obs, candidate_rewards, terminations, truncations, step_infos = env.step(candidate_actions)
+
+            # Update best reward and action if improved
+            if candidate_rewards > best_reward:
+                best_reward = candidate_rewards
+                best_action = candidate_actions.copy()
+
+            # Compute cost and cost delta
+            candidate_cost = -candidate_rewards
+            cost_delta = candidate_cost - current_cost
             
-            # Store accepted transition with both SA action and perfect action
-            obs_uint16 = np.clip(next_obs, 0, 65535).astype(np.uint16)
-            sample_pair = {
-                'observation': obs_uint16.tolist(),                        # Observation after SA action
-                'sa_action': candidate_actions.tolist(),                  # Action chosen by SA (behavior cloning target)
-                'perfect_action': perfect_action.tolist(),                # Perfect correcting action (correction learning target)
-                'sa_incremental_action': sa_incremental_action.tolist(),  # SA action increment from previous
-                'perfect_incremental_action': perfect_incremental_action.tolist(),  # Perfect action increment from previous
-                'reward': float(candidate_rewards),                       # Reward achieved
-                'temperature': float(temperature),                        # SA temperature at acceptance
-                'acceptance_delta': float(cost_delta),                    # Cost delta that was accepted
-                'episode_id': current_episode_id,                         # Episode identifier for grouping
-                'episode_step': episode_step                              # Step within episode
-            }
-            sample_pairs.append(sample_pair)
-            
-            # Update state for next iteration
-            actions = candidate_actions
-            obs = next_obs
-            accepted_samples += 1
-            episode_step += 1  # Increment step counter within episode
-            
-            # Update previous accepted action for next incremental computation
-            previous_accepted_action = candidate_actions.copy()
-            
-            # Write batch to disk if we've accumulated enough samples
-            if len(sample_pairs) >= args.write_frequency:
-                current_total_samples = existing_samples + accepted_samples
-                batch_id = write_batch(sample_pairs, current_total_samples)
-                if batch_id:
-                    batch_ids.append(batch_id)
-                    print(f"💾 Wrote batch {len(batch_ids)} ({len(sample_pairs)} accepted samples) to disk: {batch_id}")
+            # Track cost delta for progress reporting (keep last 100)
+            recent_cost_deltas.append(cost_delta)
+            if len(recent_cost_deltas) > 100:
+                recent_cost_deltas.pop(0)
+
+            # Acceptance criteria: accept if cost is reduced or with probability ~exp(-delta/T)
+            accepted = False
+            if (cost_delta <= 0.0) or (np.exp(-cost_delta / temperature) > random.uniform(0.0, 1.0)):
+                # Accept the transition
+                current_cost = candidate_cost
+                steps_since_acceptance = 0
+                accepted = True
                 
-                # Clear batch list for next batch
-                sample_pairs = []
-            
-        else:
-            # Reject the transition
-            steps_since_acceptance += 1
+                # Get perfect correction action for this state
+                optical_system = env.optical_system
+                perfect_action = get_perfect_correction_action(optical_system)
+                
+                # Compute incremental actions (difference from previous accepted action)
+                if previous_accepted_action is not None:
+                    sa_incremental_action = candidate_actions - previous_accepted_action
+                    perfect_incremental_action = perfect_action - previous_accepted_action
+                else:
+                    # For the first accepted action, incremental is the action itself (no previous reference)
+                    sa_incremental_action = candidate_actions.copy()
+                    perfect_incremental_action = perfect_action.copy()
+                
+                # Store accepted transition with both SA action and perfect action
+                obs_uint16 = np.clip(obs, 0, 65535).astype(np.uint16)
+                next_obs_uint16 = np.clip(next_obs, 0, 65535).astype(np.uint16)
+                sample_pair = {
+                    'observation': obs_uint16.tolist(),                        # Observation PRIOR TO SA action - this is the state the
+                    'sa_action': candidate_actions.tolist(),                  # Action chosen by SA (behavior cloning target)
+                    'sa_incremental_action': sa_incremental_action.tolist(),  # SA action increment from previous
+                    'perfect_incremental_action': perfect_incremental_action.tolist(),  # Perfect action increment from previous
+                    'perfect_action': perfect_action.tolist(),                # Perfect correcting action (correction learning target)
+                    'reward': float(candidate_rewards),                       # Reward achieved
+                    'next_observation': next_obs_uint16.tolist(),            # Observation AFTER SA action
+                    'temperature': float(temperature),                        # SA temperature at acceptance
+                    'acceptance_delta': float(cost_delta),                    # Cost delta that was accepted
+                    'episode_id': current_episode_id,                         # Episode identifier for grouping
+                    'episode_step': episode_step,                             # Step within episode
+                    'optimization_step': total_steps                          # Total optimization step counter
+                }
+                sample_pairs.append(sample_pair)
+                
+                # Update state for next iteration
+                actions = candidate_actions
+                obs = next_obs
+                accepted_samples += 1
+                episode_step += 1  # Increment step counter within episode
+                
+                # Update previous accepted action for next incremental computation
+                previous_accepted_action = candidate_actions.copy()
+                
+                # Write batch to disk if we've accumulated enough samples
+                if len(sample_pairs) >= args.write_frequency:
+                    current_total_samples = existing_samples + accepted_samples
+                    batch_id = write_batch(sample_pairs, current_total_samples)
+                    if batch_id:
+                        batch_ids.append(batch_id)
+                        print(f"💾 Wrote batch {len(batch_ids)} ({len(sample_pairs)} accepted samples) to disk: {batch_id}")
+                    
+                    # Clear batch list for next batch
+                    sample_pairs = []
+                
+            else:
+                # Reject the transition
+                steps_since_acceptance += 1
 
-        total_steps += 1
-        
-        # Progress reporting
-        if total_steps % 100 == 0 or accepted_samples == samples_needed:
-            current_total_samples = existing_samples + accepted_samples
-            progress = current_total_samples / args.num_samples * 100
-            elapsed = time.time() - start_time
-            acceptance_rate = accepted_samples / total_steps * 100 if total_steps > 0 else 0
-            samples_per_sec = accepted_samples / elapsed if elapsed > 0 else 0
-            remaining_needed = samples_needed - accepted_samples
-            eta_seconds = remaining_needed / samples_per_sec if samples_per_sec > 0 else 0
-            eta_str = f"{eta_seconds:.0f}s" if eta_seconds < 3600 else f"{eta_seconds/3600:.1f}h"
+            # Always increment scale patience counter (continues across acceptances)
+            steps_since_scale_change += 1
+            total_steps += 1
             
-            print(f"Progress: {current_total_samples}/{args.num_samples} ({progress:.1f}%) | "
-                  f"Accepted: {accepted_samples}/{samples_needed} | Steps: {total_steps} | "
-                  f"Accept: {acceptance_rate:.1f}% | Rate: {samples_per_sec:.2f} accepted/s | "
-                  f"T: {temperature:.3f} | Best R: {best_reward:.4f} | ETA: {eta_str}")
-            
-            # Flush output for real-time monitoring
-            sys.stdout.flush()
-
-        # Reset environment if episode ends
-        if terminations or truncations:
-            obs, info = env.reset()
-            actions = env.action_space.sample()
-            obs, rewards, _, _, infos = env.step(actions)
-            current_cost = -rewards
-            
-            # Start new episode with fresh ID and reset step counter
-            current_episode_id = str(uuid.uuid4())
-            episode_step = 0
+            # Progress reporting
+            if total_steps % 100 == 0 or accepted_samples == samples_needed:
+                current_total_samples = existing_samples + accepted_samples
+                progress = current_total_samples / args.num_samples * 100
+                current_time = time.time()
+                elapsed = current_time - start_time
+                acceptance_rate = accepted_samples / total_steps * 100 if total_steps > 0 else 0
+                samples_per_sec = accepted_samples / elapsed if elapsed > 0 else 0
+                remaining_needed = samples_needed - accepted_samples
+                eta_seconds = remaining_needed / samples_per_sec if samples_per_sec > 0 else 0
+                eta_str = f"{eta_seconds:.0f}s" if eta_seconds < 3600 else f"{eta_seconds/3600:.1f}h"
+                
+                # Calculate steps per second since last print
+                time_since_last_print = current_time - last_print_time
+                steps_since_last_print = total_steps - last_print_steps
+                steps_per_sec_interval = steps_since_last_print / time_since_last_print if time_since_last_print > 0 else 0
+                
+                # Compute cost delta statistics for recent steps
+                if recent_cost_deltas:
+                    max_delta = max(recent_cost_deltas)
+                    min_delta = min(recent_cost_deltas)
+                    median_delta = np.median(recent_cost_deltas)
+                    delta_stats = f"Δ[{min_delta:.3f},{median_delta:.3f},{max_delta:.3f}]"
+                else:
+                    delta_stats = "Δ[--,--,--]"
+                
+                print(f"Progress: {current_total_samples}/{args.num_samples} ({progress:.1f}%) | "
+                      f"Accepted: {accepted_samples}/{samples_needed} | Steps: {total_steps} | "
+                      f"Accept: {acceptance_rate:.1f}% | Rate: {samples_per_sec:.2f} accepted/s | "
+                      f"Steps/s: {steps_per_sec_interval:.1f} | "
+                      f"T: {temperature:.3f} | Best R: {best_reward:.4f} | {delta_stats} | ETA: {eta_str}")
+                
+                # Update tracking variables for next interval
+                last_print_time = current_time
+                last_print_steps = total_steps
+                
+                # Flush output for real-time monitoring
+                sys.stdout.flush()
 
     # Write any remaining samples as final batch
     if sample_pairs:

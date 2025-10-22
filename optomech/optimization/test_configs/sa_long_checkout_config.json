@@ -1,0 +1,15 @@
+{
+  "total_samples": 10000,
+  "samples_per_job": 1000,
+  "max_workers": 2,
+  "timeout_minutes": 120,
+  "base_dataset_dir": "./test_datasets",
+  "dataset_name": "long_checkout_test",
+  "write_frequency": 10,
+  "job_config_file": "/Users/fletcher/research/visuomotor-deep-optics/optomech/optimization/test_configs/test_512px_config.json",
+  "init_temperature": 1.0,
+  "std_dev_patience": 10,
+  "sparsity_patience": 100000000000000,
+  "temperature_patience": 1000000000000000,
+  "init_std_dev": 1.0
+}

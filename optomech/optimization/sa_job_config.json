@@ -7,7 +7,7 @@
   "dataset_name": "sa_dataset_1m",
   "write_frequency": 100,
   "job_config_file": "job_config.json",
-  "init_temperature": 100.0,
+  "init_temperature": 10.0,
   "std_dev_patience": 10,
   "sparsity_patience": 100000000000000,
   "temperature_patience": 1000000000000000,
