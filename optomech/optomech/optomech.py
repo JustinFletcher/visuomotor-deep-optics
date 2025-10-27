@@ -2731,7 +2731,47 @@ class OptomechEnv(gym.Env):
                 centering = np.mean(normalized_image * distance_map)
                 center_concentration = centering / np.mean(normalized_image)
 
-                mse = -np.mean((np.log(normalized_image.flatten()) - np.log(normalized_target.flatten())) ** 2)
+                # Convert images to ints round to nearest.
+                loss_image = np.round(65534.0 * normalized_image) + 1
+                loss_target = np.round((65534.0 * normalized_target)) + 1
+
+                # Print the mean min max and median of the normalized image.
+                # print("Image - min: %.6f, median: %.6f, max: %.6f" % (
+                #     np.min(loss_image),
+                #     np.median(loss_image),
+                #     np.max(loss_image)   
+                # )
+                # )   
+                # print("Target - min: %.6f, median: %.6f, max: %.6f" % (
+                #     np.min(loss_target),
+                #     np.median(loss_target),
+                #     np.max(loss_target)
+                # )
+                # )
+
+                # # PLot the histogram of the loss image and target on differentt axes.
+                # import matplotlib.pyplot as plt
+                # fig, axs = plt.subplots(2, 1, figsize=(10, 8))
+                # axs[0].hist(loss_image.flatten(), bins=100, alpha=0.5, label='Image')
+                # axs[0].set_title("Loss Image Histogram")
+                # axs[0].set_xlabel("Pixel Value")
+                # axs[0].set_ylabel("Frequency")
+                # axs[0].legend()
+
+                # axs[1].hist(loss_target.flatten(), bins=100, alpha=0.5, label='Target')
+                # axs[1].set_title("Loss Target Histogram")
+                # axs[1].set_xlabel("Pixel Value")
+                # axs[1].set_ylabel("Frequency")
+                # axs[1].legend()
+
+                # plt.tight_layout()
+                # plt.show()
+                # plt.title("Loss Image and Target Histograms")
+                # plt.xlabel("Pixel Value")
+                # plt.ylabel("Frequency")
+                # plt.show()  
+
+                mse = -np.mean((np.log(loss_image.flatten()) - np.log(loss_target.flatten())) ** 2)
 
                 # 0.42 is good enough for centering.
                 # For elf, want diminishing returns at about 0.6
