@@ -680,6 +680,7 @@ class AutoencoderConfig:
     pin_memory: bool = True  # Pin memory for GPU training
     log_scale: bool = False  # Apply log-scaling to observations
     load_in_memory: bool = False  # Load entire dataset into memory for faster training
+    no_dataparallel: bool = False  # Disable DataParallel for multi-GPU training
 
 
 def get_device(device_str: str) -> torch.device:
@@ -1116,9 +1117,12 @@ def train_autoencoder(config: AutoencoderConfig):
     
     # Multi-GPU setup
     gpu_count = torch.cuda.device_count()
-    if gpu_count > 1:
+    if gpu_count > 1 and not config.no_dataparallel:
         print(f"🔧 Using DataParallel with {gpu_count} GPUs")
         model = DataParallel(model)
+    elif gpu_count > 1 and config.no_dataparallel:
+        print(f"⚠️  Multiple GPUs detected ({gpu_count}) but DataParallel is disabled")
+        print(f"   Training will only use GPU 0")
     
     model.to(device)
     
@@ -1166,7 +1170,7 @@ def train_autoencoder(config: AutoencoderConfig):
         print(f"📂 Resuming from checkpoint: {config.resume_from}")
         checkpoint = torch.load(config.resume_from, map_location=device, weights_only=False)
         
-        if gpu_count > 1:
+        if gpu_count > 1 and not config.no_dataparallel:
             model.module.load_state_dict(checkpoint['model_state_dict'])
         else:
             model.load_state_dict(checkpoint['model_state_dict'])
@@ -1176,7 +1180,7 @@ def train_autoencoder(config: AutoencoderConfig):
         best_val_loss = checkpoint['val_loss']
         print(f"Resumed from epoch {start_epoch}")
     
-    print(f"\n🎯 Training Configuration:")
+    print(f"🎯 Training Configuration:")
     print(f"  Architecture: {config.arch}")
     print(f"  Latent dim: {config.latent_dim}")
     print(f"  Batch size: {config.batch_size}")
@@ -1186,6 +1190,7 @@ def train_autoencoder(config: AutoencoderConfig):
     print(f"  Epochs: {config.num_epochs}")
     print(f"  Device: {device}")
     print(f"  Lazy loading: {use_lazy_loading}")
+    print(f"  DataParallel: {'Disabled' if config.no_dataparallel else 'Enabled' if gpu_count > 1 else 'N/A (single GPU)'}")
     
     # Training loop
     print(f"\n🏃 Starting training for {config.num_epochs} epochs...")
@@ -1368,6 +1373,8 @@ def main():
     parser.add_argument("--log-scale", action="store_true", help="Apply log-scaling to observations")
     parser.add_argument("--load-in-memory", action="store_true", 
                        help="Load entire dataset into memory for fastest training (requires sufficient RAM)")
+    parser.add_argument("--no-dataparallel", action="store_true",
+                       help="Disable DataParallel for multi-GPU training")
     
     args = parser.parse_args()
     
@@ -1389,7 +1396,8 @@ def main():
         max_examples=args.max_examples,
         seed=args.seed,
         log_scale=args.log_scale,
-        load_in_memory=args.load_in_memory
+        load_in_memory=args.load_in_memory,
+        no_dataparallel=args.no_dataparallel
     )
     
     # Print configuration
