@@ -24,7 +24,7 @@ import uuid
 import time
 import shutil
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional, Union
 from dataclasses import dataclass
 import pickle
 
@@ -471,7 +471,156 @@ def huber_loss(predictions, targets, delta=1.0):
     return torch.where(condition, squared_loss, linear_loss).mean()
 
 
-def create_loss_function(loss_type, huber_delta=0.1):
+def create_loss_function(loss_type: str, huber_delta: float = 0.1):
+    """Create loss function"""
+    if loss_type == "mse":
+        return nn.MSELoss()
+    elif loss_type == "mae":
+        return nn.L1Loss()
+    elif loss_type == "smooth_l1":
+        return nn.SmoothL1Loss()
+    elif loss_type == "huber":
+        return nn.HuberLoss(delta=huber_delta)
+    else:
+        raise ValueError(f"Unknown loss function: {loss_type}")
+
+
+class InMemoryAutoencoderDataset(Dataset):
+    """
+    Dataset that loads all data into memory for fastest training.
+    Use this when you have sufficient RAM to hold the entire dataset.
+    """
+    
+    def __init__(self, 
+                 dataset_path: Union[str, Path],
+                 input_crop_size: Optional[int] = None,
+                 max_examples: Optional[int] = None,
+                 log_scale: bool = False):
+        """
+        Args:
+            dataset_path: Path to dataset directory
+            input_crop_size: If specified, center crop inputs to this size
+            max_examples: Optional limit on number of examples
+            log_scale: Whether to apply log-scaling to observations
+        """
+        print("\n💾 Loading entire dataset into memory...")
+        print("⚠️  This requires sufficient RAM for the full dataset")
+        
+        load_start = time.time()
+        
+        self.input_crop_size = input_crop_size
+        self.log_scale = log_scale
+        
+        # Discover and load all files
+        file_paths, dataset_type, metadata = DatasetDiscovery.discover_files(dataset_path)
+        
+        print(f"📂 Found {len(file_paths)} files of type '{dataset_type}'")
+        print(f"📊 Loading data from all files...")
+        
+        all_observations = []
+        total_loaded = 0
+        
+        if dataset_type == 'hdf5':
+            for file_idx, file_path in enumerate(file_paths):
+                if file_idx % 100 == 0:
+                    print(f"  📁 Loading file {file_idx}/{len(file_paths)}")
+                
+                try:
+                    data = FileLoader.load_hdf5_observations(file_path, ['observations'])
+                    if 'observations' in data:
+                        obs_data = data['observations']
+                        all_observations.append(obs_data)
+                        total_loaded += len(obs_data)
+                        
+                        if max_examples and total_loaded >= max_examples:
+                            break
+                except Exception as e:
+                    print(f"  ⚠️  Skipping {file_path}: {e}")
+        
+        elif dataset_type == 'npz':
+            obs_key = metadata.get('obs_key', 'observations')
+            for file_idx, file_path in enumerate(file_paths):
+                if file_idx % 100 == 0:
+                    print(f"  📁 Loading file {file_idx}/{len(file_paths)}")
+                
+                try:
+                    data = FileLoader.load_npz_observations(file_path, [obs_key])
+                    if obs_key in data:
+                        obs_data = data[obs_key]
+                        all_observations.append(obs_data)
+                        total_loaded += len(obs_data)
+                        
+                        if max_examples and total_loaded >= max_examples:
+                            break
+                except Exception as e:
+                    print(f"  ⚠️  Skipping {file_path}: {e}")
+        
+        elif dataset_type == 'json':
+            for file_idx, file_path in enumerate(file_paths):
+                if file_idx % 100 == 0:
+                    print(f"  📁 Loading file {file_idx}/{len(file_paths)}")
+                
+                try:
+                    data = FileLoader.load_json_observations(file_path)
+                    if 'observations' in data:
+                        obs_data = np.array(data['observations'])
+                        all_observations.append(obs_data)
+                        total_loaded += len(obs_data)
+                        
+                        if max_examples and total_loaded >= max_examples:
+                            break
+                except Exception as e:
+                    print(f"  ⚠️  Skipping {file_path}: {e}")
+        
+        # Concatenate all observations
+        print(f"📦 Concatenating {len(all_observations)} arrays...")
+        self.observations = np.concatenate(all_observations, axis=0)
+        
+        # Limit if needed
+        if max_examples and len(self.observations) > max_examples:
+            print(f"✂️  Trimming to {max_examples} examples")
+            self.observations = self.observations[:max_examples]
+        
+        load_time = time.time() - load_start
+        memory_gb = self.observations.nbytes / (1024**3)
+        
+        print(f"✅ Dataset loaded into memory in {load_time:.2f} seconds")
+        print(f"   Total observations: {len(self.observations)}")
+        print(f"   Observation shape: {self.observations.shape[1:]}")
+        print(f"   Memory usage: {memory_gb:.2f} GB")
+        print(f"   Data type: {self.observations.dtype}")
+        
+        # Setup transforms
+        from utils.transforms import ToTensor, CenterCrop, LogScale, Compose
+        
+        transforms = [ToTensor(normalize=True, input_range='auto')]
+        
+        if self.input_crop_size is not None:
+            transforms.append(CenterCrop(self.input_crop_size))
+        
+        if self.log_scale:
+            transforms.append(LogScale())
+        
+        self.transform = Compose(transforms)
+    
+    def __len__(self):
+        return len(self.observations)
+    
+    def __getitem__(self, idx):
+        """Get single item - fast since data is already in memory"""
+        observation = self.observations[idx]
+        
+        # Apply transforms
+        if self.transform:
+            obs_tensor = self.transform(observation)
+        else:
+            obs_tensor = torch.from_numpy(observation).float()
+        
+        # For autoencoder, target is the same as input
+        return obs_tensor, obs_tensor
+
+
+def create_loss_function(loss_type: str, huber_delta: float = 0.1):
     """
     Factory function to create loss functions for autoencoder training.
     
@@ -496,7 +645,7 @@ def create_loss_function(loss_type, huber_delta=0.1):
 
 @dataclass
 class AutoencoderConfig:
-    """Configuration for autoencoder training parameters"""
+    """Configuration for autoencoder training"""
     dataset_path: str = "datasets/sml_100k_dataset"
     batch_size: int = 4
     learning_rate: float = 1e-4
@@ -530,6 +679,7 @@ class AutoencoderConfig:
     num_workers: int = 4  # DataLoader workers
     pin_memory: bool = True  # Pin memory for GPU training
     log_scale: bool = False  # Apply log-scaling to observations
+    load_in_memory: bool = False  # Load entire dataset into memory for faster training
 
 
 def get_device(device_str: str) -> torch.device:
@@ -551,21 +701,41 @@ def get_device(device_str: str) -> torch.device:
 def train_epoch(model, train_loader, criterion, optimizer, device):
     """Train for one epoch"""
     print("🚂 Starting training epoch...")
+    epoch_start = time.time()
     model.train()
     running_loss = 0.0
     total_batches = len(train_loader)
     
     print(f"📊 Training on {total_batches} batches")
     
+    batch_times = []
     for batch_idx, (data, target) in enumerate(train_loader):
-        if batch_idx % 500 == 0:  # Print every 500 batches
-            print(f"  📦 Processing batch {batch_idx}/{total_batches}")
+        batch_start = time.time()
+        
+        # Print progress every 100 batches
+        if batch_idx % 100 == 0 and batch_idx > 0:
+            avg_batch_time = np.mean(batch_times[-100:])
+            batches_remaining = total_batches - batch_idx
+            eta_seconds = avg_batch_time * batches_remaining
+            eta_minutes = eta_seconds / 60
+            print(f"  📦 Batch {batch_idx}/{total_batches} | "
+                  f"Avg Loss: {running_loss / batch_idx:.6f} | "
+                  f"Batch Time: {avg_batch_time:.3f}s | "
+                  f"ETA: {eta_minutes:.1f}m")
         
         if batch_idx == 0:  # Detailed debug for first batch only
             print(f"🔄 Batch {batch_idx}: Moving data to device...")
+            data_transfer_start = time.time()
+        
         data, target = data.to(device), target.to(device)
+        
         if batch_idx == 0:
-            print(f"✅ Batch {batch_idx}: Data moved to {device}")
+            data_transfer_time = time.time() - data_transfer_start
+            print(f"✅ Batch {batch_idx}: Data moved to {device} in {data_transfer_time:.3f}s")
+            print(f"   Data shape: {data.shape}")
+            print(f"   Target shape: {target.shape}")
+            print(f"   Data dtype: {data.dtype}")
+            print(f"   Data device: {data.device}")
         
         if batch_idx == 0:
             print(f"🧹 Batch {batch_idx}: Zeroing gradients...")
@@ -574,52 +744,79 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
         # Forward pass
         if batch_idx == 0:
             print(f"➡️  Batch {batch_idx}: Forward pass...")
+            forward_start = time.time()
+        
         if hasattr(model, 'forward') and len(model.forward.__code__.co_varnames) > 2:
             # Model returns both reconstruction and latent (like our autoencoders)
             reconstruction, latent = model(data)
         else:
             # Model returns only reconstruction
             reconstruction = model(data)
+        
         if batch_idx == 0:
-            print(f"✅ Batch {batch_idx}: Forward pass complete")
+            forward_time = time.time() - forward_start
+            print(f"✅ Batch {batch_idx}: Forward pass complete in {forward_time:.3f}s")
+            print(f"   Reconstruction shape: {reconstruction.shape}")
         
         # Compute reconstruction loss
         if batch_idx == 0:
             print(f"📊 Batch {batch_idx}: Computing loss...")
+            loss_start = time.time()
+        
         loss = criterion(reconstruction, target)
+        
         if batch_idx == 0:
-            print(f"✅ Batch {batch_idx}: Loss = {loss.item():.6f}")
+            loss_time = time.time() - loss_start
+            print(f"✅ Batch {batch_idx}: Loss computed in {loss_time:.3f}s")
+            print(f"   Loss value: {loss.item():.6f}")
         
         # Backward pass
         if batch_idx == 0:
             print(f"⬅️  Batch {batch_idx}: Backward pass...")
+            backward_start = time.time()
+        
         loss.backward()
+        
         if batch_idx == 0:
-            print(f"✅ Batch {batch_idx}: Backward pass complete")
+            backward_time = time.time() - backward_start
+            print(f"✅ Batch {batch_idx}: Backward pass complete in {backward_time:.3f}s")
         
         if batch_idx == 0:
             print(f"⚡ Batch {batch_idx}: Optimizer step...")
+            opt_start = time.time()
+        
         optimizer.step()
+        
         if batch_idx == 0:
-            print(f"✅ Batch {batch_idx}: Optimizer step complete")
+            opt_time = time.time() - opt_start
+            print(f"✅ Batch {batch_idx}: Optimizer step complete in {opt_time:.3f}s")
         
         running_loss += loss.item()
         
+        batch_time = time.time() - batch_start
+        batch_times.append(batch_time)
+        
         if batch_idx == 0:
             print(f"🎯 First batch completed successfully!")
-            print(f"   Data shape: {data.shape}")
-            print(f"   Target shape: {target.shape}")
-            print(f"   Reconstruction shape: {reconstruction.shape}")
-            print(f"   Loss: {loss.item():.6f}")
+            print(f"   Total batch time: {batch_time:.3f}s")
+            print(f"   - Data transfer: {data_transfer_time:.3f}s")
+            print(f"   - Forward pass: {forward_time:.3f}s")
+            print(f"   - Loss computation: {loss_time:.3f}s")
+            print(f"   - Backward pass: {backward_time:.3f}s")
+            print(f"   - Optimizer step: {opt_time:.3f}s")
     
+    epoch_time = time.time() - epoch_start
     avg_loss = running_loss / len(train_loader)
-    print(f"🏁 Training epoch complete. Average loss: {avg_loss:.6f}")
+    print(f"🏁 Training epoch complete in {epoch_time/60:.2f} minutes")
+    print(f"   Average loss: {avg_loss:.6f}")
+    print(f"   Average batch time: {np.mean(batch_times):.3f}s")
     return avg_loss
 
 
 def validate_epoch(model, val_loader, criterion, device):
     """Validate for one epoch"""
     print("🔍 Starting validation epoch...")
+    val_start = time.time()
     model.eval()
     running_loss = 0.0
     total_batches = len(val_loader)
@@ -628,8 +825,10 @@ def validate_epoch(model, val_loader, criterion, device):
     
     with torch.no_grad():
         for batch_idx, (data, target) in enumerate(val_loader):
-            if batch_idx % 100 == 0:  # Print every 100 batches for validation
-                print(f"  🔍 Validating batch {batch_idx}/{total_batches}")
+            # Print progress every 100 batches for validation
+            if batch_idx % 100 == 0 and batch_idx > 0:
+                print(f"  🔍 Validating batch {batch_idx}/{total_batches} | "
+                      f"Avg Loss: {running_loss / batch_idx:.6f}")
             
             if batch_idx == 0:  # Detailed debug for first batch only
                 print(f"🔄 Val Batch {batch_idx}: Moving data to device...")
@@ -653,8 +852,10 @@ def validate_epoch(model, val_loader, criterion, device):
                 print(f"✅ Val Batch {batch_idx}: Loss = {loss.item():.6f}")
                 print(f"🎯 First validation batch completed successfully!")
     
+    val_time = time.time() - val_start
     avg_loss = running_loss / len(val_loader)
-    print(f"🏁 Validation epoch complete. Average loss: {avg_loss:.6f}")
+    print(f"🏁 Validation epoch complete in {val_time/60:.2f} minutes")
+    print(f"   Average loss: {avg_loss:.6f}")
     return avg_loss
 
 
@@ -791,26 +992,42 @@ def train_autoencoder(config: AutoencoderConfig):
     
     # Determine if we should use lazy loading or in-memory loading
     total_obs = metadata['total_observations']
-    use_lazy_loading = True
     
+    # User-requested in-memory loading
+    if config.load_in_memory:
+        use_lazy_loading = False
+        print(f"💾 User requested in-memory loading for dataset ({total_obs} observations)")
+        print(f"⚠️  This will load the entire dataset into RAM")
     # For very small datasets, we can still load into memory
-    if config.max_examples and config.max_examples <= 1000:
+    elif config.max_examples and config.max_examples <= 1000:
         use_lazy_loading = False
         print(f"💡 Using in-memory loading for small dataset ({config.max_examples} examples)")
     elif total_obs <= 1000:
         use_lazy_loading = False
         print(f"💡 Using in-memory loading for small dataset ({total_obs} examples)")
     else:
+        use_lazy_loading = True
         print(f"💾 Using lazy loading for large dataset ({total_obs} total observations)")
+        print(f"💡 Use --load-in-memory flag to load entire dataset into RAM for faster training")
     
     # Create dataset using unified utilities
     if use_lazy_loading:
+        print(f"\n📂 Creating lazy-loading dataset...")
         dataset = LazyDataset(
             dataset_path=config.dataset_path,
             task_type='autoencoder',
             input_crop_size=config.input_crop_size,
             max_examples=config.max_examples,
             use_cache=True,
+            log_scale=config.log_scale
+        )
+    elif config.load_in_memory:
+        # Use new in-memory dataset for fastest training
+        print(f"\n📂 Loading dataset into memory...")
+        dataset = InMemoryAutoencoderDataset(
+            dataset_path=config.dataset_path,
+            input_crop_size=config.input_crop_size,
+            max_examples=config.max_examples,
             log_scale=config.log_scale
         )
     else:
@@ -1149,6 +1366,8 @@ def main():
     parser.add_argument("--max-examples", type=int, help="Limit dataset size for debugging")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--log-scale", action="store_true", help="Apply log-scaling to observations")
+    parser.add_argument("--load-in-memory", action="store_true", 
+                       help="Load entire dataset into memory for fastest training (requires sufficient RAM)")
     
     args = parser.parse_args()
     
@@ -1169,7 +1388,8 @@ def main():
         resume_from=args.resume_from,
         max_examples=args.max_examples,
         seed=args.seed,
-        log_scale=args.log_scale
+        log_scale=args.log_scale,
+        load_in_memory=args.load_in_memory
     )
     
     # Print configuration
