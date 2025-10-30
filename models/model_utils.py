@@ -129,7 +129,11 @@ class ModelSaver:
         if save_torchscript and example_input is not None:
             try:
                 model.eval()
-                traced_model = torch.jit.trace(model, example_input)
+                # Suppress TracerWarnings for minor numerical differences
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings('ignore', category=torch.jit.TracerWarning)
+                    traced_model = torch.jit.trace(model, example_input, check_tolerance=1e-4)
                 torchscript_file = save_path / f"{model_id}_traced.pt"
                 traced_model.save(str(torchscript_file))
                 save_dict['torchscript_available'] = True

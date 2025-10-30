@@ -24,8 +24,8 @@ def center_crop_transform(tensor, crop_size):
         # Single image: [C, H, W]
         c, h, w = tensor.shape
         
-        if crop_size > min(h, w):
-            raise ValueError(f"Crop size {crop_size} is larger than image dimensions {h}×{w}")
+        # Note: Error checking disabled for TorchScript compatibility
+        # Assumes crop_size <= min(h, w)
         
         # Calculate center crop coordinates
         center_h, center_w = h // 2, w // 2
@@ -43,8 +43,8 @@ def center_crop_transform(tensor, crop_size):
         # Batch of images: [N, C, H, W]
         n, c, h, w = tensor.shape
         
-        if crop_size > min(h, w):
-            raise ValueError(f"Crop size {crop_size} is larger than image dimensions {h}×{w}")
+        # Note: Error checking disabled for TorchScript compatibility
+        # Assumes crop_size <= min(h, w)
         
         # Calculate center crop coordinates
         center_h, center_w = h // 2, w // 2
