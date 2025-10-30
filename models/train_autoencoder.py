@@ -713,6 +713,40 @@ def get_device(device_str: str) -> torch.device:
     return device
 
 
+def normalize_for_display(tensor):
+    """
+    Normalize a tensor to [0, 1] range for visualization.
+    Handles both single images and batches.
+    
+    Args:
+        tensor: Input tensor of shape [C, H, W] or [N, C, H, W]
+        
+    Returns:
+        Normalized tensor in range [0, 1]
+    """
+    # Normalize each image in the batch independently
+    if len(tensor.shape) == 4:
+        # Batch: [N, C, H, W]
+        normalized = torch.zeros_like(tensor)
+        for i in range(tensor.shape[0]):
+            img = tensor[i]
+            img_min = img.min()
+            img_max = img.max()
+            if img_max - img_min > 1e-7:  # Avoid division by zero
+                normalized[i] = (img - img_min) / (img_max - img_min)
+            else:
+                normalized[i] = img
+        return normalized
+    else:
+        # Single image: [C, H, W]
+        img_min = tensor.min()
+        img_max = tensor.max()
+        if img_max - img_min > 1e-7:
+            return (tensor - img_min) / (img_max - img_min)
+        else:
+            return tensor
+
+
 def train_epoch(model, train_loader, criterion, optimizer, device):
     """Train for one epoch"""
     print("🚂 Starting training epoch...")
@@ -1301,12 +1335,17 @@ def train_autoencoder(config: AutoencoderConfig):
                 # Compute residuals
                 residuals = torch.abs(val_images - reconstructions)
                 
-                # Log images to TensorBoard
-                writer.add_images('Validation/Original', val_images, epoch)
-                writer.add_images('Validation/Reconstructed', reconstructions, epoch)
-                writer.add_images('Validation/Residuals', residuals, epoch)
+                # Normalize images to [0, 1] for TensorBoard display
+                val_images_norm = normalize_for_display(val_images)
+                reconstructions_norm = normalize_for_display(reconstructions)
+                residuals_norm = normalize_for_display(residuals)
                 
-                # Log statistics
+                # Log images to TensorBoard
+                writer.add_images('Validation/Original', val_images_norm, epoch)
+                writer.add_images('Validation/Reconstructed', reconstructions_norm, epoch)
+                writer.add_images('Validation/Residuals', residuals_norm, epoch)
+                
+                # Log statistics (use unnormalized values for meaningful metrics)
                 writer.add_scalar('Validation/MeanResidual', residuals.mean().item(), epoch)
                 writer.add_scalar('Validation/MaxResidual', residuals.max().item(), epoch)
                 writer.add_scalar('Validation/StdResidual', residuals.std().item(), epoch)
@@ -1410,9 +1449,14 @@ def train_autoencoder(config: AutoencoderConfig):
         
         test_residuals = torch.abs(test_images - test_reconstructions)
         
-        writer.add_images('Test/Original', test_images, config.num_epochs)
-        writer.add_images('Test/Reconstructed', test_reconstructions, config.num_epochs)
-        writer.add_images('Test/Residuals', test_residuals, config.num_epochs)
+        # Normalize images to [0, 1] for TensorBoard display
+        test_images_norm = normalize_for_display(test_images)
+        test_reconstructions_norm = normalize_for_display(test_reconstructions)
+        test_residuals_norm = normalize_for_display(test_residuals)
+        
+        writer.add_images('Test/Original', test_images_norm, config.num_epochs)
+        writer.add_images('Test/Reconstructed', test_reconstructions_norm, config.num_epochs)
+        writer.add_images('Test/Residuals', test_residuals_norm, config.num_epochs)
         
         writer.add_scalar('Test/MeanResidual', test_residuals.mean().item(), config.num_epochs)
         writer.add_scalar('Test/MaxResidual', test_residuals.max().item(), config.num_epochs)

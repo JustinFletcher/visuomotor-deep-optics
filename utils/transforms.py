@@ -47,13 +47,14 @@ def log_scale_transform(tensor: torch.Tensor, epsilon: float = 1e-10) -> torch.T
     
     Args:
         tensor: Input tensor (assumed to be in [0, 1] range after normalization)
-        epsilon: Small constant to avoid log(0)
+        epsilon: Small constant added before taking log to avoid log(0)
         
     Returns:
         Log-scaled tensor
     """
-    # Apply log(1 + x) transform to preserve zero values
-    return torch.log1p(tensor / epsilon) * epsilon
+    # Apply log(1 + x) transform to compress dynamic range
+    # Input should be normalized to [0, 1], output will be roughly [0, log(2)] ≈ [0, 0.69]
+    return torch.log1p(tensor)
 
 
 def normalize_transform(tensor: torch.Tensor, 
