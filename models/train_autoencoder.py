@@ -602,6 +602,13 @@ class InMemoryAutoencoderDataset(Dataset):
             transforms.append(LogScale())
         
         self.transform = Compose(transforms)
+        
+        print(f"🔧 Transform pipeline configured:")
+        print(f"   Input crop size: {self.input_crop_size}")
+        print(f"   Log scale: {self.log_scale}")
+        print(f"   Number of transforms: {len(transforms)}")
+        for i, t in enumerate(transforms):
+            print(f"   [{i}] {t.__class__.__name__}")
     
     def __len__(self):
         return len(self.observations)
@@ -615,6 +622,12 @@ class InMemoryAutoencoderDataset(Dataset):
             obs_tensor = self.transform(observation)
         else:
             obs_tensor = torch.from_numpy(observation).float()
+        
+        # Apply manual cropping if transform didn't work (fallback)
+        if self.input_crop_size is not None and obs_tensor.shape[-1] != self.input_crop_size:
+            # Import here to avoid circular imports
+            from utils.transforms import center_crop_transform
+            obs_tensor = center_crop_transform(obs_tensor, self.input_crop_size)
         
         # For autoencoder, target is the same as input (return same transformed tensor for both)
         # This ensures both input and target have the same shape after cropping
