@@ -1271,7 +1271,7 @@ def train_autoencoder(config: AutoencoderConfig):
     # Save final model using model utilities
     if config.save_model:
         # Get the actual model (unwrap from DataParallel if needed)
-        save_model = model.module if gpu_count > 1 else model
+        save_model = model.module if (gpu_count > 1 and not config.no_dataparallel) else model
         
         # Create model ID based on config
         model_id = f"autoencoder_{config.arch}_{timestamp}"
