@@ -106,7 +106,7 @@ except ImportError:
 
 # Import job config loading function
 try:
-    from optomech_rollout import load_environment_config
+    from optomech.eval.optomech_rollout import load_environment_config
 except ImportError:
     def load_environment_config(config_path):
         """Fallback if optomech_rollout is not available"""
