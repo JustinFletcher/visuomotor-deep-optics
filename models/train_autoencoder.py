@@ -1174,6 +1174,29 @@ def train_autoencoder(config: AutoencoderConfig):
     # Setup TensorBoard
     writer = SummaryWriter(save_dir / "tensorboard")
     
+    # Log hyperparameters to TensorBoard
+    hparams = {
+        'arch': config.arch,
+        'latent_dim': config.latent_dim,
+        'batch_size': config.batch_size,
+        'learning_rate': config.learning_rate,
+        'optimizer': config.optimizer,
+        'loss_function': config.loss_function,
+        'input_crop_size': config.input_crop_size if config.input_crop_size else 'None',
+        'log_scale': config.log_scale,
+        'load_in_memory': config.load_in_memory,
+        'weight_decay': config.weight_decay,
+        'scheduler': config.scheduler,
+    }
+    
+    # Log text description
+    config_text = '\n'.join([f'{k}: {v}' for k, v in hparams.items()])
+    writer.add_text('Configuration', config_text, 0)
+    
+    # Log model architecture as text
+    model_summary = str(model)
+    writer.add_text('Model/Architecture', model_summary, 0)
+    
     # Resume from checkpoint if specified
     start_epoch = config.start_epoch
     best_val_loss = float('inf')
@@ -1243,9 +1266,54 @@ def train_autoencoder(config: AutoencoderConfig):
         
         # Log to TensorBoard
         print(f"📊 Epoch {epoch+1}: Logging to TensorBoard...")
+        
+        # Loss metrics
         writer.add_scalar('Loss/Train', train_loss, epoch)
         writer.add_scalar('Loss/Validation', val_loss, epoch)
-        writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch)
+        writer.add_scalar('Loss/BestValidation', best_val_loss, epoch)
+        
+        # Learning rate
+        writer.add_scalar('Training/LearningRate', optimizer.param_groups[0]['lr'], epoch)
+        
+        # Model weights histograms (every 5 epochs to avoid overhead)
+        if epoch % 5 == 0:
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    writer.add_histogram(f'Weights/{name}', param.data, epoch)
+                    if param.grad is not None:
+                        writer.add_histogram(f'Gradients/{name}', param.grad, epoch)
+        
+        # Log reconstruction images (sample from validation set)
+        if epoch % 2 == 0 or epoch == config.num_epochs - 1:
+            model.eval()
+            with torch.no_grad():
+                # Get a batch from validation loader
+                val_batch = next(iter(val_loader))
+                val_images, _ = val_batch
+                val_images = val_images[:8].to(device)  # Take first 8 images
+                
+                # Get reconstructions
+                if hasattr(model, 'forward') and len(model.forward.__code__.co_varnames) > 2:
+                    reconstructions, _ = model(val_images)
+                else:
+                    reconstructions = model(val_images)
+                
+                # Compute residuals
+                residuals = torch.abs(val_images - reconstructions)
+                
+                # Log images to TensorBoard
+                writer.add_images('Validation/Original', val_images, epoch)
+                writer.add_images('Validation/Reconstructed', reconstructions, epoch)
+                writer.add_images('Validation/Residuals', residuals, epoch)
+                
+                # Log statistics
+                writer.add_scalar('Validation/MeanResidual', residuals.mean().item(), epoch)
+                writer.add_scalar('Validation/MaxResidual', residuals.max().item(), epoch)
+                writer.add_scalar('Validation/StdResidual', residuals.std().item(), epoch)
+        
+        # Flush writer to ensure data is written
+        writer.flush()
+        
         print(f"✅ Epoch {epoch+1}: TensorBoard logging complete")
         
         # Print progress
@@ -1325,6 +1393,30 @@ def train_autoencoder(config: AutoencoderConfig):
     test_loss = validate_epoch(model, test_loader, criterion, device)
     print(f"📊 Test Loss: {test_loss:.6f}")
     
+    # Log test results to TensorBoard
+    writer.add_scalar('Loss/Test', test_loss, config.num_epochs)
+    
+    # Log test set reconstructions
+    model.eval()
+    with torch.no_grad():
+        test_batch = next(iter(test_loader))
+        test_images, _ = test_batch
+        test_images = test_images[:8].to(device)
+        
+        if hasattr(model, 'forward') and len(model.forward.__code__.co_varnames) > 2:
+            test_reconstructions, test_latents = model(test_images)
+        else:
+            test_reconstructions = model(test_images)
+        
+        test_residuals = torch.abs(test_images - test_reconstructions)
+        
+        writer.add_images('Test/Original', test_images, config.num_epochs)
+        writer.add_images('Test/Reconstructed', test_reconstructions, config.num_epochs)
+        writer.add_images('Test/Residuals', test_residuals, config.num_epochs)
+        
+        writer.add_scalar('Test/MeanResidual', test_residuals.mean().item(), config.num_epochs)
+        writer.add_scalar('Test/MaxResidual', test_residuals.max().item(), config.num_epochs)
+    
     # Save reconstruction samples
     print(f"🖼️  Saving reconstruction samples...")
     samples_path = save_dir / "reconstruction_samples.png"
@@ -1336,13 +1428,24 @@ def train_autoencoder(config: AutoencoderConfig):
         plot_path = save_dir / "training_curves.png"
         plot_training_curves(train_losses, val_losses, str(plot_path))
     
+    # Log final metrics summary to TensorBoard hparams
+    metric_dict = {
+        'hparam/best_val_loss': best_val_loss,
+        'hparam/final_test_loss': test_loss,
+        'hparam/final_train_loss': train_losses[-1] if train_losses else 0,
+    }
+    writer.add_hparams(hparams, metric_dict)
+    
     # Close TensorBoard writer
+    writer.flush()
     writer.close()
     
     print("\n✅ Training completed successfully!")
     print(f"🏆 Best validation loss: {best_val_loss:.6f}")
     print(f"📊 Final test loss: {test_loss:.6f}")
     print(f"📁 Results saved to: {save_dir}")
+    print(f"📊 TensorBoard logs: {save_dir / 'tensorboard'}")
+    print(f"   To view: tensorboard --logdir={save_dir / 'tensorboard'}")
     print("=" * 60)
 
 
