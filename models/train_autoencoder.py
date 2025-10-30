@@ -695,6 +695,7 @@ class AutoencoderConfig:
     log_scale: bool = False  # Apply log-scaling to observations
     load_in_memory: bool = False  # Load entire dataset into memory for faster training
     no_dataparallel: bool = False  # Disable DataParallel for multi-GPU training
+    reconstruction_interval: int = 1  # Save reconstruction samples every N epochs
 
 
 def get_device(device_str: str) -> torch.device:
@@ -1282,11 +1283,14 @@ def train_autoencoder(config: AutoencoderConfig):
         print(f"✅ Epoch {epoch+1}: Validation complete. Loss: {val_loss:.6f}")
         
         # Save reconstruction samples after validation
-        print(f"🖼️  Epoch {epoch+1}: Saving reconstruction samples...")
-        samples_path = save_dir / f"reconstruction_epoch_{epoch+1:03d}.png"
-        save_reconstruction_samples(model, val_loader, device, str(samples_path), 
-                                   use_log_scale=config.log_scale, sample_randomly=True)
-        print(f"✅ Epoch {epoch+1}: Reconstruction samples saved")
+        if (epoch + 1) % config.reconstruction_interval == 0 or epoch == config.num_epochs - 1:
+            print(f"🖼️  Epoch {epoch+1}: Saving reconstruction samples...")
+            samples_path = save_dir / f"reconstruction_epoch_{epoch+1:03d}.png"
+            save_reconstruction_samples(model, val_loader, device, str(samples_path), 
+                                       use_log_scale=config.log_scale, sample_randomly=True)
+            print(f"✅ Epoch {epoch+1}: Reconstruction samples saved")
+        else:
+            print(f"⏭️  Epoch {epoch+1}: Skipping reconstruction samples (interval={config.reconstruction_interval})")
         
         # Update scheduler
         print(f"⚙️  Epoch {epoch+1}: Updating scheduler...")
@@ -1318,7 +1322,7 @@ def train_autoencoder(config: AutoencoderConfig):
                         writer.add_histogram(f'Gradients/{name}', param.grad, epoch)
         
         # Log reconstruction images (sample from validation set)
-        if epoch % 2 == 0 or epoch == config.num_epochs - 1:
+        if ((epoch + 1) % config.reconstruction_interval == 0 or epoch == config.num_epochs - 1):
             model.eval()
             with torch.no_grad():
                 # Get a batch from validation loader
@@ -1536,6 +1540,8 @@ def main():
                        help="Load entire dataset into memory for fastest training (requires sufficient RAM)")
     parser.add_argument("--no-dataparallel", action="store_true",
                        help="Disable DataParallel for multi-GPU training")
+    parser.add_argument("--reconstruction-interval", type=int, default=1,
+                       help="Save reconstruction samples every N epochs (default: 1)")
     
     args = parser.parse_args()
     
@@ -1558,7 +1564,8 @@ def main():
         seed=args.seed,
         log_scale=args.log_scale,
         load_in_memory=args.load_in_memory,
-        no_dataparallel=args.no_dataparallel
+        no_dataparallel=args.no_dataparallel,
+        reconstruction_interval=args.reconstruction_interval
     )
     
     # Print configuration
