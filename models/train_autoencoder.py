@@ -696,6 +696,7 @@ class AutoencoderConfig:
     load_in_memory: bool = False  # Load entire dataset into memory for faster training
     no_dataparallel: bool = False  # Disable DataParallel for multi-GPU training
     reconstruction_interval: int = 1  # Save reconstruction samples every N epochs
+    checkpoint_interval: int = 10  # Save model checkpoints every N epochs
 
 
 def get_device(device_str: str) -> torch.device:
@@ -1014,10 +1015,6 @@ def save_checkpoint(model, optimizer, epoch, train_loss, val_loss, config, save_
     }
     
     torch.save(checkpoint, save_path)
-    
-    if is_best:
-        best_path = save_path.replace('.pth', '_best.pth')
-        torch.save(checkpoint, best_path)
 
 
 def train_autoencoder(config: AutoencoderConfig):
@@ -1371,13 +1368,21 @@ def train_autoencoder(config: AutoencoderConfig):
         if is_best:
             best_val_loss = val_loss
             print(f"  🎉 New best validation loss: {best_val_loss:.6f}")
+            # Save best checkpoint
+            best_checkpoint_path = save_dir / "autoencoder_checkpoint_best.pth"
+            save_checkpoint(model, optimizer, epoch + 1, train_loss, val_loss, 
+                          config, str(best_checkpoint_path), is_best=False)
+            print(f"💾 Epoch {epoch+1}: Saved best model checkpoint")
         
-        # Save checkpoint periodically
-        print(f"💾 Epoch {epoch+1}: Checking if checkpoint save needed...")
-        if (epoch + 1) % 10 == 0 or is_best:
+        # Save checkpoint periodically (but not if we just saved best)
+        should_save_periodic = (epoch + 1) % config.checkpoint_interval == 0 or epoch == config.num_epochs - 1
+        if should_save_periodic and not is_best:
             checkpoint_path = save_dir / f"autoencoder_checkpoint_epoch_{epoch+1}.pth"
             save_checkpoint(model, optimizer, epoch + 1, train_loss, val_loss, 
-                          config, str(checkpoint_path), is_best)
+                          config, str(checkpoint_path), is_best=False)
+            print(f"💾 Epoch {epoch+1}: Saved periodic checkpoint (interval={config.checkpoint_interval})")
+        elif not is_best:
+            print(f"💾 Epoch {epoch+1}: Skipping checkpoint (next save at epoch {((epoch + 1) // config.checkpoint_interval + 1) * config.checkpoint_interval})")
     
     # Save final model using model utilities
     if config.save_model:
@@ -1542,6 +1547,8 @@ def main():
                        help="Disable DataParallel for multi-GPU training")
     parser.add_argument("--reconstruction-interval", type=int, default=1,
                        help="Save reconstruction samples every N epochs (default: 1)")
+    parser.add_argument("--checkpoint-interval", type=int, default=10,
+                       help="Save model checkpoints every N epochs (default: 10)")
     
     args = parser.parse_args()
     
@@ -1565,7 +1572,8 @@ def main():
         log_scale=args.log_scale,
         load_in_memory=args.load_in_memory,
         no_dataparallel=args.no_dataparallel,
-        reconstruction_interval=args.reconstruction_interval
+        reconstruction_interval=args.reconstruction_interval,
+        checkpoint_interval=args.checkpoint_interval
     )
     
     # Print configuration
