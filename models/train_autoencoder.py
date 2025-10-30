@@ -616,8 +616,9 @@ class InMemoryAutoencoderDataset(Dataset):
         else:
             obs_tensor = torch.from_numpy(observation).float()
         
-        # For autoencoder, target is the same as input
-        return obs_tensor, obs_tensor
+        # For autoencoder, target is the same as input (return same transformed tensor for both)
+        # This ensures both input and target have the same shape after cropping
+        return obs_tensor, obs_tensor.clone()
 
 
 def create_loss_function(loss_type: str, huber_delta: float = 0.1):
