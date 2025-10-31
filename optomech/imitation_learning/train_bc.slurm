@@ -16,7 +16,6 @@ cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
     "--freeze-encoder"
-    ""
 )
 
 # Run all variants in parallel
