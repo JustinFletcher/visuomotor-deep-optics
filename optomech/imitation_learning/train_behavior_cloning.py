@@ -85,6 +85,7 @@ class TrainingConfig:
     num_workers: int = 4
     pin_memory: bool = True
     max_examples: int = None
+    no_dataparallel: bool = False
     
     # Rollout settings
     enable_rollouts: bool = True
@@ -392,9 +393,11 @@ def train_behavior_cloning(config: TrainingConfig):
         print(f"  Model summary failed: {e}")
     
     # Multi-GPU setup
-    if gpu_count > 1:
+    if gpu_count > 1 and not config.no_dataparallel:
         print(f"🔧 Using DataParallel with {gpu_count} GPUs")
         model = nn.DataParallel(model)
+    elif gpu_count > 1 and config.no_dataparallel:
+        print(f"⚠️  DataParallel disabled (found {gpu_count} GPUs but using only 1)")
     
     model.to(device)
     
@@ -473,7 +476,7 @@ def train_behavior_cloning(config: TrainingConfig):
             print(f"  🎯 Running rollout instrumentation...")
             try:
                 # Get the model to use for rollouts (unwrap DataParallel if needed)
-                rollout_model = model.module if gpu_count > 1 else model
+                rollout_model = model.module if (gpu_count > 1 and not config.no_dataparallel) else model
                 
                 # Save temporary model for rollout
                 temp_model_path = log_dir / f"temp_model_epoch_{epoch+1}.pth"
@@ -616,7 +619,7 @@ def train_behavior_cloning(config: TrainingConfig):
     
     # Save final model
     if config.save_model:
-        final_model = model.module if gpu_count > 1 else model
+        final_model = model.module if (gpu_count > 1 and not config.no_dataparallel) else model
         final_model_path = log_dir / "bc_model_final.pth"
         
         torch.save({
@@ -693,6 +696,8 @@ def main():
     parser.add_argument("--device", type=str, default="auto",
                        choices=['auto', 'cuda', 'mps', 'cpu'],
                        help="Device to use for training")
+    parser.add_argument("--no-dataparallel", action="store_true",
+                       help="Disable DataParallel for multi-GPU training")
     
     # Output settings
     parser.add_argument("--no-save", action="store_true",
@@ -737,6 +742,7 @@ def main():
         weight_decay=args.weight_decay,
         grad_clip=args.grad_clip,
         num_workers=args.num_workers,
+        no_dataparallel=args.no_dataparallel,
         enable_rollouts=args.enable_rollouts,
         rollout_seeds=args.rollout_seeds,
         rollout_steps=args.rollout_steps,

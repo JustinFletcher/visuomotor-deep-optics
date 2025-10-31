@@ -34,6 +34,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --rollout-seeds 5 \
         --rollout-steps 1000 \
         --rollout-episode-steps 1000 \
+        --no-dataparallel \
         --seed 42 \
        $VARIANT &  # Run in background
 done
