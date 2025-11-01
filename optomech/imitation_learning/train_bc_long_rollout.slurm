@@ -32,8 +32,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --learning-rate 1e-4 \
         --enable-rollouts \
         --rollout-seeds 5 \
-        --rollout-steps 100 \
-        --rollout-episode-steps 100 \
+        --rollout-steps 1000 \
+        --rollout-episode-steps 1000 \
         --no-dataparallel \
         --seed 42 \
        $VARIANT &  # Run in background
