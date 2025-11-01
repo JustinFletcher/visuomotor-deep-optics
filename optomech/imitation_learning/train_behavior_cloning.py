@@ -478,8 +478,8 @@ def train_behavior_cloning(config: TrainingConfig):
                 # Get the model to use for rollouts (unwrap DataParallel if needed)
                 rollout_model = model.module if (gpu_count > 1 and not config.no_dataparallel) else model
                 
-                # Save temporary model for rollout
-                temp_model_path = log_dir / f"temp_model_epoch_{epoch+1}.pth"
+                # Use a single temporary model file that gets overwritten each epoch
+                temp_model_path = log_dir / "temp_model_for_rollout.pth"
                 torch.save({
                     'model_state_dict': rollout_model.state_dict(),
                     'epoch': epoch + 1,
@@ -571,9 +571,6 @@ def train_behavior_cloning(config: TrainingConfig):
                 else:
                     print(f"  ⚠️  Rollout completed but metrics unavailable")
                 
-                # Clean up temporary model
-                temp_model_path.unlink()
-                
             except Exception as e:
                 print(f"  ❌ Rollout failed: {e}")
                 import traceback
@@ -648,6 +645,12 @@ def train_behavior_cloning(config: TrainingConfig):
     writer.add_scalar('Final/Test_MAE_Median', test_metrics['mae_median'], config.num_epochs)
     
     writer.close()
+    
+    # Clean up temporary rollout model if it exists
+    temp_model_path = log_dir / "temp_model_for_rollout.pth"
+    if temp_model_path.exists():
+        temp_model_path.unlink()
+        print(f"🧹 Cleaned up temporary rollout model")
     
     print(f"\n📁 All results saved to: {log_dir}")
     print("🎉 Training complete!")
