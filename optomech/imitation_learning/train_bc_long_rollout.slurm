@@ -15,10 +15,10 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--freeze-encoder --target-action perfect_incremental_actions"
-    "--freeze-encoder --target-action sa_incremental_actions"
-    "--target-action perfect_incremental_actions"
-    "--target-action sa_incremental_actions"
+    "--freeze-encoder --target-action perfect_incremental_actions --run-name frozen_perfect_1000"
+    "--freeze-encoder --target-action sa_incremental_actions --run-name frozen_sa_1000"
+    "--target-action perfect_incremental_actions --run-name finetune_perfect_1000"
+    "--target-action sa_incremental_actions --run-name finetune_sa_1000"
 )
 
 # Run all variants in parallel

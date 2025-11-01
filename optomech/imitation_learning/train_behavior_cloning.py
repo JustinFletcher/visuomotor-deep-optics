@@ -94,6 +94,9 @@ class TrainingConfig:
     rollout_episode_steps: int = 100
     force_incremental_mode: bool = True
     
+    # Run naming
+    run_name: str = None  # Optional name to append to run directory
+    
     # Pre-trained encoder settings
     pretrained_encoder_path: str = None
     freeze_encoder: bool = False
@@ -357,9 +360,12 @@ def train_behavior_cloning(config: TrainingConfig):
     # Get device
     device, gpu_count = get_device(config.device)
     
-    # Setup log directory
+    # Setup log directory with optional run name
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    log_dir = Path("runs") / f"bc_run_{timestamp}_{uuid.uuid4().hex[:8]}"
+    run_dir_name = f"bc_run_{timestamp}_{uuid.uuid4().hex[:8]}"
+    if config.run_name:
+        run_dir_name += f"_{config.run_name}"
+    log_dir = Path("runs") / run_dir_name
     log_dir.mkdir(parents=True, exist_ok=True)
     
     # Setup TensorBoard
@@ -451,10 +457,20 @@ def train_behavior_cloning(config: TrainingConfig):
         freeze_encoder=config.freeze_encoder
     )
     
-    # Print model summary
+    # Print model summary and capture for TensorBoard
+    model_summary_str = None
     try:
         sample_input = torch.randn(1, input_channels, config.input_crop_size, config.input_crop_size)
-        summary(model, input_data=sample_input, verbose=0)
+        
+        # Get detailed model summary as string
+        from io import StringIO
+        import sys
+        old_stdout = sys.stdout
+        sys.stdout = summary_buffer = StringIO()
+        summary(model, input_data=sample_input, verbose=1)
+        sys.stdout = old_stdout
+        model_summary_str = summary_buffer.getvalue()
+        
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"  Total parameters: {total_params:,}")
@@ -465,6 +481,8 @@ def train_behavior_cloning(config: TrainingConfig):
             print(f"  Frozen parameters: {frozen_params:,}")
     except Exception as e:
         print(f"  Model summary failed: {e}")
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     
     # Multi-GPU setup
     if gpu_count > 1 and not config.no_dataparallel:
@@ -496,6 +514,71 @@ def train_behavior_cloning(config: TrainingConfig):
     print(f"  Epochs: {config.num_epochs}")
     if config.grad_clip:
         print(f"  Gradient clipping: {config.grad_clip}")
+    
+    # Log hyperparameters and model architecture to TensorBoard
+    print("\n📊 Logging hyperparameters and model architecture to TensorBoard...")
+    
+    # Create hyperparameters text
+    hparams_text = f"""
+# Behavior Cloning Training Configuration
+
+## Dataset Settings
+- Dataset path: {config.dataset_path}
+- Target action key: {config.target_action_key}
+- Total samples: {len(full_dataset)}
+- Train samples: {len(train_dataset)}
+- Validation samples: {len(val_dataset)}
+- Test samples: {len(test_dataset)}
+- Input crop size: {config.input_crop_size}
+- Log-scale preprocessing: {config.log_scale}
+
+## Model Architecture
+- Architecture: ResNet-18 Actor
+- Input channels: {input_channels}
+- Action dimension: {action_dim}
+- Total parameters: {total_params:,}
+- Trainable parameters: {trainable_params:,}
+- Pretrained encoder: {config.pretrained_encoder_path if config.pretrained_encoder_path else 'None'}
+- Freeze encoder: {config.freeze_encoder}
+
+## Training Settings
+- Optimizer: {config.optimizer}
+- Learning rate: {config.learning_rate}
+- Weight decay: {config.weight_decay}
+- Batch size: {config.batch_size}
+- Number of epochs: {config.num_epochs}
+- Gradient clipping: {config.grad_clip if config.grad_clip else 'None'}
+- Loss function: MSE
+- Device: {device}
+- GPU count: {gpu_count}
+- DataParallel: {gpu_count > 1 and not config.no_dataparallel}
+
+## Data Loading
+- Number of workers: {config.num_workers}
+- Pin memory: {config.pin_memory}
+- Train split: {config.train_split}
+- Validation split: {config.val_split}
+- Test split: {config.test_split}
+
+## Rollout Settings
+- Enable rollouts: {config.enable_rollouts}
+- Rollout seeds: {config.rollout_seeds}
+- Rollout steps: {config.rollout_steps}
+- Rollout episode steps: {config.rollout_episode_steps}
+- Force incremental mode: {config.force_incremental_mode}
+
+## Other Settings
+- Random seed: {config.seed}
+- Run name: {config.run_name if config.run_name else 'None'}
+"""
+    
+    writer.add_text("Configuration/Hyperparameters", hparams_text, 0)
+    
+    # Log model architecture if available
+    if model_summary_str:
+        writer.add_text("Configuration/Model_Architecture", f"```\n{model_summary_str}\n```", 0)
+    
+    print("✅ Hyperparameters and architecture logged to TensorBoard")
     
     # Training loop
     print("\n🎯 Starting Training...")
@@ -859,6 +942,8 @@ def main():
     # Output settings
     parser.add_argument("--no-save", action="store_true",
                        help="Don't save model")
+    parser.add_argument("--run-name", type=str, default=None,
+                       help="Optional name to append to run directory")
     
     # Rollout settings
     parser.add_argument("--enable-rollouts", action="store_true", default=True,
@@ -906,7 +991,8 @@ def main():
         rollout_episode_steps=args.rollout_episode_steps,
         force_incremental_mode=args.force_incremental_mode,
         pretrained_encoder_path=args.pretrained_encoder,
-        freeze_encoder=args.freeze_encoder
+        freeze_encoder=args.freeze_encoder,
+        run_name=args.run_name
     )
     
     # Print configuration
