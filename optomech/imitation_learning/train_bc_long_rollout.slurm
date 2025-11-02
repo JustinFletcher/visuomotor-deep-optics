@@ -15,10 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--freeze-encoder --target-action perfect_incremental_actions --run-name frozen_perfect_1000"
-    "--freeze-encoder --target-action sa_incremental_actions --run-name frozen_sa_1000"
-    "--target-action perfect_incremental_actions --run-name finetune_perfect_1000"
-    "--target-action sa_incremental_actions --run-name finetune_sa_1000"
+    "--run-name finetune_perfect_1000"
 )
 
 # Run all variants in parallel
@@ -36,9 +33,10 @@ for VARIANT in "${VARIANTS[@]}"; do
         --rollout-steps 1000 \
         --rollout-episode-steps 1000 \
         --no-dataparallel \
-        --seed 42 \
+        --target-action perfect_incremental_actions \
        $VARIANT &  # Run in background
 done
 
 
 wait
+

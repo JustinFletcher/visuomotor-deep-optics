@@ -708,7 +708,7 @@ def train_behavior_cloning(config: TrainingConfig):
                 torch.save({
                     'model_state_dict': rollout_model.state_dict(),
                     'epoch': epoch + 1,
-                    'config': config
+                    'config': vars(config) if hasattr(config, '__dict__') else config
                 }, temp_model_path)
                 
                 # Prepare environment config matching dataset generation settings
@@ -859,7 +859,7 @@ def train_behavior_cloning(config: TrainingConfig):
             'test_loss': test_loss,
             'test_mae_metrics': test_mae_metrics,
             'test_abs_error_metrics': test_abs_error_metrics,
-            'config': config,
+            'config': vars(config) if hasattr(config, '__dict__') else config,
             'input_channels': input_channels,
             'action_dim': action_dim
         }, final_model_path)
