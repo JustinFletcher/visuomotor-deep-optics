@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa"
+    "--run-name sa_direct"
 )
 
 # Run all variants in parallel
