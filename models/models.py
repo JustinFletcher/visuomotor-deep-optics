@@ -492,7 +492,7 @@ class ResNet18Actor(nn.Module):
         self.action_head = nn.Sequential(
             nn.Linear(self.feature_dim, 512),
             nn.ReLU(),
-            # nn.Dropout(0.1),
+            nn.Dropout(0.1),
             nn.Linear(512, action_dim),
             nn.Tanh()
         )
