@@ -34,6 +34,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --rollout-steps 1000 \
         --rollout-episode-steps 1000 \
         --no-dataparallel \
+        --no-force-incremental-mode \
         --target-action sa_actions \
         --device cuda:0 \
        $VARIANT &  # Run in background
