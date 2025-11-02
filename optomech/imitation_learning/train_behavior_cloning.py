@@ -111,7 +111,7 @@ def get_device(device_str: str = "auto") -> Tuple[torch.device, int]:
     Get torch device and GPU count.
     
     Args:
-        device_str: Device specification ('auto', 'cuda', 'mps', 'cpu')
+        device_str: Device specification ('auto', 'cuda', 'cuda:0', 'cuda:1', 'mps', 'cpu')
         
     Returns:
         Tuple of (device, gpu_count)
@@ -144,8 +144,29 @@ def get_device(device_str: str = "auto") -> Tuple[torch.device, int]:
             return device, 1
     else:
         device = torch.device(device_str)
-        gpu_count = torch.cuda.device_count() if device.type == "cuda" else 1
-        print(f"Using specified device: {device}")
+        
+        # Determine GPU count based on device type
+        if device.type == "cuda":
+            gpu_count = torch.cuda.device_count()
+            
+            # Print info about the specific GPU if specified (e.g., cuda:0)
+            if device.index is not None:
+                if device.index >= gpu_count:
+                    raise ValueError(f"Invalid device {device_str}: only {gpu_count} GPU(s) available")
+                print(f"Using specified device: {device} ({torch.cuda.get_device_name(device.index)})")
+                
+                # Check memory for specific GPU
+                try:
+                    memory_free, memory_total = torch.cuda.mem_get_info(device)
+                    print(f"  GPU Memory: {memory_free / 1e9:.1f}GB free / {memory_total / 1e9:.1f}GB total")
+                except:
+                    pass
+            else:
+                print(f"Using specified device: {device} with {gpu_count} GPU(s) available")
+        else:
+            gpu_count = 1
+            print(f"Using specified device: {device}")
+        
         return device, gpu_count
 
 
@@ -1005,8 +1026,7 @@ def main():
     
     # Device settings
     parser.add_argument("--device", type=str, default="auto",
-                       choices=['auto', 'cuda', 'mps', 'cpu'],
-                       help="Device to use for training")
+                       help="Device to use for training (auto, cuda, cuda:0, cuda:1, mps, cpu)")
     parser.add_argument("--no-dataparallel", action="store_true",
                        help="Disable DataParallel for multi-GPU training")
     
