@@ -672,32 +672,8 @@ class ResNet18Actor(nn.Module):
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         
-        # Load checkpoint - try full load first, fall back to injecting dummy classes if needed
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        except (AttributeError, ModuleNotFoundError) as e:
-            # Handle case where checkpoint has classes we don't have in scope (e.g., TrainingConfig)
-            print(f"⚠️  Warning: Checkpoint contains classes not in scope: {e}")
-            print(f"   Injecting dummy classes into __main__...")
-            
-            # Create dummy classes that accept any arguments
-            class TrainingConfig:
-                def __init__(self, *args, **kwargs):
-                    for k, v in kwargs.items():
-                        setattr(self, k, v)
-            
-            class AutoencoderConfig:
-                def __init__(self, *args, **kwargs):
-                    for k, v in kwargs.items():
-                        setattr(self, k, v)
-            
-            # Inject them into __main__ so pickle can find them
-            import __main__
-            __main__.TrainingConfig = TrainingConfig
-            __main__.AutoencoderConfig = AutoencoderConfig
-            
-            # Try loading again
-            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        # Load checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         
         # Extract state_dict
         if 'model_state_dict' in checkpoint:
