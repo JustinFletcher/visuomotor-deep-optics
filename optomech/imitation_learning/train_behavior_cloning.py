@@ -80,6 +80,9 @@ class TrainingConfig:
     optimizer: str = "adam"
     weight_decay: float = 1e-5
     grad_clip: float = None
+    loss_function: str = "mse"  # Options: mse, huber, log_cosh, adaptive_mse
+    huber_delta: float = 0.01  # Delta for Huber loss (threshold for small values)
+    adaptive_scale: float = 0.01  # Scale threshold for adaptive MSE loss
     
     # Data loading settings
     num_workers: int = 4
@@ -144,6 +147,62 @@ def get_device(device_str: str = "auto") -> Tuple[torch.device, int]:
         gpu_count = torch.cuda.device_count() if device.type == "cuda" else 1
         print(f"Using specified device: {device}")
         return device, gpu_count
+
+
+def get_loss_function(config: TrainingConfig):
+    """
+    Get loss function based on config.
+    
+    Loss functions that emphasize small values (<0.01):
+    - mse: Standard MSE loss
+    - huber: Huber loss (linear for large errors, quadratic for small)
+    - log_cosh: log(cosh(x)) - smooth approximation to absolute error
+    - adaptive_mse: MSE with higher weight on small values
+    
+    Args:
+        config: Training configuration
+        
+    Returns:
+        Loss function
+    """
+    if config.loss_function == "mse":
+        print(f"Using MSE loss")
+        return nn.MSELoss()
+    
+    elif config.loss_function == "huber":
+        # Huber loss: quadratic for small errors (|error| < delta), linear beyond
+        # This emphasizes accurate prediction of small values
+        print(f"Using Huber loss (delta={config.huber_delta})")
+        return nn.HuberLoss(delta=config.huber_delta)
+    
+    elif config.loss_function == "log_cosh":
+        # log(cosh(x)) loss - smooth approximation to absolute error
+        # More sensitive to small errors than MSE
+        print(f"Using Log-Cosh loss")
+        def log_cosh_loss(pred, target):
+            diff = pred - target
+            return torch.mean(torch.log(torch.cosh(diff + 1e-12)))
+        return log_cosh_loss
+    
+    elif config.loss_function == "adaptive_mse":
+        # Adaptive MSE: higher weight on predictions where |target| < scale
+        # This directly emphasizes small values
+        print(f"Using Adaptive MSE loss (scale={config.adaptive_scale})")
+        def adaptive_mse_loss(pred, target):
+            diff_sq = (pred - target) ** 2
+            # Weight: higher for small target values
+            weight = torch.where(
+                torch.abs(target) < config.adaptive_scale,
+                torch.tensor(2.0, device=target.device),  # 2x weight for small values
+                torch.tensor(1.0, device=target.device)
+            )
+            return torch.mean(weight * diff_sq)
+        return adaptive_mse_loss
+    
+    else:
+        raise ValueError(f"Unknown loss function: {config.loss_function}. "
+                        f"Choose from: mse, huber, log_cosh, adaptive_mse")
+
 
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
@@ -495,7 +554,7 @@ def train_behavior_cloning(config: TrainingConfig):
     model.to(device)
     
     # Create loss function and optimizer
-    criterion = nn.MSELoss()
+    criterion = get_loss_function(config)
     
     if config.optimizer.lower() == 'adam':
         optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, 
@@ -549,7 +608,9 @@ def train_behavior_cloning(config: TrainingConfig):
 - Batch size: {config.batch_size}
 - Number of epochs: {config.num_epochs}
 - Gradient clipping: {config.grad_clip if config.grad_clip else 'None'}
-- Loss function: MSE
+- Loss function: {config.loss_function}
+{f"- Huber delta: {config.huber_delta}" if config.loss_function == "huber" else ""}
+{f"- Adaptive scale: {config.adaptive_scale}" if config.loss_function == "adaptive_mse" else ""}
 - Device: {device}
 - GPU count: {gpu_count}
 - DataParallel: {gpu_count > 1 and not config.no_dataparallel}
@@ -934,6 +995,13 @@ def main():
     parser.add_argument("--weight-decay", type=float, default=1e-5,
                        help="Weight decay")
     parser.add_argument("--grad-clip", type=float, help="Gradient clipping threshold")
+    parser.add_argument("--loss-function", type=str, default="mse",
+                       choices=['mse', 'huber', 'log_cosh', 'adaptive_mse'],
+                       help="Loss function (huber, log_cosh, adaptive_mse emphasize small values)")
+    parser.add_argument("--huber-delta", type=float, default=0.01,
+                       help="Delta threshold for Huber loss (default: 0.01)")
+    parser.add_argument("--adaptive-scale", type=float, default=0.01,
+                       help="Scale threshold for adaptive MSE loss (default: 0.01)")
     
     # Device settings
     parser.add_argument("--device", type=str, default="auto",
@@ -988,6 +1056,9 @@ def main():
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
         grad_clip=args.grad_clip,
+        loss_function=args.loss_function,
+        huber_delta=args.huber_delta,
+        adaptive_scale=args.adaptive_scale,
         num_workers=args.num_workers,
         no_dataparallel=args.no_dataparallel,
         enable_rollouts=args.enable_rollouts,
