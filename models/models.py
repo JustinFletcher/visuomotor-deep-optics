@@ -770,22 +770,42 @@ class ResNet18Actor(nn.Module):
             model.resnet = EncoderWithBottleneck(temp_autoencoder.encoder, temp_autoencoder.bottleneck_encode)
             
             # Reconstruct action head matching EXACT checkpoint architecture
-            # Build it layer by layer from state_dict
+            # Build it layer by layer, preserving the original layer indices
             action_head_modules = []
-            for layer_idx, (layer_num, weight_shape) in enumerate(action_head_layers):
-                out_features, in_features = weight_shape
-                action_head_modules.append(nn.Linear(in_features, out_features))
-                
-                # Add activation after each Linear layer except the last
-                if layer_idx < len(action_head_layers) - 1:
-                    action_head_modules.append(nn.ReLU())
             
-            # Check if final layer is Tanh (layer after last Linear)
+            # Build based on detected Linear layers and infer activations from gaps
+            for idx, (layer_num, weight_shape) in enumerate(action_head_layers):
+                out_features, in_features = weight_shape
+                
+                # If this isn't the first layer, check for gaps in layer numbering
+                if idx > 0:
+                    prev_layer_num = action_head_layers[idx - 1][0]
+                    gap = layer_num - prev_layer_num
+                    
+                    # Gap = number of layers between the two Linear layers
+                    # Gap of 2: ReLU only (old architecture)
+                    # Gap of 3: ReLU + Dropout (new architecture)
+                    if gap == 3:
+                        action_head_modules.append(nn.ReLU())
+                        action_head_modules.append(nn.Dropout(0.1))
+                    elif gap == 2:
+                        action_head_modules.append(nn.ReLU())
+                    elif gap == 1:
+                        # Direct connection (unusual but handle it)
+                        pass
+                    else:
+                        # Unknown gap, add ReLU + Dropout to be safe with new models
+                        action_head_modules.append(nn.ReLU())
+                        if gap > 2:
+                            action_head_modules.append(nn.Dropout(0.1))
+                
+                # Add the Linear layer
+                action_head_modules.append(nn.Linear(in_features, out_features))
+            
+            # Check if final activation (Tanh) exists
             max_layer_num = max(num for num, _ in action_head_layers)
-            if f'action_head.{max_layer_num + 1}.weight' not in state_dict:
-                # No layer after last Linear, check if there's a Tanh or other activation
-                # by checking if there are more layers in the Sequential
-                all_action_head_keys = [k for k in state_dict.keys() if k.startswith('action_head.')]
+            all_action_head_keys = [k for k in state_dict.keys() if k.startswith('action_head.')]
+            if all_action_head_keys:
                 max_action_head_idx = max(int(k.split('.')[1]) for k in all_action_head_keys if '.' in k.split('.', 1)[1])
                 
                 # If max index is higher than last Linear layer, there's likely a Tanh
