@@ -18,9 +18,9 @@ VARIANTS=(
     "--run-name incrollout_sa_logcosh  --target-action sa_incremental_action --loss-function log_cosh --device cuda:0"
     "--run-name incrollout_sa_huber  --target-action sa_incremental_action --loss-function huber --huber-delta 0.01 --device cuda:1"
     "--run-name incrollout_sa_adaptive_mse  --target-action sa_incremental_action --loss-function adaptive_mse --adaptive-scale 0.01 --device cuda:2"
-    "--run-name incrollout_sa_logcosh  --target-action perfect_incremental_action --loss-function log_cosh --device cuda:3"
-    "--run-name incrollout_sa_huber  --target-action perfect_incremental_action --loss-function huber --huber-delta 0.01 --device cuda:4"
-    "--run-name incrollout_sa_adaptive_mse  --target-action perfect_incremental_action --loss-function adaptive_mse --adaptive-scale 0.01 --device cuda:5"
+    "--run-name incrollout_perfect_logcosh  --target-action perfect_incremental_action --loss-function log_cosh --device cuda:3"
+    "--run-name incrollout_perfect_huber  --target-action perfect_incremental_action --loss-function huber --huber-delta 0.01 --device cuda:4"
+    "--run-name incrollout_perfect_adaptive_mse  --target-action perfect_incremental_action --loss-function adaptive_mse --adaptive-scale 0.01 --device cuda:5"
 )
 
 # Run all variants in parallel
