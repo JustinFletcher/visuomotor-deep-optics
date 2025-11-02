@@ -89,6 +89,7 @@ class TrainingConfig:
     
     # Rollout settings
     enable_rollouts: bool = True
+    rollout_interval: int = 1  # Perform rollouts every N epochs (default: every epoch)
     rollout_seeds: int = 8
     rollout_steps: int = 250
     rollout_episode_steps: int = 100
@@ -562,6 +563,7 @@ def train_behavior_cloning(config: TrainingConfig):
 
 ## Rollout Settings
 - Enable rollouts: {config.enable_rollouts}
+- Rollout interval: every {config.rollout_interval} epoch(s)
 - Rollout seeds: {config.rollout_seeds}
 - Rollout steps: {config.rollout_steps}
 - Rollout episode steps: {config.rollout_episode_steps}
@@ -696,9 +698,10 @@ def train_behavior_cloning(config: TrainingConfig):
                 save_checkpoint(model, optimizer, epoch + 1, train_loss, val_loss,
                               config, str(checkpoint_path), is_best=True)
         
-        # Perform rollout instrumentation after validation
-        if config.enable_rollouts and perform_rollout_instrumentation is not None:
-            print(f"  🎯 Running rollout instrumentation...")
+        # Perform rollout instrumentation after validation (check interval)
+        should_rollout = (epoch + 1) % config.rollout_interval == 0
+        if config.enable_rollouts and should_rollout and perform_rollout_instrumentation is not None:
+            print(f"  🎯 Running rollout instrumentation (interval: every {config.rollout_interval} epoch(s))...")
             try:
                 # Get the model to use for rollouts (unwrap DataParallel if needed)
                 rollout_model = model.module if (gpu_count > 1 and not config.no_dataparallel) else model
@@ -950,6 +953,8 @@ def main():
                        help="Enable environment rollouts after validation")
     parser.add_argument("--no-rollouts", action="store_false", dest="enable_rollouts",
                        help="Disable environment rollouts")
+    parser.add_argument("--rollout-interval", type=int, default=1,
+                       help="Perform rollouts every N epochs (default: 1, every epoch)")
     parser.add_argument("--rollout-seeds", type=int, default=8,
                        help="Number of rollout seeds")
     parser.add_argument("--rollout-steps", type=int, default=250,
@@ -986,6 +991,7 @@ def main():
         num_workers=args.num_workers,
         no_dataparallel=args.no_dataparallel,
         enable_rollouts=args.enable_rollouts,
+        rollout_interval=args.rollout_interval,
         rollout_seeds=args.rollout_seeds,
         rollout_steps=args.rollout_steps,
         rollout_episode_steps=args.rollout_episode_steps,

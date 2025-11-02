@@ -28,7 +28,11 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num-epochs 1000 \
         --batch-size 64 \
         --learning-rate 1e-4 \
-        --no-rollouts \
+        --enable-rollouts \
+        --rollout-interval 100 \
+        --rollout-seeds 10 \
+        --rollout-steps 1000 \
+        --rollout-episode-steps 1000 \
         --no-dataparallel \
         --target-action perfect_incremental_actions \
        $VARIANT &  # Run in background
