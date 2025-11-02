@@ -33,7 +33,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --rollout-steps 1000 \
         --rollout-episode-steps 1000 \
         --no-dataparallel \
-        --target-action perfect_incremental_actions \
+        --target-action sal_actions \
        $VARIANT &  # Run in background
 done
 

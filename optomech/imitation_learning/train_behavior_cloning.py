@@ -1051,6 +1051,8 @@ def main():
                        help="Maximum episode length for rollouts (overrides dataset config)")
     parser.add_argument("--force-incremental-mode", action="store_true", default=True,
                        help="Force incremental control mode for rollouts")
+    parser.add_argument("--no-force-incremental-mode", action="store_false", dest="force_incremental_mode",
+                       help="Don't force incremental control mode (use absolute actions)")
     
     # Other settings
     parser.add_argument("--seed", type=int, default=42,

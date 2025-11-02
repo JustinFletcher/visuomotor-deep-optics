@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=train-ae           # Job name
+#SBATCH --job-name=bc_simple          # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks-per-node=28          # Number of tasks per node
 #SBATCH --account=MHPCC96650DAS       # Account/project name
-#SBATCH --output=./ae_training.out
-#SBATCH --error=./ae_training.err
+#SBATCH --output=./bc_training.out
+#SBATCH --error=./bc_training.err
 #SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=5-00:00:00             # Maximum runtime (5 days)
 
@@ -15,10 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "---target-action perfect_incremental_actions --run-name frozen_perfect_100"
-    "--freeze-encoder --target-action sa_incremental_actions --run-name frozen_sa_100"
-    "--target-action perfect_incremental_actions --run-name finetune_perfect_100"
-    "--target-action sa_incremental_actions --run-name finetune_sa_100"
+    "--run-name sa"
 )
 
 # Run all variants in parallel
@@ -37,7 +34,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --rollout-steps 1000 \
         --rollout-episode-steps 1000 \
         --no-dataparallel \
-        --target-action perfect_incremental_actions \
+        --target-action sa_actions \
+        --device cuda:0 \
        $VARIANT &  # Run in background
 done
 
