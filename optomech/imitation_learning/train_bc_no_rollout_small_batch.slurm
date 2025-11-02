@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name finetune_perfect_no_rollout"
+    "--run-name finetune_perfect_small_batch"
 )
 
 # Run all variants in parallel
@@ -25,8 +25,8 @@ for VARIANT in "${VARIANTS[@]}"; do
     poetry run python optomech/imitation_learning/train_behavior_cloning.py \
         --dataset-path $WORKDIR/datasets/sa_dataset_100k \
         --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
-        --num-epochs 200 \
-        --batch-size 1024 \
+        --num-epochs 1000 \
+        --batch-size 64 \
         --learning-rate 1e-4 \
         --no-rollouts \
         --no-dataparallel \
