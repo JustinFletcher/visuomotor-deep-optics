@@ -650,9 +650,13 @@ class ResNet18Actor(nn.Module):
     @classmethod
     def from_checkpoint(cls, checkpoint_path: str, device='cpu'):
         """
-        Create a ResNet18Actor from a checkpoint, automatically detecting the architecture.
+        Create a ResNet18Actor from a checkpoint, robustly detecting the architecture.
         
-        This handles both models trained from scratch and models using pre-trained encoders.
+        Strategy:
+        1. Load the checkpoint state_dict
+        2. Use the state_dict layer shapes to infer architecture (robust to any architecture changes)
+        3. Reconstruct the model with matching architecture
+        4. Load the weights
         
         Args:
             checkpoint_path: Path to the checkpoint file
@@ -668,8 +672,32 @@ class ResNet18Actor(nn.Module):
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         
-        # Load checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        # Load checkpoint - try full load first, fall back to injecting dummy classes if needed
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        except (AttributeError, ModuleNotFoundError) as e:
+            # Handle case where checkpoint has classes we don't have in scope (e.g., TrainingConfig)
+            print(f"⚠️  Warning: Checkpoint contains classes not in scope: {e}")
+            print(f"   Injecting dummy classes into __main__...")
+            
+            # Create dummy classes that accept any arguments
+            class TrainingConfig:
+                def __init__(self, *args, **kwargs):
+                    for k, v in kwargs.items():
+                        setattr(self, k, v)
+            
+            class AutoencoderConfig:
+                def __init__(self, *args, **kwargs):
+                    for k, v in kwargs.items():
+                        setattr(self, k, v)
+            
+            # Inject them into __main__ so pickle can find them
+            import __main__
+            __main__.TrainingConfig = TrainingConfig
+            __main__.AutoencoderConfig = AutoencoderConfig
+            
+            # Try loading again
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         
         # Extract state_dict
         if 'model_state_dict' in checkpoint:
@@ -690,19 +718,37 @@ class ResNet18Actor(nn.Module):
         else:
             raise ValueError("Could not detect input_channels from checkpoint")
         
-        # Extract action_dim
-        if 'action_head.3.weight' in state_dict:
-            action_dim = state_dict['action_head.3.weight'].shape[0]
+        # Extract action_dim from the final linear layer in action head
+        # Action head structure: Linear(in, hidden) -> ReLU -> Linear(hidden, action_dim) -> Tanh (optional)
+        # So action_dim is the output of layer 2 (the second Linear layer)
+        if 'action_head.2.weight' in state_dict:
+            action_dim = state_dict['action_head.2.weight'].shape[0]
         elif 'action_head.0.weight' in state_dict:
+            # Fallback: if only 1 linear layer, action_dim is its output
             action_dim = state_dict['action_head.0.weight'].shape[0]
         else:
             raise ValueError("Could not detect action_dim from checkpoint")
         
+        
         print(f"🔍 Detected from checkpoint: input_channels={input_channels}, action_dim={action_dim}, has_pretrained_encoder={has_pretrained_encoder}")
+        
+        # Strategy: Directly infer ALL layer dimensions from state_dict to avoid fragility
+        # Extract action head layer dimensions from the checkpoint
+        action_head_layers = []
+        for key in sorted(state_dict.keys()):
+            if key.startswith('action_head.') and '.weight' in key:
+                layer_num = int(key.split('.')[1])
+                weight_shape = state_dict[key].shape
+                action_head_layers.append((layer_num, weight_shape))
+        
+        if not action_head_layers:
+            raise ValueError("No action_head layers found in checkpoint")
+        
+        print(f"🔍 Detected action head layers: {action_head_layers}")
         
         # Create model - if it has pre-trained encoder architecture, we need to reconstruct it
         if has_pretrained_encoder:
-            # Get latent_dim from encoder bottleneck
+            # Get latent_dim from encoder bottleneck output
             if 'resnet.bottleneck.0.weight' in state_dict:
                 latent_dim = state_dict['resnet.bottleneck.0.weight'].shape[0]
             else:
@@ -718,7 +764,8 @@ class ResNet18Actor(nn.Module):
             )
             
             # Extract just the encoder and bottleneck parts from state_dict
-            encoder_state = {k.replace('resnet.', ''): v for k, v in state_dict.items() if k.startswith('resnet.encoder.') or k.startswith('resnet.bottleneck.')}
+            encoder_state = {k.replace('resnet.', ''): v for k, v in state_dict.items() 
+                           if k.startswith('resnet.encoder.') or k.startswith('resnet.bottleneck.')}
             temp_autoencoder.load_state_dict(encoder_state, strict=False)
             
             # Create wrapper for encoder + bottleneck
@@ -741,22 +788,40 @@ class ResNet18Actor(nn.Module):
             model.input_channels = input_channels
             model.action_dim = action_dim
             model.freeze_encoder = False
-            model.feature_dim = latent_dim
+            
+            # Get feature_dim from first action head layer input
+            model.feature_dim = action_head_layers[0][1][1]  # Input dimension of first Linear layer
             model.resnet = EncoderWithBottleneck(temp_autoencoder.encoder, temp_autoencoder.bottleneck_encode)
             
-            # Recreate action head with correct input dimension
-            model.action_head = nn.Sequential(
-                nn.Linear(latent_dim, 256),
-                nn.ReLU(),
-                nn.Dropout(0.1),
-                nn.Linear(256, action_dim)
-            )
+            # Reconstruct action head matching EXACT checkpoint architecture
+            # Build it layer by layer from state_dict
+            action_head_modules = []
+            for layer_idx, (layer_num, weight_shape) in enumerate(action_head_layers):
+                out_features, in_features = weight_shape
+                action_head_modules.append(nn.Linear(in_features, out_features))
+                
+                # Add activation after each Linear layer except the last
+                if layer_idx < len(action_head_layers) - 1:
+                    action_head_modules.append(nn.ReLU())
             
-            # Now load the action_head weights
-            action_head_state = {k.replace('action_head.', ''): v for k, v in state_dict.items() if k.startswith('action_head.')}
-            model.action_head.load_state_dict(action_head_state, strict=True)
+            # Check if final layer is Tanh (layer after last Linear)
+            max_layer_num = max(num for num, _ in action_head_layers)
+            if f'action_head.{max_layer_num + 1}.weight' not in state_dict:
+                # No layer after last Linear, check if there's a Tanh or other activation
+                # by checking if there are more layers in the Sequential
+                all_action_head_keys = [k for k in state_dict.keys() if k.startswith('action_head.')]
+                max_action_head_idx = max(int(k.split('.')[1]) for k in all_action_head_keys if '.' in k.split('.', 1)[1])
+                
+                # If max index is higher than last Linear layer, there's likely a Tanh
+                if max_action_head_idx > max_layer_num:
+                    action_head_modules.append(nn.Tanh())
             
-            print(f"✅ Reconstructed model with pre-trained encoder architecture (latent_dim={latent_dim})")
+            model.action_head = nn.Sequential(*action_head_modules)
+            
+            # Now load ALL weights from checkpoint
+            model.load_state_dict(state_dict, strict=True)
+            
+            print(f"✅ Reconstructed BC model with pre-trained encoder (latent_dim={latent_dim}, feature_dim={model.feature_dim})")
         else:
             # Standard ResNet18 architecture - create and load normally
             model = cls(input_channels=input_channels, action_dim=action_dim, pretrained_encoder_path=None)
