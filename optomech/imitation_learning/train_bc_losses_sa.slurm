@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=train-ae           # Job name
+#SBATCH --job-name=bc_loss           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks-per-node=28          # Number of tasks per node
@@ -15,9 +15,12 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name finetune_sa_logcosh --loss-function log_cosh --device cuda:0"
-    "--run-name finetune_sa_huber --loss-function huber --huber-delta 0.01 --device cuda:1"
-    "--run-name finetune_sa_adaptive_mse --loss-function adaptive_mse --adaptive-scale 0.01 --device cuda:2"
+    "--run-name incrollout_sa_logcosh  --target-action sa_incremental_action --loss-function log_cosh --device cuda:0"
+    "--run-name incrollout_sa_huber  --target-action sa_incremental_action --loss-function huber --huber-delta 0.01 --device cuda:1"
+    "--run-name incrollout_sa_adaptive_mse  --target-action sa_incremental_action --loss-function adaptive_mse --adaptive-scale 0.01 --device cuda:2"
+    "--run-name incrollout_sa_logcosh  --target-action perfect_incremental_action --loss-function log_cosh --device cuda:3"
+    "--run-name incrollout_sa_huber  --target-action perfect_incremental_action --loss-function huber --huber-delta 0.01 --device cuda:4"
+    "--run-name incrollout_sa_adaptive_mse  --target-action perfect_incremental_action --loss-function adaptive_mse --adaptive-scale 0.01 --device cuda:5"
 )
 
 # Run all variants in parallel
