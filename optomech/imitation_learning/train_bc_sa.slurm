@@ -33,7 +33,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --no-rollouts \
         --no-dataparallel \
         --force-incremental-mode \
-        --target-action perfect_incremental_actions \
+        --target-action sa_incremental_actions \
         --num-workers 16 \
        $VARIANT &  # Run in background
 done
