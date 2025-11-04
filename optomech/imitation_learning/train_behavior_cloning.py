@@ -84,6 +84,12 @@ class TrainingConfig:
     huber_delta: float = 0.01  # Delta for Huber loss (threshold for small values)
     adaptive_scale: float = 0.01  # Scale threshold for adaptive MSE loss
     
+    # Learning rate scheduler settings
+    use_scheduler: bool = True
+    scheduler_patience: int = 10  # Epochs to wait before reducing LR
+    scheduler_factor: float = 0.5  # Factor to reduce LR by
+    scheduler_min_lr: float = 1e-7  # Minimum learning rate
+    
     # Data loading settings
     num_workers: int = 4
     pin_memory: bool = True
@@ -586,6 +592,23 @@ def train_behavior_cloning(config: TrainingConfig):
     else:
         raise ValueError(f"Unknown optimizer: {config.optimizer}")
     
+    # Create learning rate scheduler
+    scheduler = None
+    if config.use_scheduler:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=config.scheduler_factor,
+            patience=config.scheduler_patience,
+            min_lr=config.scheduler_min_lr,
+            verbose=True
+        )
+        print(f"\n📉 Learning Rate Scheduler:")
+        print(f"  Type: ReduceLROnPlateau")
+        print(f"  Patience: {config.scheduler_patience} epochs")
+        print(f"  Factor: {config.scheduler_factor}")
+        print(f"  Min LR: {config.scheduler_min_lr}")
+    
     print(f"\n⚙️  Training Configuration:")
     print(f"  Loss function: MSE")
     print(f"  Optimizer: {config.optimizer}")
@@ -632,6 +655,10 @@ def train_behavior_cloning(config: TrainingConfig):
 - Loss function: {config.loss_function}
 {f"- Huber delta: {config.huber_delta}" if config.loss_function == "huber" else ""}
 {f"- Adaptive scale: {config.adaptive_scale}" if config.loss_function == "adaptive_mse" else ""}
+- LR Scheduler: {config.use_scheduler}
+{f"- Scheduler patience: {config.scheduler_patience}" if config.use_scheduler else ""}
+{f"- Scheduler factor: {config.scheduler_factor}" if config.use_scheduler else ""}
+{f"- Scheduler min LR: {config.scheduler_min_lr}" if config.use_scheduler else ""}
 - Device: {device}
 - GPU count: {gpu_count}
 - DataParallel: {gpu_count > 1 and not config.no_dataparallel}
@@ -757,10 +784,17 @@ def train_behavior_cloning(config: TrainingConfig):
         writer.add_scalar('Timing/ETA_Hours', eta_hours, epoch)
         writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch)
         
+        # Step learning rate scheduler
+        if scheduler is not None:
+            scheduler.step(val_loss)
+            current_lr = optimizer.param_groups[0]['lr']
+            writer.add_scalar('Learning_Rate/Current', current_lr, epoch)
+        
         # Print progress with detailed metrics
         print(f"Epoch {epoch+1:3d}/{config.num_epochs} | "
               f"Train Loss: {train_loss:.6f} | "
               f"Val Loss: {val_loss:.6f} | "
+              f"LR: {optimizer.param_groups[0]['lr']:.2e} | "
               f"Time: {epoch_time:.1f}s | "
               f"ETA: {eta_str}")
         print(f"  Train MAE Mean:   {train_mae_metrics['mae_mean']:.6f} | "
@@ -842,8 +876,8 @@ def train_behavior_cloning(config: TrainingConfig):
                 
                 # Force incremental control mode (dataset was collected with SA = incremental actions)
                 if config.force_incremental_mode:
-                    if "--incremental_action" not in env_config["environment_flags"]:
-                        env_config["environment_flags"].append("--incremental_action")
+                    if "--incremental_control" not in env_config["environment_flags"]:
+                        env_config["environment_flags"].append("--incremental_control")
                 
                 env_config_path = log_dir / "rollout_env_config.json"
                 with open(env_config_path, 'w') as f:
@@ -1024,6 +1058,18 @@ def main():
     parser.add_argument("--adaptive-scale", type=float, default=0.01,
                        help="Scale threshold for adaptive MSE loss (default: 0.01)")
     
+    # Learning rate scheduler settings
+    parser.add_argument("--use-scheduler", action="store_true", default=True,
+                       help="Use learning rate scheduler (ReduceLROnPlateau)")
+    parser.add_argument("--no-scheduler", action="store_false", dest="use_scheduler",
+                       help="Disable learning rate scheduler")
+    parser.add_argument("--scheduler-patience", type=int, default=10,
+                       help="Epochs to wait before reducing LR (default: 10)")
+    parser.add_argument("--scheduler-factor", type=float, default=0.5,
+                       help="Factor to reduce LR by (default: 0.5)")
+    parser.add_argument("--scheduler-min-lr", type=float, default=1e-7,
+                       help="Minimum learning rate (default: 1e-7)")
+    
     # Device settings
     parser.add_argument("--device", type=str, default="auto",
                        help="Device to use for training (auto, cuda, cuda:0, cuda:1, mps, cpu)")
@@ -1081,6 +1127,10 @@ def main():
         loss_function=args.loss_function,
         huber_delta=args.huber_delta,
         adaptive_scale=args.adaptive_scale,
+        use_scheduler=args.use_scheduler,
+        scheduler_patience=args.scheduler_patience,
+        scheduler_factor=args.scheduler_factor,
+        scheduler_min_lr=args.scheduler_min_lr,
         num_workers=args.num_workers,
         no_dataparallel=args.no_dataparallel,
         enable_rollouts=args.enable_rollouts,

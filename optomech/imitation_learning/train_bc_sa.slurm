@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_direct_5 --device cuda:0 --seed 1"
+    "--run-name sa_incremental --device cuda:0 --seed 7"
 )
 
 # Run all variants in parallel
@@ -26,16 +26,16 @@ for VARIANT in "${VARIANTS[@]}"; do
         --dataset-path $WORKDIR/datasets/sa_dataset_100k \
         --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
         --num-epochs 1000 \
-        --batch-size 64 \
-        --learning-rate 1e-4 \
+        --batch-size 1024 \
+        --learning-rate 1e-3 \
         --enable-rollouts \
         --rollout-interval 250 \
-        --rollout-seeds 5 \
+        --rollout-seeds 2 \
         --rollout-steps 1000 \
         --rollout-episode-steps 1000 \
         --no-dataparallel \
-        --no-force-incremental-mode \
-        --target-action sa_actions \
+        --force-incremental-mode \
+        --target-action sa_incremental_actions \
        $VARIANT &  # Run in background
 done
 
