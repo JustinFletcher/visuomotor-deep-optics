@@ -436,6 +436,227 @@ class LazyDataset(BaseDataset):
             return zero_obs, zero_action
 
 
+class InMemoryDataset(BaseDataset):
+    """
+    Dataset that loads all data into memory for fastest training.
+    Use this when you have sufficient RAM to hold the entire dataset.
+    Based on InMemoryAutoencoderDataset from models/train_autoencoder.py.
+    """
+    
+    def __init__(self,
+                 dataset_path: Union[str, Path],
+                 task_type: str = 'autoencoder',
+                 transform: Optional[Callable] = None,
+                 target_transform: Optional[Callable] = None,
+                 input_crop_size: Optional[int] = None,
+                 max_examples: Optional[int] = None,
+                 log_scale: bool = False,
+                 target_action_key: str = 'actions'):
+        """
+        Args:
+            dataset_path: Path to dataset directory
+            task_type: Type of task ('autoencoder', 'supervised', 'behavior_cloning')
+            transform: Transform to apply to inputs
+            target_transform: Transform to apply to targets
+            input_crop_size: If specified, center crop inputs to this size
+            max_examples: Optional limit on number of examples
+            log_scale: Whether to apply log-scaling to observations
+            target_action_key: Key for target actions in dataset (e.g., 'actions', 'sa_incremental_action')
+        """
+        super().__init__(transform=transform, target_transform=target_transform)
+        
+        print("\n💾 Loading entire dataset into memory...")
+        print("⚠️  This requires sufficient RAM for the full dataset")
+        
+        import time
+        load_start = time.time()
+        
+        self.dataset_path = Path(dataset_path)
+        self.task_type = task_type
+        self.input_crop_size = input_crop_size
+        self.log_scale = log_scale
+        self.target_action_key = target_action_key
+        
+        # Discover and load all files
+        file_paths, dataset_type, metadata = DatasetDiscovery.discover_files(dataset_path)
+        
+        print(f"📂 Found {len(file_paths)} files of type '{dataset_type}'")
+        print(f"📊 Loading data from all files...")
+        
+        all_observations = []
+        all_actions = [] if task_type in ['supervised', 'behavior_cloning'] else None
+        total_loaded = 0
+        
+        if dataset_type == 'hdf5':
+            for file_idx, file_path in enumerate(file_paths):
+                if file_idx % 100 == 0:
+                    print(f"  📁 Loading file {file_idx}/{len(file_paths)}")
+                
+                try:
+                    if task_type == 'autoencoder':
+                        data = FileLoader.load_hdf5_observations(file_path, ['observations'])
+                        if 'observations' in data:
+                            obs_data = data['observations']
+                            all_observations.append(obs_data)
+                            total_loaded += len(obs_data)
+                    else:
+                        data = FileLoader.load_hdf5_observations(file_path, ['observations', target_action_key])
+                        if 'observations' in data and target_action_key in data:
+                            obs_data = data['observations']
+                            action_data = data[target_action_key]
+                            # Make sure they're the same length
+                            min_len = min(len(obs_data), len(action_data))
+                            all_observations.append(obs_data[:min_len])
+                            all_actions.append(action_data[:min_len])
+                            total_loaded += min_len
+                    
+                    if max_examples and total_loaded >= max_examples:
+                        break
+                except Exception as e:
+                    print(f"  ⚠️  Skipping {file_path}: {e}")
+        
+        elif dataset_type == 'npz':
+            obs_key = metadata.get('obs_key', 'observations')
+            action_key = metadata.get('action_key', 'actions')
+            
+            for file_idx, file_path in enumerate(file_paths):
+                if file_idx % 100 == 0:
+                    print(f"  📁 Loading file {file_idx}/{len(file_paths)}")
+                
+                try:
+                    if task_type == 'autoencoder':
+                        data = FileLoader.load_npz_observations(file_path, [obs_key])
+                        if obs_key in data:
+                            obs_data = data[obs_key]
+                            all_observations.append(obs_data)
+                            total_loaded += len(obs_data)
+                    else:
+                        data = FileLoader.load_npz_observations(file_path, [obs_key, action_key])
+                        if obs_key in data and action_key in data:
+                            obs_data = data[obs_key]
+                            action_data = data[action_key]
+                            min_len = min(len(obs_data), len(action_data))
+                            all_observations.append(obs_data[:min_len])
+                            all_actions.append(action_data[:min_len])
+                            total_loaded += min_len
+                    
+                    if max_examples and total_loaded >= max_examples:
+                        break
+                except Exception as e:
+                    print(f"  ⚠️  Skipping {file_path}: {e}")
+        
+        elif dataset_type == 'json':
+            for file_idx, file_path in enumerate(file_paths):
+                if file_idx % 100 == 0:
+                    print(f"  📁 Loading file {file_idx}/{len(file_paths)}")
+                
+                try:
+                    data = FileLoader.load_json_observations(file_path)
+                    if task_type == 'autoencoder':
+                        if 'observations' in data:
+                            obs_data = np.array(data['observations'])
+                            all_observations.append(obs_data)
+                            total_loaded += len(obs_data)
+                    else:
+                        if 'observations' in data and 'actions' in data:
+                            obs_data = np.array(data['observations'])
+                            action_data = np.array(data['actions'])
+                            min_len = min(len(obs_data), len(action_data))
+                            all_observations.append(obs_data[:min_len])
+                            all_actions.append(action_data[:min_len])
+                            total_loaded += min_len
+                    
+                    if max_examples and total_loaded >= max_examples:
+                        break
+                except Exception as e:
+                    print(f"  ⚠️  Skipping {file_path}: {e}")
+        
+        # Concatenate all observations
+        print(f"📦 Concatenating {len(all_observations)} arrays...")
+        self.observations = np.concatenate(all_observations, axis=0)
+        
+        if all_actions is not None:
+            self.actions = np.concatenate(all_actions, axis=0)
+        else:
+            self.actions = None
+        
+        # Limit if needed
+        if max_examples and len(self.observations) > max_examples:
+            print(f"✂️  Trimming to {max_examples} examples")
+            self.observations = self.observations[:max_examples]
+            if self.actions is not None:
+                self.actions = self.actions[:max_examples]
+        
+        load_time = time.time() - load_start
+        memory_gb = self.observations.nbytes / (1024**3)
+        if self.actions is not None:
+            memory_gb += self.actions.nbytes / (1024**3)
+        
+        print(f"✅ Dataset loaded into memory in {load_time:.2f} seconds")
+        print(f"   Total observations: {len(self.observations)}")
+        print(f"   Observation shape: {self.observations.shape[1:]}")
+        if self.actions is not None:
+            print(f"   Action shape: {self.actions.shape[1:]}")
+        print(f"   Memory usage: {memory_gb:.2f} GB")
+        print(f"   Data type: {self.observations.dtype}")
+        
+        # Setup transforms
+        from utils.transforms import ToTensor, CenterCrop, LogScale, Compose
+        
+        if self.transform is None:
+            transforms = [ToTensor(normalize=True, input_range='auto')]
+            
+            if self.input_crop_size is not None:
+                transforms.append(CenterCrop(self.input_crop_size))
+            
+            if self.log_scale:
+                transforms.append(LogScale())
+            
+            self.transform = Compose(transforms)
+        
+        if self.target_transform is None and task_type in ['supervised', 'behavior_cloning']:
+            self.target_transform = ToTensor(normalize=False)
+        
+        print(f"🔧 Transform pipeline configured:")
+        print(f"   Input crop size: {self.input_crop_size}")
+        print(f"   Log scale: {self.log_scale}")
+        if self.transform:
+            transform_list = self.transform.transforms if hasattr(self.transform, 'transforms') else [self.transform]
+            print(f"   Number of transforms: {len(transform_list)}")
+            for i, t in enumerate(transform_list):
+                print(f"   [{i}] {t.__class__.__name__}")
+    
+    def __len__(self):
+        return len(self.observations)
+    
+    def __getitem__(self, idx):
+        """Get single item - fast since data is already in memory"""
+        observation = self.observations[idx]
+        
+        # Apply input transforms
+        if self.transform:
+            obs_tensor = self.transform(observation)
+        else:
+            obs_tensor = torch.from_numpy(observation).float()
+        
+        # Apply manual cropping if transform didn't handle it (fallback)
+        if self.input_crop_size is not None and obs_tensor.shape[-1] != self.input_crop_size:
+            obs_tensor = center_crop_transform(obs_tensor, self.input_crop_size)
+        
+        if self.task_type == 'autoencoder':
+            # For autoencoder, target is the same as input
+            return obs_tensor, obs_tensor.clone()
+        else:
+            # For supervised/BC, return observation and action
+            action = self.actions[idx]
+            if self.target_transform:
+                action_tensor = self.target_transform(action)
+            else:
+                action_tensor = torch.from_numpy(action).float()
+            
+            return obs_tensor, action_tensor
+
+
 # Export dataset classes
 __all__ = [
     'BaseDataset',
@@ -443,4 +664,5 @@ __all__ = [
     'SupervisedDataset', 
     'BehaviorCloningDataset',
     'LazyDataset',
+    'InMemoryDataset',
 ]

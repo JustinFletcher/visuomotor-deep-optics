@@ -95,6 +95,7 @@ class TrainingConfig:
     pin_memory: bool = True
     max_examples: int = None
     no_dataparallel: bool = False
+    lazy_loading: bool = False  # Use lazy (on-demand) loading instead of preloading into memory
     
     # Rollout settings
     enable_rollouts: bool = True
@@ -520,19 +521,35 @@ def train_behavior_cloning(config: TrainingConfig):
     
     # Load dataset using unified utilities
     print(f"\n📚 Loading dataset from {config.dataset_path}")
+    print(f"  Dataset mode: {'Lazy (on-demand loading)' if config.lazy_loading else 'In-Memory (preload all)'}")
     print(f"  Target action: {config.target_action_key}")
     print(f"  Log-scaling: {config.log_scale}")
     print(f"  Crop size: {config.input_crop_size}px")
     
-    full_dataset = LazyDataset(
-        dataset_path=config.dataset_path,
-        task_type='behavior_cloning',
-        input_crop_size=config.input_crop_size,
-        max_examples=config.max_examples,
-        log_scale=config.log_scale,
-        use_cache=True,
-        target_action_key=config.target_action_key
-    )
+    if config.lazy_loading:
+        # Use LazyDataset for memory-efficient on-demand loading
+        print("  🔄 Using lazy loading (on-demand from disk)")
+        full_dataset = LazyDataset(
+            dataset_path=config.dataset_path,
+            task_type='behavior_cloning',
+            input_crop_size=config.input_crop_size,
+            max_examples=config.max_examples,
+            log_scale=config.log_scale,
+            use_cache=True,
+            target_action_key=config.target_action_key
+        )
+    else:
+        # Use InMemoryDataset for fastest training (loads entire dataset into RAM)
+        print("  💾 Using in-memory loading (preload entire dataset)")
+        from utils.datasets import InMemoryDataset
+        full_dataset = InMemoryDataset(
+            dataset_path=config.dataset_path,
+            task_type='behavior_cloning',
+            input_crop_size=config.input_crop_size,
+            max_examples=config.max_examples,
+            log_scale=config.log_scale,
+            target_action_key=config.target_action_key
+        )
     
     print(f"✅ Loaded {len(full_dataset)} examples")
     
@@ -1079,6 +1096,12 @@ def main():
     parser.add_argument("--no-dataparallel", action="store_true",
                        help="Disable DataParallel for multi-GPU training")
     
+    # Data loading settings
+    parser.add_argument("--lazy", action="store_true", default=False,
+                       help="Use lazy (on-demand) data loading instead of preloading into memory")
+    parser.add_argument("--num-workers", type=int, default=4,
+                       help="Number of data loading workers")
+    
     # Output settings
     parser.add_argument("--no-save", action="store_true",
                        help="Don't save model")
@@ -1106,8 +1129,6 @@ def main():
     # Other settings
     parser.add_argument("--seed", type=int, default=42,
                        help="Random seed")
-    parser.add_argument("--num-workers", type=int, default=4,
-                       help="Number of data loading workers")
     
     args = parser.parse_args()
     
@@ -1136,6 +1157,7 @@ def main():
         scheduler_min_lr=args.scheduler_min_lr,
         num_workers=args.num_workers,
         no_dataparallel=args.no_dataparallel,
+        lazy_loading=args.lazy,
         enable_rollouts=args.enable_rollouts,
         rollout_interval=args.rollout_interval,
         rollout_seeds=args.rollout_seeds,
