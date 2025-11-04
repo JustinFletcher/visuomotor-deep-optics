@@ -517,6 +517,7 @@ class OpticalSystem(object):
         print("sampling (number of pixels per resolution element): %s" % sampling)
         print("ifov (arcsec/pixel): %s" % self.ifov)
         print("fov (arcsec): %s" % fov)
+        print("incremental_control: %s" % self.incremental_control)
 
         # Build the object plane for this system.
         print("Building object plane.")
