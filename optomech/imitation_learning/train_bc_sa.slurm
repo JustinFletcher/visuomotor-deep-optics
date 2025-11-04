@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_incremental --device cuda:0 --seed 7"
+    "--run-name sa_inc_7 --device cuda:0 --seed 7"
 )
 
 # Run all variants in parallel
@@ -28,11 +28,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --num-epochs 1000 \
         --batch-size 1024 \
         --learning-rate 1e-3 \
-        --enable-rollouts \
-        --rollout-interval 50 \
-        --rollout-seeds 2 \
-        --rollout-steps 1000 \
-        --rollout-episode-steps 1000 \
+        --no-rollouts \
         --no-dataparallel \
         --force-incremental-mode \
         --target-action sa_incremental_actions \
