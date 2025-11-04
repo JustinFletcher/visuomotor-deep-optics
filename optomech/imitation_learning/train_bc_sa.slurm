@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_inc_8 --device cuda:0 --seed 8"
+    "--run-name sa_inc_9 --device cuda:0 --seed 9"
 )
 
 # Run all variants in parallel
