@@ -26,12 +26,16 @@ for VARIANT in "${VARIANTS[@]}"; do
         --dataset-path $WORKDIR/datasets/sa_dataset_100k \
         --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
         --num-epochs 1000 \
-        --batch-size 1024 \
+        --batch-size 64 \
         --learning-rate 1e-3 \
+        --optimizer adamw \
+        --loss-function log_cosh \
         --no-rollouts \
         --no-dataparallel \
         --force-incremental-mode \
-        --target-action sa_incremental_actions \
+        --target-action sa_actions \
+        --no-save \
+        --max-examples 1000 \
        $VARIANT &  # Run in background
 done
 

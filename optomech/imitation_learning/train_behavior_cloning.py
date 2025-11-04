@@ -669,6 +669,7 @@ def train_behavior_cloning(config: TrainingConfig):
             optimizer,
             mode='min',
             factor=config.scheduler_factor,
+            threshold=1e-5,
             patience=config.scheduler_patience,
             min_lr=config.scheduler_min_lr,
             verbose=True
@@ -1083,7 +1084,7 @@ def main():
                        help="Use learning rate scheduler (ReduceLROnPlateau)")
     parser.add_argument("--no-scheduler", action="store_false", dest="use_scheduler",
                        help="Disable learning rate scheduler")
-    parser.add_argument("--scheduler-patience", type=int, default=10,
+    parser.add_argument("--scheduler-patience", type=int, default=50,
                        help="Epochs to wait before reducing LR (default: 10)")
     parser.add_argument("--scheduler-factor", type=float, default=0.5,
                        help="Factor to reduce LR by (default: 0.5)")
