@@ -29,7 +29,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --batch-size 1024 \
         --learning-rate 1e-3 \
         --enable-rollouts \
-        --rollout-interval 250 \
+        --rollout-interval 50 \
         --rollout-seeds 2 \
         --rollout-steps 1000 \
         --rollout-episode-steps 1000 \

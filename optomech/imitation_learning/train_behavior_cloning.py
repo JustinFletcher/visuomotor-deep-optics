@@ -465,6 +465,59 @@ def train_behavior_cloning(config: TrainingConfig):
         json.dump(config.__dict__, f, indent=2)
     print(f"💾 Saved config to {config_save_path}")
     
+    # Save rollout environment config (always, even if rollouts are disabled)
+    # This ensures the config is available for manual rollouts later
+    env_config = {
+        "env_id": "optomech-v1",
+        "object_type": "single",
+        "aperture_type": "elf",
+        "reward_function": "align",
+        "observation_mode": "image_only",
+        "focal_plane_image_size_pixels": 512,
+        "ao_interval_ms": 5.0,
+        "control_interval_ms": 5.0,
+        "frame_interval_ms": 5.0,
+        "decision_interval_ms": 5.0,
+        "num_atmosphere_layers": 0,
+        "environment_flags": [
+            "--object_type=single",
+            "--ao_interval_ms=5.0",
+            "--control_interval_ms=5.0",
+            "--frame_interval_ms=5.0",
+            "--decision_interval_ms=5.0",
+            "--num_atmosphere_layers=0",
+            "--aperture_type=elf",
+            "--focal_plane_image_size_pixels=512",
+            "--observation_mode=image_only",
+            "--command_secondaries",
+            "--init_differential_motion",
+            "--model_wind_diff_motion",
+            "--num_envs=1",
+            "--reward_function=align",
+            "--max_episode_steps=10_000",
+            "--init_temperature=10.0",
+            "--std_dev_patience=10",
+            "--sparsity_patience=10000000",
+            "--temperature_patience=10000000",
+            "--init_std_dev=1.0",
+            "--scale_patience=10",
+            "--scale_stickiness=1.0"
+        ],
+        "log_scale": config.log_scale,
+        "input_crop_size": config.input_crop_size,
+        "rollout_episode_steps": config.rollout_episode_steps
+    }
+    
+    # Force incremental control mode if configured
+    if config.force_incremental_mode:
+        if "--incremental_control" not in env_config["environment_flags"]:
+            env_config["environment_flags"].append("--incremental_control")
+    
+    env_config_path = log_dir / "rollout_env_config.json"
+    with open(env_config_path, 'w') as f:
+        json.dump(env_config, f, indent=2)
+    print(f"💾 Saved rollout environment config to {env_config_path}")
+    
     # Load dataset using unified utilities
     print(f"\n📚 Loading dataset from {config.dataset_path}")
     print(f"  Target action: {config.target_action_key}")
@@ -830,58 +883,8 @@ def train_behavior_cloning(config: TrainingConfig):
                     'config': vars(config) if hasattr(config, '__dict__') else config
                 }, temp_model_path)
                 
-                # Prepare environment config matching dataset generation settings
-                # These MUST match the settings used in optomech/optimization/sa_dataset_config.json
-                # environment_flags should contain ALL command-line arguments exactly as used in dataset generation
-                env_config = {
-                    "env_id": "optomech-v1",
-                    "object_type": "single",
-                    "aperture_type": "elf",
-                    "reward_function": "align",
-                    "observation_mode": "image_only",
-                    "focal_plane_image_size_pixels": 512,
-                    "ao_interval_ms": 5.0,
-                    "control_interval_ms": 5.0,
-                    "frame_interval_ms": 5.0,
-                    "decision_interval_ms": 5.0,
-                    "num_atmosphere_layers": 0,
-                    "environment_flags": [
-                        "--object_type=single",
-                        "--ao_interval_ms=5.0",
-                        "--control_interval_ms=5.0",
-                        "--frame_interval_ms=5.0",
-                        "--decision_interval_ms=5.0",
-                        "--num_atmosphere_layers=0",
-                        "--aperture_type=elf",
-                        "--focal_plane_image_size_pixels=512",
-                        "--observation_mode=image_only",
-                        "--command_secondaries",
-                        "--init_differential_motion",
-                        "--model_wind_diff_motion",
-                        "--num_envs=1",
-                        "--reward_function=align",
-                        "--max_episode_steps=10_000",
-                        "--init_temperature=10.0",
-                        "--std_dev_patience=10",
-                        "--sparsity_patience=10000000",
-                        "--temperature_patience=10000000",
-                        "--init_std_dev=1.0",
-                        "--scale_patience=10",
-                        "--scale_stickiness=1.0"
-                    ],
-                    "log_scale": config.log_scale,  # Track preprocessing used during training
-                    "input_crop_size": config.input_crop_size,  # Track crop size used during training
-                    "rollout_episode_steps": config.rollout_episode_steps  # Override max_episode_steps for rollouts
-                }
-                
-                # Force incremental control mode (dataset was collected with SA = incremental actions)
-                if config.force_incremental_mode:
-                    if "--incremental_control" not in env_config["environment_flags"]:
-                        env_config["environment_flags"].append("--incremental_control")
-                
+                # Use the rollout environment config that was saved at the start of training
                 env_config_path = log_dir / "rollout_env_config.json"
-                with open(env_config_path, 'w') as f:
-                    json.dump(env_config, f, indent=2)
                 
                 # Perform rollout with BC model type
                 mean_rewards, std_rewards, rollout_metadata = perform_rollout_instrumentation(
