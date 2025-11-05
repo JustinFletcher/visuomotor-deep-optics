@@ -82,6 +82,7 @@ import random
 import time
 from pathlib import Path
 from dataclasses import dataclass
+from argparse import Namespace
 
 # Add parent directory to path for local imports
 current_dir = Path(__file__).parent
@@ -104,14 +105,38 @@ except ImportError:
     from dataset_manager import DatasetManager
     CHUNKED_AVAILABLE = False
 
-# Import job config loading function
+# Import job config loading function and config merger
 try:
-    from optomech.eval.optomech_rollout import load_environment_config
+    from optomech.env_config import merge_config_with_flags
+    MERGE_CONFIG_AVAILABLE = True
 except ImportError:
-    def load_environment_config(config_path):
-        """Fallback if optomech_rollout is not available"""
-        with open(config_path, 'r') as f:
-            return json.load(f)
+    print("Warning: Could not import merge_config_with_flags from optomech.env_config")
+    MERGE_CONFIG_AVAILABLE = False
+
+def load_environment_config(config_path):
+    """Load environment configuration from JSON file with environment_flags support"""
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    # Check if this is a job config with environment_flags
+    if 'environment_flags' in config and MERGE_CONFIG_AVAILABLE:
+        environment_flags = config['environment_flags']
+        print(f"✅ Found {len(environment_flags)} environment flags")
+        
+        # Use merge_config_with_flags to properly parse CLI-style flags
+        env_args = merge_config_with_flags(
+            config=None,  # Use default config
+            flags_list=environment_flags,
+            # Add any additional config from the JSON file
+            **{k: v for k, v in config.items() if k != 'environment_flags'},
+            # Ensure state recording is enabled for step file saving
+            record_env_state_info=True,
+            write_env_state_info=True,
+        )
+        return env_args
+    else:
+        # Simple dictionary conversion for direct parameter configs
+        return Namespace(**config) if not isinstance(config, Namespace) else config
 
 
 def sample_normal_action(action_space, std_dev=0.1):
