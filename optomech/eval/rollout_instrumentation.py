@@ -328,7 +328,7 @@ def perform_rollout_instrumentation(
     if "num_atmosphere_layers" in dataset_config:
         env_args.num_atmosphere_layers = dataset_config["num_atmosphere_layers"]
     
-    # Parse environment_flags from config and apply them (these take highest precedence)
+    # Parse environment_flags from config and apply them (these take highest precedence)f
     for flag in dataset_config.get("environment_flags", []):
         if "=" in flag:
             key, value = flag.split("=", 1)
@@ -346,17 +346,15 @@ def perform_rollout_instrumentation(
             # Boolean flag
             key = flag.lstrip("-")
             setattr(env_args, key, True)
-
-    # Finally, manually set the incremental_control to True for rollouts
-    env_args.incremental_control = True
     
     # Override max_episode_steps if rollout_episode_steps is provided in config
     if "rollout_episode_steps" in dataset_config and dataset_config["rollout_episode_steps"] is not None:
         env_args.rollout_episode_steps = dataset_config["rollout_episode_steps"]
         print(f"🔧 Setting rollout_episode_steps to {env_args.rollout_episode_steps} from config")
     
-    # Debug: Print the critical interval values
-    print(f"🔍 Final interval values:")
+    # Debug: Print the critical control settings
+    print(f"🔍 Final control settings:")
+    print(f"  incremental_control: {getattr(env_args, 'incremental_control', 'NOT_SET')}")
     print(f"  ao_interval_ms: {getattr(env_args, 'ao_interval_ms', 'NOT_SET')}")
     print(f"  control_interval_ms: {getattr(env_args, 'control_interval_ms', 'NOT_SET')}")
     print(f"  frame_interval_ms: {getattr(env_args, 'frame_interval_ms', 'NOT_SET')}")
