@@ -367,7 +367,12 @@ def build_sa_dataset(args):
                     environment_flags.append(arg)
             
             print(f"✅ Extracted {len(environment_flags)} environment flags")
-            print(f"   Sample flags: {environment_flags[:5]}")
+            if len(environment_flags) > 0:
+                print(f"   First 5 flags: {environment_flags[:5]}")
+                # Print timing-related flags specifically
+                timing_flags = [f for f in environment_flags if 'interval_ms' in f or 'decision' in f]
+                if timing_flags:
+                    print(f"   Timing flags: {timing_flags}")
             
             # Create a config dict with environment_flags for compatibility
             config_for_loading = {
@@ -408,7 +413,10 @@ def build_sa_dataset(args):
                     value = float(value)
                 
                 setattr(args, key, value)
-                print(f"  Override: {key} = {value}")
+                if key in ['ao_interval_ms', 'control_interval_ms', 'frame_interval_ms', 'decision_interval_ms']:
+                    print(f"  ⏱️  Override: {key} = {value}")
+                else:
+                    print(f"  Override: {key} = {value}")
     else:
         print(f"⚠️  Job config file not found: {job_config_path}")
         print("Using default environment settings from Args")
