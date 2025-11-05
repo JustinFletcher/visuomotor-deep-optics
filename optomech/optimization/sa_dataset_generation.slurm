@@ -12,13 +12,6 @@
 # Change to the project directory
 cd ~/visuomotor-deep-optics/
 
-# Limit each process to use only sequential operations
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export OPENBLAS_NUM_THREADS=1
-export VECLIB_MAXIMUM_THREADS=1
-export NUMEXPR_NUM_THREADS=1
-
 
 # SA Dataset Generation Variants
 VARIANTS=(
