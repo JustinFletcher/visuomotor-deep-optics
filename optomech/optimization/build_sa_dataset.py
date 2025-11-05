@@ -360,27 +360,11 @@ def build_sa_dataset(args):
             # Extract environment flags from the command line arguments
             # Handle both --flag=value and --flag value formats
             environment_flags = []
-            i = 0
-            while i < len(job_command):
-                arg = job_command[i]
-                if arg.startswith('--'):
-                    if '=' in arg:
-                        # --flag=value format
-                        environment_flags.append(arg)
-                        i += 1
-                    else:
-                        # --flag value format (or boolean flag)
-                        if i + 1 < len(job_command) and not job_command[i + 1].startswith('--'):
-                            # Next element is the value
-                            environment_flags.append(f"{arg}={job_command[i + 1]}")
-                            i += 2
-                        else:
-                            # Boolean flag without value
-                            environment_flags.append(arg)
-                            i += 1
-                else:
-                    # Skip non-flag arguments (like 'python', script names, etc.)
-                    i += 1
+            for arg in job_command:
+                if arg.startswith('--') and '=' in arg:
+                    environment_flags.append(arg)
+                elif arg.startswith('--') and not '=' in arg:
+                    environment_flags.append(arg)
             
             print(f"✅ Extracted {len(environment_flags)} environment flags")
             print(f"   Sample flags: {environment_flags[:5]}")
