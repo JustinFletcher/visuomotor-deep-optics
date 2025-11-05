@@ -703,6 +703,11 @@ def build_sa_dataset(args):
             # Clip actions to action space bounds
             candidate_actions = np.clip(candidate_actions, env.action_space.low, env.action_space.high)
 
+            # Get perfect correction action for current state BEFORE stepping
+            # This ensures the perfect action corresponds to the obs we'll save
+            optical_system = env.optical_system
+            perfect_action = get_perfect_correction_action(optical_system)
+
             # Step the environment with candidate action
             next_obs, candidate_rewards, terminations, truncations, step_infos = env.step(candidate_actions)
 
@@ -727,10 +732,6 @@ def build_sa_dataset(args):
                 current_cost = candidate_cost
                 steps_since_acceptance = 0
                 accepted = True
-                
-                # Get perfect correction action for this state
-                optical_system = env.optical_system
-                perfect_action = get_perfect_correction_action(optical_system)
                 
                 # Compute incremental actions (difference from previous accepted action)
                 if previous_accepted_action is not None:
