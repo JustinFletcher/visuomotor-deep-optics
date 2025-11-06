@@ -99,6 +99,11 @@ class TrainingConfig:
     no_dataparallel: bool = False
     lazy_loading: bool = False  # Use lazy (on-demand) loading instead of preloading into memory
     
+    # Dataset pruning settings
+    prune_dataset: bool = False  # Enable dataset pruning by target L2 norm
+    prune_l2_threshold: float = 0.1  # L2 threshold for pruning (prune samples below this)
+    prune_keep_fraction: float = 0.1  # Fraction of below-threshold samples to keep (0.1 = keep 10%, discard 90%)
+    
     # Rollout settings
     enable_rollouts: bool = True
     rollout_interval: int = 1  # Perform rollouts every N epochs (default: every epoch)
@@ -711,6 +716,55 @@ def train_behavior_cloning(config: TrainingConfig):
         )
     
     print(f"✅ Loaded {len(full_dataset)} examples")
+    
+    # Prune dataset by target action L2 norm if enabled
+    if config.prune_dataset:
+        print(f"\n✂️  Pruning dataset by target action L2 norm...")
+        print(f"  Threshold: L2 < {config.prune_l2_threshold}")
+        print(f"  Keep fraction: {config.prune_keep_fraction:.1%} of below-threshold samples")
+        
+        # Compute L2 norms for all samples
+        all_l2_norms = []
+        for idx in range(len(full_dataset)):
+            _, action = full_dataset[idx]
+            l2_norm = torch.norm(action, p=2).item()
+            all_l2_norms.append(l2_norm)
+        
+        all_l2_norms = np.array(all_l2_norms)
+        
+        # Identify samples to keep
+        below_threshold_mask = all_l2_norms < config.prune_l2_threshold
+        above_threshold_mask = ~below_threshold_mask
+        
+        num_below = below_threshold_mask.sum()
+        num_above = above_threshold_mask.sum()
+        
+        print(f"  Samples below threshold: {num_below} ({100*num_below/len(full_dataset):.1f}%)")
+        print(f"  Samples above threshold: {num_above} ({100*num_above/len(full_dataset):.1f}%)")
+        
+        # Keep all above-threshold samples
+        keep_indices = list(np.where(above_threshold_mask)[0])
+        
+        # Randomly sample from below-threshold samples
+        below_threshold_indices = np.where(below_threshold_mask)[0]
+        num_to_keep = int(num_below * config.prune_keep_fraction)
+        
+        if num_to_keep > 0:
+            np.random.seed(config.seed)  # Use same seed for reproducibility
+            kept_below_indices = np.random.choice(
+                below_threshold_indices,
+                size=num_to_keep,
+                replace=False
+            )
+            keep_indices.extend(kept_below_indices)
+        
+        # Create pruned dataset using Subset
+        from torch.utils.data import Subset
+        keep_indices = sorted(keep_indices)
+        full_dataset = Subset(full_dataset, keep_indices)
+        
+        print(f"  Kept {len(keep_indices)} samples ({100*len(keep_indices)/len(all_l2_norms):.1f}% of original)")
+        print(f"  Discarded {len(all_l2_norms) - len(keep_indices)} samples")
     
     # Split dataset
     train_size = int(config.train_split * len(full_dataset))
@@ -1385,6 +1439,14 @@ def main():
     parser.add_argument("--num-workers", type=int, default=4,
                        help="Number of data loading workers")
     
+    # Dataset pruning settings
+    parser.add_argument("--prune-dataset", action="store_true", default=False,
+                       help="Enable dataset pruning by target action L2 norm")
+    parser.add_argument("--prune-l2-threshold", type=float, default=0.1,
+                       help="L2 threshold for pruning - samples below this are pruned (default: 0.1)")
+    parser.add_argument("--prune-keep-fraction", type=float, default=0.1,
+                       help="Fraction of below-threshold samples to keep (default: 0.1 = keep 10%%, discard 90%%)")
+    
     # Output settings
     parser.add_argument("--no-save", action="store_true",
                        help="Don't save model")
@@ -1441,6 +1503,9 @@ def main():
         num_workers=args.num_workers,
         no_dataparallel=args.no_dataparallel,
         lazy_loading=args.lazy,
+        prune_dataset=args.prune_dataset,
+        prune_l2_threshold=args.prune_l2_threshold,
+        prune_keep_fraction=args.prune_keep_fraction,
         enable_rollouts=args.enable_rollouts,
         rollout_interval=args.rollout_interval,
         rollout_seeds=args.rollout_seeds,
