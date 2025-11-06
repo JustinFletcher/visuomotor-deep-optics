@@ -780,8 +780,8 @@ def train_behavior_cloning(config: TrainingConfig):
     print(f"  Samples per bin - min: {bin_counts[bin_counts>0].min()}, max: {bin_counts.max()}, mean: {bin_counts.mean():.1f}")
     
     # Print detailed bin statistics to diagnose clustering
-    print(f"\n  📊 Log-Spaced Bin Distribution (first 10 bins):")
-    for i in range(min(10, len(bin_edges)-1)):
+    print(f"\n  📊 Log-Spaced Bin Distribution (all {len(bin_edges)-1} bins):")
+    for i in range(len(bin_edges)-1):
         bin_start = bin_edges[i]
         bin_end = bin_edges[i+1]
         count = bin_counts[i]
