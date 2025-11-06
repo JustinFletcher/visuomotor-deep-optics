@@ -199,12 +199,47 @@ def get_supervised_transforms(crop_size: Optional[int] = None,
     return Compose(transforms)
 
 
+class ClipActions:
+    """
+    Clip action values to a specified range.
+    
+    Useful for ensuring training targets stay within valid action bounds,
+    particularly when dataset contains actions outside [-1, 1] range.
+    """
+    
+    def __init__(self, min_val: float = -1.0, max_val: float = 1.0):
+        """
+        Args:
+            min_val: Minimum action value
+            max_val: Maximum action value
+        """
+        self.min_val = min_val
+        self.max_val = max_val
+    
+    def __call__(self, action: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+        """
+        Clip action values.
+        
+        Args:
+            action: Action array or tensor to clip
+            
+        Returns:
+            Clipped action in same format as input
+        """
+        if isinstance(action, torch.Tensor):
+            return torch.clamp(action, self.min_val, self.max_val)
+        else:
+            # NumPy array
+            return np.clip(action, self.min_val, self.max_val)
+
+
 # Export commonly used transforms
 __all__ = [
     'center_crop_transform',
     'normalize_transform', 
     'ToTensor',
     'CenterCrop',
+    'ClipActions',
     'Compose',
     'get_autoencoder_transforms',
     'get_supervised_transforms',
