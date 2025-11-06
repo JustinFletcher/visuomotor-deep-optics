@@ -728,7 +728,7 @@ def train_behavior_cloning(config: TrainingConfig):
     print(f"  Test:  {len(test_dataset)}")
     
     # Toggle for balanced L2 norm sampling
-    use_balanced_sampling = False  # Set to False to use standard uniform sampling
+    use_balanced_sampling = True  # Set to False to use standard uniform sampling
     
     # Compute sample weights for balanced L2 norm sampling
     if use_balanced_sampling:
@@ -763,9 +763,18 @@ def train_behavior_cloning(config: TrainingConfig):
         # Count samples per bin
         bin_counts = np.bincount(bin_indices, minlength=len(bin_edges) - 1)
         
-        # Compute weights: inverse of bin frequency
-        # Add small epsilon to avoid division by zero
+        # Compute weights: inverse of bin frequency with temperature control
+        # Temperature = 1.0: full inverse frequency weighting (strongest rebalancing)
+        # Temperature < 1.0: softer reweighting (closer to uniform, less overfitting risk)
+        # Temperature = 0.0: uniform sampling (no reweighting)
+        reweight_temperature = 0.2  # Softer reweighting to avoid overfitting to rare bins
+        
+        # Compute inverse frequency weights
         bin_weights = 1.0 / (bin_counts + 1e-10)
+        
+        # Apply temperature: weight^T - lower T = softer weighting
+        # Example: weight=1000 with T=0.5 -> 1000^0.5 = 31.6 (much softer)
+        bin_weights = np.power(bin_weights, reweight_temperature)
         
         # Assign weight to each sample based on its bin
         sample_weights = bin_weights[bin_indices]
