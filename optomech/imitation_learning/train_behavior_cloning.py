@@ -237,7 +237,7 @@ def get_loss_function(config: TrainingConfig):
 def create_mae_vs_l2_candlestick(target_l2_norms: np.ndarray, 
                                   mae_per_sample: np.ndarray,
                                   title: str,
-                                  num_bins: int = 10) -> plt.Figure:
+                                  num_bins: int = 100) -> plt.Figure:
     """
     Create a candlestick plot showing MAE distribution across target L2 norm bins.
     
@@ -251,6 +251,15 @@ def create_mae_vs_l2_candlestick(target_l2_norms: np.ndarray,
         Matplotlib figure object
     """
     fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Plot histogram of L2 norms in the background
+    # Use the same bin edges as the candlesticks
+    # Scale histogram to secondary y-axis for visual effect
+    ax2 = ax.twinx()
+    hist_counts, hist_bins, _ = ax2.hist(target_l2_norms, bins=num_bins, 
+                                          color='gray', alpha=0.2, edgecolor='none')
+    ax2.set_ylabel('Sample Count', fontsize=12, color='gray')
+    ax2.tick_params(axis='y', labelcolor='gray')
     
     # Create bins based on quantiles for more even distribution
     try:
@@ -323,9 +332,10 @@ def create_mae_vs_l2_candlestick(target_l2_norms: np.ndarray,
         ax.plot([center - width*0.15, center + width*0.15], 
                [stats['max'], stats['max']], 'k-', linewidth=1)
         
-        # Add sample count as text
-        ax.text(center, stats['max'], f"n={stats['count']}", 
-               ha='center', va='bottom', fontsize=8)
+        # Add sample count as text (only for every 10th bin to avoid clutter with 100 bins)
+        if num_bins <= 20 or i % 10 == 0:
+            ax.text(center, stats['max'], f"n={stats['count']}", 
+                   ha='center', va='bottom', fontsize=6)
     
     ax.set_xlabel('Target Action L2 Norm', fontsize=12)
     ax.set_ylabel('Mean Absolute Error (MAE)', fontsize=12)
