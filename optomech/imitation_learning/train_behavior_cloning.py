@@ -767,7 +767,7 @@ def train_behavior_cloning(config: TrainingConfig):
         # Temperature = 1.0: full inverse frequency weighting (strongest rebalancing)
         # Temperature < 1.0: softer reweighting (closer to uniform, less overfitting risk)
         # Temperature = 0.0: uniform sampling (no reweighting)
-        reweight_temperature = 0.5  # Softer reweighting to avoid overfitting to rare bins
+        reweight_temperature = 1.0  # Softer reweighting to avoid overfitting to rare bins
         
         # Compute inverse frequency weights
         bin_weights = 1.0 / (bin_counts + 1e-10)
@@ -826,8 +826,8 @@ def train_behavior_cloning(config: TrainingConfig):
         from torch.utils.data import WeightedRandomSampler
         train_sampler = WeightedRandomSampler(
             weights=sample_weights,
-            num_samples=len(train_dataset),
-            replacement=True  # Allow replacement to oversample rare bins
+            num_samples=int((1-near_zero_pct) * len(train_dataset)),
+            replacement=False  # Allow replacement to oversample rare bins
         )
     else:
         print(f"\n📊 Using standard uniform sampling (balanced sampling disabled)")
