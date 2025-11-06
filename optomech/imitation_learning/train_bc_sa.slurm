@@ -6,7 +6,7 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./bc_training.out
 #SBATCH --error=./bc_training.err
-#SBATCH --gres=gpu:A100-SXM4:8
+#SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=5-00:00:00             # Maximum runtime (5 days)
 
 
@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_10 --device cuda:0 --seed 10"
+    "--run-name sa_inc_10 --device cuda:0 --seed 10"
 )
 
 # Run all variants in parallel
