@@ -41,3 +41,19 @@ done
 
 wait
 
+
+
+poetry run python optomech/imitation_learning/train_behavior_cloning.py \
+    --dataset-path $WORKDIR/datasets/sa_dataset_1m \
+    --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
+    --num-epochs 1000 \
+    --batch-size 1024 \
+    --learning-rate 1e-4 \
+    --optimizer adamw \
+    --loss-function log_cosh \
+    --no-rollouts \
+    --no-dataparallel \
+    --force-incremental-mode \
+    --target-action sa_actions \
+    --num-workers 16 \
+    --max-examples 5000

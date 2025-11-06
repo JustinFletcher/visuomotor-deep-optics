@@ -9,6 +9,7 @@ Features:
 - TensorBoard logging
 - Environment rollouts after validation epochs
 - Forces incremental control mode for rollouts
+- MAE vs Target L2 candlestick plots for error analysis
 """
 
 import os
@@ -30,6 +31,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from tqdm import tqdm
 from torchinfo import summary
 
@@ -232,14 +234,126 @@ def get_loss_function(config: TrainingConfig):
                         f"Choose from: mse, huber, log_cosh, adaptive_mse")
 
 
+def create_mae_vs_l2_candlestick(target_l2_norms: np.ndarray, 
+                                  mae_per_sample: np.ndarray,
+                                  title: str,
+                                  num_bins: int = 10) -> plt.Figure:
+    """
+    Create a candlestick plot showing MAE distribution across target L2 norm bins.
+    
+    Args:
+        target_l2_norms: Array of L2 norms of target actions [num_samples]
+        mae_per_sample: Array of MAE values per sample [num_samples]
+        title: Plot title
+        num_bins: Number of L2 bins to create
+        
+    Returns:
+        Matplotlib figure object
+    """
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Create bins based on quantiles for more even distribution
+    try:
+        bin_edges = np.percentile(target_l2_norms, np.linspace(0, 100, num_bins + 1))
+        # Ensure unique bin edges
+        bin_edges = np.unique(bin_edges)
+        if len(bin_edges) < 2:
+            # Fallback: if all values are the same, create artificial bins
+            bin_edges = np.linspace(target_l2_norms.min() - 0.001, 
+                                   target_l2_norms.max() + 0.001, num_bins + 1)
+    except Exception as e:
+        # Fallback to linear bins if quantile fails
+        bin_edges = np.linspace(target_l2_norms.min(), target_l2_norms.max(), num_bins + 1)
+    
+    bin_centers = []
+    bin_widths = []
+    candlestick_data = []
+    
+    for i in range(len(bin_edges) - 1):
+        # Find samples in this bin
+        mask = (target_l2_norms >= bin_edges[i]) & (target_l2_norms < bin_edges[i+1])
+        if i == len(bin_edges) - 2:  # Include upper edge in last bin
+            mask = (target_l2_norms >= bin_edges[i]) & (target_l2_norms <= bin_edges[i+1])
+        
+        bin_mae = mae_per_sample[mask]
+        
+        if len(bin_mae) > 0:
+            # Compute candlestick statistics
+            stats = {
+                'min': np.min(bin_mae),
+                'q25': np.percentile(bin_mae, 25),
+                'median': np.median(bin_mae),
+                'q75': np.percentile(bin_mae, 75),
+                'max': np.max(bin_mae),
+                'count': len(bin_mae)
+            }
+            candlestick_data.append(stats)
+            bin_centers.append((bin_edges[i] + bin_edges[i+1]) / 2)
+            bin_widths.append(bin_edges[i+1] - bin_edges[i])
+    
+    if not candlestick_data:
+        # No data to plot
+        ax.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(title)
+        return fig
+    
+    # Plot candlesticks
+    for i, (center, width, stats) in enumerate(zip(bin_centers, bin_widths, candlestick_data)):
+        # Box from Q25 to Q75
+        box_height = stats['q75'] - stats['q25']
+        box = mpatches.Rectangle(
+            (center - width*0.3, stats['q25']),
+            width*0.6, box_height,
+            linewidth=1, edgecolor='black', facecolor='lightblue', alpha=0.7
+        )
+        ax.add_patch(box)
+        
+        # Median line
+        ax.plot([center - width*0.3, center + width*0.3], 
+               [stats['median'], stats['median']], 
+               'r-', linewidth=2)
+        
+        # Whiskers (min to Q25, Q75 to max)
+        ax.plot([center, center], [stats['min'], stats['q25']], 'k-', linewidth=1)
+        ax.plot([center, center], [stats['q75'], stats['max']], 'k-', linewidth=1)
+        
+        # End caps
+        ax.plot([center - width*0.15, center + width*0.15], 
+               [stats['min'], stats['min']], 'k-', linewidth=1)
+        ax.plot([center - width*0.15, center + width*0.15], 
+               [stats['max'], stats['max']], 'k-', linewidth=1)
+        
+        # Add sample count as text
+        ax.text(center, stats['max'], f"n={stats['count']}", 
+               ha='center', va='bottom', fontsize=8)
+    
+    ax.set_xlabel('Target Action L2 Norm', fontsize=12)
+    ax.set_ylabel('Mean Absolute Error (MAE)', fontsize=12)
+    ax.set_title(title, fontsize=14)
+    ax.grid(True, alpha=0.3)
+    
+    # Add legend
+    legend_elements = [
+        mpatches.Patch(facecolor='lightblue', edgecolor='black', label='Q25-Q75 (IQR)'),
+        mpatches.Patch(facecolor='red', label='Median'),
+        mpatches.Patch(facecolor='none', edgecolor='black', label='Min-Max Whiskers')
+    ]
+    ax.legend(handles=legend_elements, loc='upper left')
+    
+    plt.tight_layout()
+    return fig
+
+
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
-                criterion: nn.Module, device: torch.device, grad_clip: float = None) -> Tuple[float, Dict, np.ndarray, Dict]:
+                criterion: nn.Module, device: torch.device, grad_clip: float = None) -> Tuple[float, Dict, np.ndarray, Dict, np.ndarray, np.ndarray]:
     """
-    Train for one epoch and return loss, MAE metrics, raw error distribution, and absolute error metrics.
+    Train for one epoch and return loss, MAE metrics, raw error distribution, absolute error metrics,
+    and data for MAE vs target L2 analysis.
     
     Returns:
-        Tuple of (avg_loss, mae_metrics_dict, raw_errors_array, abs_error_metrics_dict)
+        Tuple of (avg_loss, mae_metrics_dict, raw_errors_array, abs_error_metrics_dict, 
+                  target_l2_norms_array, mae_per_sample_array)
     """
     model.train()
     total_loss = 0.0
@@ -247,6 +361,8 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
     all_mae_errors = []  # Example-level MAE (mean across actions per sample)
     all_raw_errors = []  # All raw errors (predictions - targets) flattened
     all_abs_errors = []  # All absolute errors flattened
+    all_target_l2_norms = []  # L2 norm of target action per sample
+    all_mae_per_sample = []  # MAE per sample (for MAE vs L2 plot)
 
     for observations, actions in tqdm(dataloader, desc="Training", leave=False):
         observations = observations.to(device)
@@ -279,6 +395,11 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
             # Calculate MAE for each sample in the batch (example-level)
             mae_per_sample = torch.mean(abs_errors, dim=1)  # [batch_size]
             all_mae_errors.extend(mae_per_sample.cpu().numpy())
+            all_mae_per_sample.extend(mae_per_sample.cpu().numpy())
+            
+            # Calculate L2 norm of target actions per sample
+            target_l2 = torch.norm(actions, p=2, dim=1)  # [batch_size]
+            all_target_l2_norms.extend(target_l2.cpu().numpy())
 
         # Track loss
         total_loss += loss.item()
@@ -290,6 +411,8 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
     mae_errors_array = np.array(all_mae_errors)
     raw_errors_array = np.array(all_raw_errors)
     abs_errors_array = np.array(all_abs_errors)
+    target_l2_norms_array = np.array(all_target_l2_norms)
+    mae_per_sample_array = np.array(all_mae_per_sample)
     
     # Calculate MAE statistics (example-level aggregation)
     mae_metrics = {
@@ -313,7 +436,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
         'abs_error_q75': np.percentile(abs_errors_array, 75)
     }
     
-    return avg_loss, mae_metrics, raw_errors_array, abs_error_metrics
+    return avg_loss, mae_metrics, raw_errors_array, abs_error_metrics, target_l2_norms_array, mae_per_sample_array
 
 
 def validate_epoch(model: nn.Module, dataloader: DataLoader, 
@@ -330,6 +453,8 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader,
     all_mae_errors = []  # Example-level MAE (mean across actions per sample)
     all_raw_errors = []  # All raw errors (predictions - targets) flattened
     all_abs_errors = []  # All absolute errors flattened
+    all_target_l2_norms = []  # L2 norm of target actions for each sample
+    all_mae_per_sample = []  # MAE per sample for candlestick plot
 
     with torch.no_grad():
         for observations, actions in tqdm(dataloader, desc="Validation", leave=False):
@@ -351,6 +476,11 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader,
             # Calculate MAE for each sample in the batch (example-level)
             mae_per_sample = torch.mean(abs_errors, dim=1)  # [batch_size]
             all_mae_errors.extend(mae_per_sample.cpu().numpy())
+            
+            # Track L2 norm of target actions and MAE per sample for candlestick plot
+            target_l2 = torch.norm(actions, p=2, dim=1)  # [batch_size]
+            all_target_l2_norms.extend(target_l2.cpu().numpy())
+            all_mae_per_sample.extend(mae_per_sample.cpu().numpy())
 
             total_loss += loss.item()
             num_batches += 1
@@ -361,6 +491,8 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader,
     mae_errors_array = np.array(all_mae_errors)
     raw_errors_array = np.array(all_raw_errors)
     abs_errors_array = np.array(all_abs_errors)
+    target_l2_norms_array = np.array(all_target_l2_norms)
+    mae_per_sample_array = np.array(all_mae_per_sample)
     
     # Calculate MAE statistics (example-level aggregation)
     mae_metrics = {
@@ -384,7 +516,7 @@ def validate_epoch(model: nn.Module, dataloader: DataLoader,
         'abs_error_q75': np.percentile(abs_errors_array, 75)
     }
     
-    return avg_loss, mae_metrics, raw_errors_array, abs_error_metrics
+    return avg_loss, mae_metrics, raw_errors_array, abs_error_metrics, target_l2_norms_array, mae_per_sample_array
 
 
 def save_checkpoint(model: nn.Module, optimizer: optim.Optimizer, epoch: int,
@@ -777,12 +909,12 @@ def train_behavior_cloning(config: TrainingConfig):
         epoch_start = time.time()
         
         # Train with detailed metrics
-        train_loss, train_mae_metrics, train_error_distribution, train_abs_error_metrics = train_epoch(
+        train_loss, train_mae_metrics, train_error_distribution, train_abs_error_metrics, train_l2_norms, train_mae_per_sample = train_epoch(
             model, train_loader, optimizer, criterion, device, config.grad_clip
         )
         
         # Validate with detailed metrics
-        val_loss, val_mae_metrics, val_error_distribution, val_abs_error_metrics = validate_epoch(
+        val_loss, val_mae_metrics, val_error_distribution, val_abs_error_metrics, val_l2_norms, val_mae_per_sample = validate_epoch(
             model, val_loader, criterion, device
         )
         
@@ -813,6 +945,14 @@ def train_behavior_cloning(config: TrainingConfig):
         writer.add_scalar('Training_Instrumentation/AbsError_Q25', train_abs_error_metrics['abs_error_q25'], epoch)
         writer.add_scalar('Training_Instrumentation/AbsError_Q75', train_abs_error_metrics['abs_error_q75'], epoch)
         
+        # MAE vs Target L2 Candlestick Plots
+        train_candlestick_fig = create_mae_vs_l2_candlestick(
+            train_l2_norms, train_mae_per_sample, 
+            f'Training MAE vs Target Action L2 Norm (Epoch {epoch})'
+        )
+        writer.add_figure('Training_Instrumentation/MAE_vs_L2_Candlestick', train_candlestick_fig, epoch)
+        plt.close(train_candlestick_fig)
+        
         # Validation Instrumentation - Example-level MAE
         writer.add_scalar('Validation_Instrumentation/MAE_Mean', val_mae_metrics['mae_mean'], epoch)
         writer.add_scalar('Validation_Instrumentation/MAE_Median', val_mae_metrics['mae_median'], epoch)
@@ -822,6 +962,14 @@ def train_behavior_cloning(config: TrainingConfig):
         writer.add_scalar('Validation_Instrumentation/MAE_Q25', val_mae_metrics['mae_q25'], epoch)
         writer.add_scalar('Validation_Instrumentation/MAE_Q75', val_mae_metrics['mae_q75'], epoch)
         writer.add_histogram('Validation_Instrumentation/Error_Distribution', val_error_distribution, epoch)
+        
+        # MAE vs Target L2 Candlestick Plots
+        val_candlestick_fig = create_mae_vs_l2_candlestick(
+            val_l2_norms, val_mae_per_sample,
+            f'Validation MAE vs Target Action L2 Norm (Epoch {epoch})'
+        )
+        writer.add_figure('Validation_Instrumentation/MAE_vs_L2_Candlestick', val_candlestick_fig, epoch)
+        plt.close(val_candlestick_fig)
         
         # Validation Instrumentation - Action-level absolute error statistics
         writer.add_scalar('Validation_Instrumentation/AbsError_Mean', val_abs_error_metrics['abs_error_mean'], epoch)
