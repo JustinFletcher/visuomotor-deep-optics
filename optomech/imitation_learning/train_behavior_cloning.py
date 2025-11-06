@@ -741,21 +741,25 @@ def train_behavior_cloning(config: TrainingConfig):
     
     train_l2_norms = np.array(train_l2_norms)
     
-    # Create log-spaced bins for L2 norms (better for data clustered near zero)
-    # Log-spacing treats order of magnitude rather than absolute differences
-    # This prevents over-fragmentation of near-zero samples
-    num_balance_bins = 20
+    # Create hybrid bins: one bin for near-zero (L2 < 0.1), then linearly spaced bins for the rest
+    # This prevents over-fragmentation of near-zero cluster while balancing larger actions
+    near_zero_threshold = 0.1
+    num_bins_above_threshold = 19  # 19 bins for L2 >= 0.1, plus 1 bin for L2 < 0.1 = 20 total
     
-    # Use log-spacing from min to max L2 norm
-    # Add small epsilon to handle exact zeros
-    min_l2 = max(train_l2_norms.min(), 1e-6)
-    max_l2 = train_l2_norms.max()
+    # Find samples above and below threshold
+    near_zero_mask = train_l2_norms < near_zero_threshold
+    above_threshold_mask = train_l2_norms >= near_zero_threshold
     
-    # Create log-spaced bin edges
-    bin_edges = np.logspace(np.log10(min_l2), np.log10(max_l2), num_balance_bins + 1)
-    
-    # Ensure first bin catches any values smaller than min_l2
-    bin_edges[0] = 0.0
+    # Create bin edges: [0, 0.1, then linearly spaced from 0.1 to max]
+    above_threshold_l2s = train_l2_norms[above_threshold_mask]
+    if len(above_threshold_l2s) > 0:
+        max_l2 = above_threshold_l2s.max()
+        # Linear spacing from threshold to max
+        upper_bin_edges = np.linspace(near_zero_threshold, max_l2, num_bins_above_threshold + 1)
+        bin_edges = np.concatenate([[0.0], upper_bin_edges])
+    else:
+        # No samples above threshold, just use a single bin
+        bin_edges = np.array([0.0, train_l2_norms.max() + 0.01])
     
     # Assign each sample to a bin
     bin_indices = np.digitize(train_l2_norms, bin_edges[:-1]) - 1
@@ -776,17 +780,18 @@ def train_behavior_cloning(config: TrainingConfig):
     
     print(f"  Computed weights for {len(train_dataset)} training samples")
     print(f"  L2 norm range: [{train_l2_norms.min():.3f}, {train_l2_norms.max():.3f}]")
-    print(f"  Using {len(bin_edges)-1} log-spaced bins for balancing")
+    print(f"  Using {len(bin_edges)-1} hybrid bins for balancing (1 bin for L2<0.1, rest linearly spaced)")
     print(f"  Samples per bin - min: {bin_counts[bin_counts>0].min()}, max: {bin_counts.max()}, mean: {bin_counts.mean():.1f}")
     
-    # Print detailed bin statistics to diagnose clustering
-    print(f"\n  📊 Log-Spaced Bin Distribution (all {len(bin_edges)-1} bins):")
+    # Print detailed bin statistics
+    print(f"\n  📊 Hybrid Bin Distribution (all {len(bin_edges)-1} bins):")
     for i in range(len(bin_edges)-1):
         bin_start = bin_edges[i]
         bin_end = bin_edges[i+1]
         count = bin_counts[i]
         weight = bin_weights[i]
-        print(f"    Bin {i:2d}: [{bin_start:.6f}, {bin_end:.6f}] -> {count:5d} samples (weight: {weight:.6f})")
+        bin_label = "NEAR-ZERO" if bin_end <= near_zero_threshold + 1e-9 else "LINEAR"
+        print(f"    Bin {i:2d} [{bin_label:10s}]: [{bin_start:.6f}, {bin_end:.6f}] -> {count:5d} samples (weight: {weight:.6f})")
     
     # Show clustering around zero
     near_zero_count = np.sum(train_l2_norms < 0.1)
