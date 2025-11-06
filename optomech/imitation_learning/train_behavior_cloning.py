@@ -330,6 +330,7 @@ def create_mae_vs_l2_candlestick(target_l2_norms: np.ndarray,
     ax.set_xlabel('Target Action L2 Norm', fontsize=12)
     ax.set_ylabel('Mean Absolute Error (MAE)', fontsize=12)
     ax.set_title(title, fontsize=14)
+    ax.set_ylim(0.0, 2.0)  # Fix y-axis range
     ax.grid(True, alpha=0.3)
     
     # Add legend
