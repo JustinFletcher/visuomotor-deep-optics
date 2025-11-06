@@ -727,11 +727,60 @@ def train_behavior_cloning(config: TrainingConfig):
     print(f"  Val:   {len(val_dataset)}")
     print(f"  Test:  {len(test_dataset)}")
     
-    # Create data loaders
+    # Compute sample weights for balanced L2 norm sampling
+    print(f"\n⚖️  Computing sample weights to balance action L2 norms...")
+    
+    # Get all training action L2 norms
+    train_l2_norms = []
+    for idx in range(len(train_dataset)):
+        # Access the underlying dataset and get the action
+        dataset_idx = train_dataset.indices[idx]
+        _, action = full_dataset[dataset_idx]
+        l2_norm = torch.norm(action, p=2).item()
+        train_l2_norms.append(l2_norm)
+    
+    train_l2_norms = np.array(train_l2_norms)
+    
+    # Create bins for L2 norms (use 20 bins for balancing)
+    num_balance_bins = 20
+    bin_edges = np.percentile(train_l2_norms, np.linspace(0, 100, num_balance_bins + 1))
+    bin_edges = np.unique(bin_edges)  # Remove duplicates
+    
+    # Assign each sample to a bin
+    bin_indices = np.digitize(train_l2_norms, bin_edges[:-1]) - 1
+    bin_indices = np.clip(bin_indices, 0, len(bin_edges) - 2)  # Ensure valid range
+    
+    # Count samples per bin
+    bin_counts = np.bincount(bin_indices, minlength=len(bin_edges) - 1)
+    
+    # Compute weights: inverse of bin frequency
+    # Add small epsilon to avoid division by zero
+    bin_weights = 1.0 / (bin_counts + 1e-10)
+    
+    # Assign weight to each sample based on its bin
+    sample_weights = bin_weights[bin_indices]
+    
+    # Normalize weights to sum to number of samples (for WeightedRandomSampler)
+    sample_weights = sample_weights / sample_weights.sum() * len(train_dataset)
+    
+    print(f"  Computed weights for {len(train_dataset)} training samples")
+    print(f"  L2 norm range: [{train_l2_norms.min():.3f}, {train_l2_norms.max():.3f}]")
+    print(f"  Using {len(bin_edges)-1} bins for balancing")
+    print(f"  Samples per bin - min: {bin_counts[bin_counts>0].min()}, max: {bin_counts.max()}, mean: {bin_counts.mean():.1f}")
+    
+    # Create weighted sampler for training
+    from torch.utils.data import WeightedRandomSampler
+    train_sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(train_dataset),
+        replacement=True  # Allow replacement to oversample rare bins
+    )
+    
+    # Create data loaders (use sampler for training, shuffle for validation)
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
-        shuffle=True,
+        sampler=train_sampler,  # Use weighted sampler instead of shuffle
         num_workers=config.num_workers,
         pin_memory=config.pin_memory and device.type == 'cuda'
     )

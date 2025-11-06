@@ -54,6 +54,6 @@ poetry run python optomech/imitation_learning/train_behavior_cloning.py \
     --no-rollouts \
     --no-dataparallel \
     --force-incremental-mode \
-    --target-action sa_actions \
+    --target-action sa_incremental_actions \
     --num-workers 16 \
-    --max-examples 5000
+    --max-examples 10000
