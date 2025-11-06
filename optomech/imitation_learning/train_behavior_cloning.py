@@ -741,10 +741,21 @@ def train_behavior_cloning(config: TrainingConfig):
     
     train_l2_norms = np.array(train_l2_norms)
     
-    # Create bins for L2 norms (use 20 bins for balancing)
+    # Create log-spaced bins for L2 norms (better for data clustered near zero)
+    # Log-spacing treats order of magnitude rather than absolute differences
+    # This prevents over-fragmentation of near-zero samples
     num_balance_bins = 20
-    bin_edges = np.percentile(train_l2_norms, np.linspace(0, 100, num_balance_bins + 1))
-    bin_edges = np.unique(bin_edges)  # Remove duplicates
+    
+    # Use log-spacing from min to max L2 norm
+    # Add small epsilon to handle exact zeros
+    min_l2 = max(train_l2_norms.min(), 1e-6)
+    max_l2 = train_l2_norms.max()
+    
+    # Create log-spaced bin edges
+    bin_edges = np.logspace(np.log10(min_l2), np.log10(max_l2), num_balance_bins + 1)
+    
+    # Ensure first bin catches any values smaller than min_l2
+    bin_edges[0] = 0.0
     
     # Assign each sample to a bin
     bin_indices = np.digitize(train_l2_norms, bin_edges[:-1]) - 1
@@ -765,8 +776,22 @@ def train_behavior_cloning(config: TrainingConfig):
     
     print(f"  Computed weights for {len(train_dataset)} training samples")
     print(f"  L2 norm range: [{train_l2_norms.min():.3f}, {train_l2_norms.max():.3f}]")
-    print(f"  Using {len(bin_edges)-1} bins for balancing")
+    print(f"  Using {len(bin_edges)-1} log-spaced bins for balancing")
     print(f"  Samples per bin - min: {bin_counts[bin_counts>0].min()}, max: {bin_counts.max()}, mean: {bin_counts.mean():.1f}")
+    
+    # Print detailed bin statistics to diagnose clustering
+    print(f"\n  📊 Log-Spaced Bin Distribution (first 10 bins):")
+    for i in range(min(10, len(bin_edges)-1)):
+        bin_start = bin_edges[i]
+        bin_end = bin_edges[i+1]
+        count = bin_counts[i]
+        weight = bin_weights[i]
+        print(f"    Bin {i:2d}: [{bin_start:.6f}, {bin_end:.6f}] -> {count:5d} samples (weight: {weight:.6f})")
+    
+    # Show clustering around zero
+    near_zero_count = np.sum(train_l2_norms < 0.1)
+    near_zero_pct = 100 * near_zero_count / len(train_l2_norms)
+    print(f"\n  🎯 Near-zero clustering: {near_zero_count}/{len(train_l2_norms)} samples ({near_zero_pct:.1f}%) have L2 < 0.1")
     
     # Create weighted sampler for training
     from torch.utils.data import WeightedRandomSampler
