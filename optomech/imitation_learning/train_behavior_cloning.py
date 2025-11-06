@@ -44,7 +44,7 @@ sys.path.insert(0, str(parent_dir))
 
 # Import unified dataset utilities
 from utils.datasets import LazyDataset
-from utils.transforms import log_scale_transform, center_crop_transform, normalize_transform
+from utils.transforms import log_scale_transform, center_crop_transform, normalize_transform, ClipActions, Compose, ToTensor
 
 # Import model utilities
 from models.models import ResNet18Actor
@@ -661,6 +661,13 @@ def train_behavior_cloning(config: TrainingConfig):
     if config.lazy_loading:
         # Use LazyDataset for memory-efficient on-demand loading
         print("  🔄 Using lazy loading (on-demand from disk)")
+        
+        # Create action transform: convert to tensor + clip to [-1, 1]
+        action_transform = Compose([
+            ToTensor(normalize=False),
+            ClipActions(min_val=-1.0, max_val=1.0)
+        ])
+        
         full_dataset = LazyDataset(
             dataset_path=config.dataset_path,
             task_type='behavior_cloning',
@@ -668,19 +675,28 @@ def train_behavior_cloning(config: TrainingConfig):
             max_examples=config.max_examples,
             log_scale=config.log_scale,
             use_cache=True,
-            target_action_key=config.target_action_key
+            target_action_key=config.target_action_key,
+            target_transform=action_transform
         )
     else:
         # Use InMemoryDataset for fastest training (loads entire dataset into RAM)
         print("  💾 Using in-memory loading (preload entire dataset)")
         from utils.datasets import InMemoryDataset
+        
+        # Create action transform: convert to tensor + clip to [-1, 1]
+        action_transform = Compose([
+            ToTensor(normalize=False),
+            ClipActions(min_val=-1.0, max_val=1.0)
+        ])
+        
         full_dataset = InMemoryDataset(
             dataset_path=config.dataset_path,
             task_type='behavior_cloning',
             input_crop_size=config.input_crop_size,
             max_examples=config.max_examples,
             log_scale=config.log_scale,
-            target_action_key=config.target_action_key
+            target_action_key=config.target_action_key,
+            target_transform=action_transform
         )
     
     print(f"✅ Loaded {len(full_dataset)} examples")
