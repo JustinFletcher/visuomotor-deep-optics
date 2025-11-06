@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_9 --device cuda:0 --seed 9"
+    "--run-name sa_10 --device cuda:0 --seed 10"
 )
 
 # Run all variants in parallel
@@ -23,37 +23,21 @@ for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
     poetry run python optomech/imitation_learning/train_behavior_cloning.py \
-        --dataset-path $WORKDIR/datasets/sa_dataset_100k \
+        --dataset-path $WORKDIR/datasets/sa_dataset_1m \
         --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
-        --num-epochs 1000 \
+        --num-epochs 1000000 \
         --batch-size 1024 \
         --learning-rate 1e-4 \
         --optimizer adamw \
-        --loss-function log_cosh \
+        --loss-function mse \
         --no-rollouts \
         --no-dataparallel \
         --force-incremental-mode \
-        --target-action sa_actions \
+        --target-action sa_incremental_actions \
         --num-workers 16 \
+        --no-scheduler \
        $VARIANT &  # Run in background
 done
 
 
 wait
-
-
-
-poetry run python optomech/imitation_learning/train_behavior_cloning.py \
-    --dataset-path $WORKDIR/datasets/sa_dataset_1m \
-    --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
-    --num-epochs 1000 \
-    --batch-size 1024 \
-    --learning-rate 1e-4 \
-    --optimizer adamw \
-    --loss-function log_cosh \
-    --no-rollouts \
-    --no-dataparallel \
-    --force-incremental-mode \
-    --target-action sa_incremental_actions \
-    --num-workers 16 \
-    --max-examples 10000
