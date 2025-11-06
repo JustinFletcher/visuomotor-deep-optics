@@ -767,7 +767,7 @@ def train_behavior_cloning(config: TrainingConfig):
         # Temperature = 1.0: full inverse frequency weighting (strongest rebalancing)
         # Temperature < 1.0: softer reweighting (closer to uniform, less overfitting risk)
         # Temperature = 0.0: uniform sampling (no reweighting)
-        reweight_temperature = 0.2  # Softer reweighting to avoid overfitting to rare bins
+        reweight_temperature = 0.5  # Softer reweighting to avoid overfitting to rare bins
         
         # Compute inverse frequency weights
         bin_weights = 1.0 / (bin_counts + 1e-10)
