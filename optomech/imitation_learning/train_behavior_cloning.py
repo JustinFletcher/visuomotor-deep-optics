@@ -741,25 +741,16 @@ def train_behavior_cloning(config: TrainingConfig):
     
     train_l2_norms = np.array(train_l2_norms)
     
-    # Create hybrid bins: one bin for near-zero (L2 < 0.1), then linearly spaced bins for the rest
-    # This prevents over-fragmentation of near-zero cluster while balancing larger actions
-    near_zero_threshold = 0.1
-    num_bins_above_threshold = 19  # 19 bins for L2 >= 0.1, plus 1 bin for L2 < 0.1 = 20 total
+    # Create linearly-spaced bins for L2 norms with fine granularity
+    # Using many bins (100) provides fine-grained reweighting across the full L2 range
+    num_balance_bins = 100
     
-    # Find samples above and below threshold
-    near_zero_mask = train_l2_norms < near_zero_threshold
-    above_threshold_mask = train_l2_norms >= near_zero_threshold
+    # Create linear bins from min to max L2 norm
+    min_l2 = train_l2_norms.min()
+    max_l2 = train_l2_norms.max()
     
-    # Create bin edges: [0, 0.1, then linearly spaced from 0.1 to max]
-    above_threshold_l2s = train_l2_norms[above_threshold_mask]
-    if len(above_threshold_l2s) > 0:
-        max_l2 = above_threshold_l2s.max()
-        # Linear spacing from threshold to max
-        upper_bin_edges = np.linspace(near_zero_threshold, max_l2, num_bins_above_threshold + 1)
-        bin_edges = np.concatenate([[0.0], upper_bin_edges])
-    else:
-        # No samples above threshold, just use a single bin
-        bin_edges = np.array([0.0, train_l2_norms.max() + 0.01])
+    # Linear spacing from min to max
+    bin_edges = np.linspace(min_l2, max_l2, num_balance_bins + 1)
     
     # Assign each sample to a bin
     bin_indices = np.digitize(train_l2_norms, bin_edges[:-1]) - 1
@@ -780,18 +771,38 @@ def train_behavior_cloning(config: TrainingConfig):
     
     print(f"  Computed weights for {len(train_dataset)} training samples")
     print(f"  L2 norm range: [{train_l2_norms.min():.3f}, {train_l2_norms.max():.3f}]")
-    print(f"  Using {len(bin_edges)-1} hybrid bins for balancing (1 bin for L2<0.1, rest linearly spaced)")
+    print(f"  Using {len(bin_edges)-1} linearly-spaced bins for balancing")
     print(f"  Samples per bin - min: {bin_counts[bin_counts>0].min()}, max: {bin_counts.max()}, mean: {bin_counts.mean():.1f}")
     
-    # Print detailed bin statistics
-    print(f"\n  📊 Hybrid Bin Distribution (all {len(bin_edges)-1} bins):")
-    for i in range(len(bin_edges)-1):
+    # Print summary bin statistics (first 10, middle 10, last 10)
+    print(f"\n  📊 Linear Bin Distribution Summary:")
+    print(f"     First 10 bins:")
+    for i in range(min(10, len(bin_edges)-1)):
         bin_start = bin_edges[i]
         bin_end = bin_edges[i+1]
         count = bin_counts[i]
         weight = bin_weights[i]
-        bin_label = "NEAR-ZERO" if bin_end <= near_zero_threshold + 1e-9 else "LINEAR"
-        print(f"    Bin {i:2d} [{bin_label:10s}]: [{bin_start:.6f}, {bin_end:.6f}] -> {count:5d} samples (weight: {weight:.6f})")
+        print(f"       Bin {i:3d}: [{bin_start:.6f}, {bin_end:.6f}] -> {count:5d} samples (weight: {weight:.6f})")
+    
+    if len(bin_edges) > 20:
+        mid_start = len(bin_edges) // 2 - 5
+        mid_end = mid_start + 10
+        print(f"     Middle 10 bins ({mid_start}-{mid_end-1}):")
+        for i in range(mid_start, min(mid_end, len(bin_edges)-1)):
+            bin_start = bin_edges[i]
+            bin_end = bin_edges[i+1]
+            count = bin_counts[i]
+            weight = bin_weights[i]
+            print(f"       Bin {i:3d}: [{bin_start:.6f}, {bin_end:.6f}] -> {count:5d} samples (weight: {weight:.6f})")
+    
+    if len(bin_edges) > 10:
+        print(f"     Last 10 bins:")
+        for i in range(max(0, len(bin_edges)-11), len(bin_edges)-1):
+            bin_start = bin_edges[i]
+            bin_end = bin_edges[i+1]
+            count = bin_counts[i]
+            weight = bin_weights[i]
+            print(f"       Bin {i:3d}: [{bin_start:.6f}, {bin_end:.6f}] -> {count:5d} samples (weight: {weight:.6f})")
     
     # Show clustering around zero
     near_zero_count = np.sum(train_l2_norms < 0.1)
