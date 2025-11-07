@@ -45,21 +45,3 @@ done
 
 wait
 
-
-    poetry run python optomech/imitation_learning/train_behavior_cloning.py \
-        --dataset-path $WORKDIR/datasets/sa_dataset_1m \
-        --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
-        --num-epochs 1000000 \
-        --batch-size 1024 \
-        --learning-rate 1e-4 \
-        --optimizer adamw \
-        --loss-function mse \
-        --no-rollouts \
-        --no-dataparallel \
-        --force-incremental-mode \
-        --target-action sa_incremental_actions \
-        --num-workers 16 \
-        --no-scheduler \
-        --prune-dataset \
-        --prune-l2-threshold 0.1 \
-        --prune-keep-fraction 0.01 \

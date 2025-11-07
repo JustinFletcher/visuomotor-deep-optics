@@ -880,7 +880,7 @@ def train_behavior_cloning(config: TrainingConfig):
         from torch.utils.data import WeightedRandomSampler
         train_sampler = WeightedRandomSampler(
             weights=sample_weights,
-            num_samples=int((1.0-(near_zero_pct/100.0)) * len(train_dataset)),
+            num_samples=len(train_dataset),
             replacement=False  # Allow replacement to oversample rare bins
         )
     else:
