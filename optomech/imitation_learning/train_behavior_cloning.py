@@ -782,7 +782,7 @@ def train_behavior_cloning(config: TrainingConfig):
     print(f"  Test:  {len(test_dataset)}")
     
     # Toggle for balanced L2 norm sampling
-    use_balanced_sampling = True  # Set to False to use standard uniform sampling
+    use_balanced_sampling = False  # Set to False to use standard uniform sampling
     
     # Compute sample weights for balanced L2 norm sampling
     if use_balanced_sampling:

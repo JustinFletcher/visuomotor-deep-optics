@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_inc_11 --device cuda:0 --seed 11"
+    "--run-name sa_11 --device cuda:0 --seed 11"
 )
 
 # Run all variants in parallel
@@ -29,16 +29,13 @@ for VARIANT in "${VARIANTS[@]}"; do
         --batch-size 64 \
         --learning-rate 1e-4 \
         --optimizer adamw \
-        --loss-function mse \
+        --loss-function log_cosh \
         --no-rollouts \
         --no-dataparallel \
         --force-incremental-mode \
-        --target-action sa_incremental_actions \
+        --target-action sa_actions \
         --num-workers 16 \
         --no-scheduler \
-        --prune-dataset \
-        --prune-l2-threshold 0.1 \
-        --prune-keep-fraction 0.01 \
        $VARIANT &  # Run in background
 done
 
