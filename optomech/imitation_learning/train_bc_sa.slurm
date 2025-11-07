@@ -26,7 +26,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --dataset-path $WORKDIR/datasets/sa_dataset_1m \
         --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
         --num-epochs 1000000 \
-        --batch-size 1024 \
+        --batch-size 64 \
         --learning-rate 1e-4 \
         --optimizer adamw \
         --loss-function mse \

@@ -887,7 +887,70 @@ def train_behavior_cloning(config: TrainingConfig):
         print(f"\n📊 Using standard uniform sampling (balanced sampling disabled)")
         train_sampler = None
     
-    # Create data loaders (use sampler for training if balanced sampling enabled, otherwise shuffle)
+    # Compute validation and test samplers if balanced sampling is enabled
+    if use_balanced_sampling:
+        # Validation sampler
+        val_l2_norms = []
+        for idx in range(len(val_dataset)):
+            dataset_idx = val_dataset.indices[idx]
+            _, action = full_dataset[dataset_idx]
+            l2_norm = torch.norm(action, p=2).item()
+            val_l2_norms.append(l2_norm)
+        
+        val_l2_norms = np.array(val_l2_norms)
+        
+        # Use same binning strategy as training
+        val_bin_edges = np.linspace(val_l2_norms.min(), val_l2_norms.max(), num_balance_bins + 1)
+        val_bin_indices = np.digitize(val_l2_norms, val_bin_edges[:-1]) - 1
+        val_bin_indices = np.clip(val_bin_indices, 0, len(val_bin_edges) - 2)
+        
+        val_bin_counts = np.bincount(val_bin_indices, minlength=len(val_bin_edges) - 1)
+        val_bin_weights = 1.0 / (val_bin_counts + 1e-10)
+        val_bin_weights = np.power(val_bin_weights, reweight_temperature)
+        
+        val_sample_weights = val_bin_weights[val_bin_indices]
+        val_sample_weights = val_sample_weights / val_sample_weights.sum() * len(val_dataset)
+        
+        from torch.utils.data import WeightedRandomSampler
+        val_sampler = WeightedRandomSampler(
+            weights=val_sample_weights,
+            num_samples=len(val_dataset),
+            replacement=True
+        )
+        
+        # Test sampler
+        test_l2_norms = []
+        for idx in range(len(test_dataset)):
+            dataset_idx = test_dataset.indices[idx]
+            _, action = full_dataset[dataset_idx]
+            l2_norm = torch.norm(action, p=2).item()
+            test_l2_norms.append(l2_norm)
+        
+        test_l2_norms = np.array(test_l2_norms)
+        
+        test_bin_edges = np.linspace(test_l2_norms.min(), test_l2_norms.max(), num_balance_bins + 1)
+        test_bin_indices = np.digitize(test_l2_norms, test_bin_edges[:-1]) - 1
+        test_bin_indices = np.clip(test_bin_indices, 0, len(test_bin_edges) - 2)
+        
+        test_bin_counts = np.bincount(test_bin_indices, minlength=len(test_bin_edges) - 1)
+        test_bin_weights = 1.0 / (test_bin_counts + 1e-10)
+        test_bin_weights = np.power(test_bin_weights, reweight_temperature)
+        
+        test_sample_weights = test_bin_weights[test_bin_indices]
+        test_sample_weights = test_sample_weights / test_sample_weights.sum() * len(test_dataset)
+        
+        test_sampler = WeightedRandomSampler(
+            weights=test_sample_weights,
+            num_samples=len(test_dataset),
+            replacement=True
+        )
+        
+        print(f"  ✅ Computed balanced samplers for validation and test sets")
+    else:
+        val_sampler = None
+        test_sampler = None
+    
+    # Create data loaders (use sampler for all sets if balanced sampling enabled, otherwise shuffle only training)
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
@@ -899,6 +962,7 @@ def train_behavior_cloning(config: TrainingConfig):
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size,
+        sampler=val_sampler if use_balanced_sampling else None,
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory and device.type == 'cuda'
@@ -906,6 +970,7 @@ def train_behavior_cloning(config: TrainingConfig):
     test_loader = DataLoader(
         test_dataset,
         batch_size=config.batch_size,
+        sampler=test_sampler if use_balanced_sampling else None,
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory and device.type == 'cuda'
