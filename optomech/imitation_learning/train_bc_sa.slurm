@@ -35,7 +35,6 @@ for VARIANT in "${VARIANTS[@]}"; do
         --force-incremental-mode \
         --target-action sa_actions \
         --num-workers 16 \
-        --no-scheduler \
        $VARIANT &  # Run in background
 done
 
