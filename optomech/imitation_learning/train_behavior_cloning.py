@@ -881,7 +881,7 @@ def train_behavior_cloning(config: TrainingConfig):
         train_sampler = WeightedRandomSampler(
             weights=sample_weights,
             num_samples=len(train_dataset),
-            replacement=False  # Allow replacement to oversample rare bins
+            replacement=True  # MUST be True to oversample rare bins
         )
     else:
         print(f"\n📊 Using standard uniform sampling (balanced sampling disabled)")
