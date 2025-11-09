@@ -15,14 +15,14 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_11 --device cuda:0 --seed 11"
+    "--run-name sa_traj_11 --device cuda:0 --seed 12"
 )
 
 # Run all variants in parallel
 for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
-    poetry run python optomech/imitation_learning/train_behavior_cloning.py \
+    poetry run python optomech/imitation_learning/train_trajectory_behavior_cloning.py \
         --dataset-path $WORKDIR/datasets/sa_dataset_1m \
         --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
         --num-epochs 1000000 \
@@ -32,9 +32,14 @@ for VARIANT in "${VARIANTS[@]}"; do
         --loss-function log_cosh \
         --no-rollouts \
         --no-dataparallel \
-        --force-incremental-mode \
+        --no-incremental-mode \
         --target-action sa_actions \
         --num-workers 16 \
+        --sequence-length 20 \
+        --sequence-stride 10 \
+        --lstm-hidden-dim 256 \
+        --lstm-num-layers 1 \
+        --grad-clip 1.0 \
        $VARIANT &  # Run in background
 done
 
