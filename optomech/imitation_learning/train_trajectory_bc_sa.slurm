@@ -6,7 +6,7 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./bc_training.out
 #SBATCH --error=./bc_training.err
-#SBATCH --gres=gpu:A100-PCIe:8
+#SBATCH --gres=gpu:A100-SXM4:8
 #SBATCH --time=5-00:00:00             # Maximum runtime (5 days)
 
 
