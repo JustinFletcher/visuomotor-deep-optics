@@ -27,7 +27,7 @@ for VARIANT in "${VARIANTS[@]}"; do
        --input-crop-size 256
        --batch-size 1024
        --learning-rate 1e-4
-       --num-epochs 10000
+       --num-epochs 1000
        --optimizer adamw
        --loss-function mse
        --log-scale

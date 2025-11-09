@@ -864,7 +864,304 @@ class ResNet18Actor(nn.Module):
         return actions
 
 
-def create_model(arch: str, input_channels: int, action_dim: int = None, channel_scale: int = 16, mlp_scale: int = 128, input_crop_size: int = None, latent_dim: int = 256, input_size: int = 256, pretrained_encoder_path: str = None, freeze_encoder: bool = False) -> nn.Module:
+class ResNet18LSTMActor(nn.Module):
+    """
+    ResNet18-based actor with LSTM for trajectory-based behavior cloning.
+    
+    Architecture: Encoder → LSTM → Action Head
+    
+    The encoder (ResNet18 or AutoEncoder) processes individual observations to produce
+    latent features. These features are fed through an LSTM to capture temporal dependencies,
+    and the LSTM output is passed to an action head to predict actions.
+    
+    Supports:
+    - Loading pretrained encoders from autoencoder models
+    - Freezing encoder during training
+    - Multiple LSTM layers
+    - Hidden state management for TBPTT
+    """
+    
+    def __init__(self, input_channels: int = 2, action_dim: int = 4,
+                 pretrained_encoder_path: str = None, freeze_encoder: bool = False,
+                 lstm_hidden_dim: int = 256, lstm_num_layers: int = 1, lstm_dropout: float = 0.0):
+        """
+        Args:
+            input_channels: Number of input channels (2 for complex image data)
+            action_dim: Dimensionality of action space
+            pretrained_encoder_path: Path to saved autoencoder model to load encoder from
+            freeze_encoder: If True, freeze encoder weights during training
+            lstm_hidden_dim: Hidden dimension of LSTM layers
+            lstm_num_layers: Number of LSTM layers
+            lstm_dropout: Dropout between LSTM layers (if num_layers > 1)
+        """
+        super().__init__()
+        
+        self.input_channels = input_channels
+        self.action_dim = action_dim
+        self.freeze_encoder = freeze_encoder
+        self.lstm_hidden_dim = lstm_hidden_dim
+        self.lstm_num_layers = lstm_num_layers
+        
+        # Load or create encoder (same as ResNet18Actor)
+        if pretrained_encoder_path is not None:
+            print(f"🔄 Loading pre-trained encoder from {pretrained_encoder_path}")
+            self._load_pretrained_encoder(pretrained_encoder_path)
+        else:
+            # Create ResNet-18 backbone from scratch
+            import torchvision.models as models
+            self.resnet = models.resnet18(weights=None)
+            
+            # Modify first conv layer to accept input_channels
+            if input_channels != 3:
+                self.resnet.conv1 = nn.Conv2d(
+                    input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
+                )
+            
+            # Get feature dimension from ResNet
+            self.feature_dim = self.resnet.fc.in_features
+            
+            # Remove the final FC layer
+            self.resnet.fc = nn.Identity()
+        
+        # Freeze encoder if requested
+        if self.freeze_encoder and pretrained_encoder_path is not None:
+            self._freeze_encoder()
+        
+        # Create LSTM layer(s)
+        self.lstm = nn.LSTM(
+            input_size=self.feature_dim,
+            hidden_size=lstm_hidden_dim,
+            num_layers=lstm_num_layers,
+            batch_first=True,
+            dropout=lstm_dropout if lstm_num_layers > 1 else 0.0
+        )
+        
+        # Create action prediction head
+        self.action_head = nn.Sequential(
+            nn.Linear(lstm_hidden_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(512, action_dim),
+            nn.Tanh()
+        )
+    
+    def _load_pretrained_encoder(self, encoder_path: str):
+        """
+        Load encoder from a saved autoencoder model.
+        
+        Supports both AutoEncoderCNN and AutoEncoderResNet architectures.
+        """
+        import torch
+        from pathlib import Path
+        import sys
+        
+        encoder_path = Path(encoder_path)
+        if not encoder_path.exists():
+            raise FileNotFoundError(f"Encoder file not found: {encoder_path}")
+        
+        # Load checkpoint
+        try:
+            checkpoint = torch.load(encoder_path, map_location='cpu', weights_only=False)
+        except AttributeError as e:
+            # Handle case where checkpoint has classes we don't have in scope
+            print(f"⚠️  Warning: Checkpoint contains classes not in scope")
+            print(f"   Injecting dummy AutoencoderConfig class into __main__...")
+            
+            class AutoencoderConfig:
+                def __init__(self, *args, **kwargs):
+                    for k, v in kwargs.items():
+                        setattr(self, k, v)
+            
+            import __main__
+            __main__.AutoencoderConfig = AutoencoderConfig
+            
+            checkpoint = torch.load(encoder_path, map_location='cpu', weights_only=False)
+        
+        # Handle different checkpoint formats
+        if 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+        elif 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        else:
+            state_dict = checkpoint
+        
+        # Try to infer encoder architecture from state dict keys
+        encoder_keys = [k for k in state_dict.keys() if k.startswith('encoder.')]
+        
+        if not encoder_keys:
+            print("⚠️  No encoder keys found in checkpoint, trying to load full model...")
+            encoder_keys = [k for k in state_dict.keys() if 'encoder' in k.lower()]
+        
+        if encoder_keys:
+            # Create a temporary autoencoder to load the state dict
+            from models.models import AutoEncoderResNet, AutoEncoderCNN
+            
+            # Infer latent_dim from the checkpoint
+            latent_dim = None
+            if 'bottleneck_encode.0.weight' in state_dict:
+                latent_dim = state_dict['bottleneck_encode.0.weight'].shape[0]
+                print(f"📐 Inferred latent_dim={latent_dim} from checkpoint")
+            
+            # Infer input_channels from encoder first layer
+            input_channels = self.input_channels
+            if 'encoder.0.weight' in state_dict:
+                input_channels = state_dict['encoder.0.weight'].shape[1]
+                print(f"📐 Inferred input_channels={input_channels} from checkpoint")
+            
+            # Try AutoEncoderResNet first
+            try:
+                temp_model = AutoEncoderResNet(
+                    input_channels=input_channels, 
+                    latent_dim=latent_dim if latent_dim else 512,
+                    input_size=256
+                )
+                temp_model.load_state_dict(state_dict, strict=False)
+                
+                # Extract encoder plus bottleneck
+                class EncoderWithBottleneck(nn.Module):
+                    def __init__(self, encoder, bottleneck):
+                        super().__init__()
+                        self.encoder = encoder
+                        self.bottleneck = bottleneck
+                    
+                    def forward(self, x):
+                        x = self.encoder(x)
+                        x = x.view(x.size(0), -1)  # Flatten
+                        x = self.bottleneck(x)
+                        return x
+                
+                self.resnet = EncoderWithBottleneck(temp_model.encoder, temp_model.bottleneck_encode)
+                self.feature_dim = temp_model.latent_dim
+                
+                print(f"✅ Loaded ResNet encoder with latent_dim={self.feature_dim}")
+                
+            except Exception as e:
+                print(f"⚠️  Could not load as AutoEncoderResNet: {e}")
+                try:
+                    # Try AutoEncoderCNN
+                    temp_model = AutoEncoderCNN(
+                        input_channels=input_channels,
+                        latent_dim=latent_dim if latent_dim else 512,
+                        input_size=256
+                    )
+                    temp_model.load_state_dict(state_dict, strict=False)
+                    
+                    # Extract encoder plus bottleneck
+                    class EncoderWithBottleneck(nn.Module):
+                        def __init__(self, encoder, bottleneck):
+                            super().__init__()
+                            self.encoder = encoder
+                            self.bottleneck = bottleneck
+                        
+                        def forward(self, x):
+                            x = self.encoder(x)
+                            x = x.view(x.size(0), -1)  # Flatten
+                            x = self.bottleneck(x)
+                            return x
+                    
+                    self.resnet = EncoderWithBottleneck(temp_model.encoder, temp_model.bottleneck_encode)
+                    self.feature_dim = temp_model.latent_dim
+                    
+                    print(f"✅ Loaded CNN encoder with latent_dim={self.feature_dim}")
+                    
+                except Exception as e2:
+                    print(f"❌ Could not load encoder: {e2}")
+                    raise ValueError(f"Failed to load encoder from {encoder_path}")
+        else:
+            # No encoder found, try loading as a standalone ResNet
+            import torchvision.models as models
+            self.resnet = models.resnet18(weights=None)
+            
+            if self.input_channels != 3:
+                self.resnet.conv1 = nn.Conv2d(
+                    self.input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
+                )
+            
+            self.feature_dim = self.resnet.fc.in_features
+            self.resnet.fc = nn.Identity()
+            
+            # Try to load weights
+            self.resnet.load_state_dict(state_dict, strict=False)
+            print(f"✅ Loaded ResNet weights with feature_dim={self.feature_dim}")
+    
+    def _freeze_encoder(self):
+        """Freeze encoder weights for fine-tuning."""
+        for param in self.resnet.parameters():
+            param.requires_grad = False
+        
+        print("🔒 Encoder weights frozen for fine-tuning")
+    
+    def unfreeze_encoder(self):
+        """Unfreeze encoder weights."""
+        for param in self.resnet.parameters():
+            param.requires_grad = True
+        
+        self.freeze_encoder = False
+        print("🔓 Encoder weights unfrozen")
+    
+    def init_hidden(self, batch_size: int, device: str = 'cpu'):
+        """
+        Initialize hidden state for LSTM.
+        
+        Args:
+            batch_size: Batch size
+            device: Device to create tensors on
+            
+        Returns:
+            Tuple of (h0, c0) for LSTM
+        """
+        h0 = torch.zeros(self.lstm_num_layers, batch_size, self.lstm_hidden_dim).to(device)
+        c0 = torch.zeros(self.lstm_num_layers, batch_size, self.lstm_hidden_dim).to(device)
+        return (h0, c0)
+    
+    def forward(self, x, hidden=None):
+        """
+        Forward pass through encoder, LSTM, and action head.
+        
+        Args:
+            x: Input observations [batch, seq_len, channels, height, width]
+            hidden: Optional hidden state tuple (h, c) for LSTM. If None, zero-initialized.
+            
+        Returns:
+            actions: Predicted actions [batch, seq_len, action_dim]
+            hidden: Updated hidden state tuple (h, c)
+        """
+        batch_size, seq_len = x.shape[0], x.shape[1]
+        
+        # Reshape to process all frames through encoder
+        # [batch, seq_len, C, H, W] -> [batch * seq_len, C, H, W]
+        x_flat = x.view(-1, *x.shape[2:])
+        
+        # Extract features with encoder
+        features = self.resnet(x_flat)
+        
+        # Flatten if needed (for CNN encoders)
+        if len(features.shape) > 2:
+            features = features.view(features.size(0), -1)
+        
+        # Reshape back to sequence: [batch * seq_len, feature_dim] -> [batch, seq_len, feature_dim]
+        features = features.view(batch_size, seq_len, -1)
+        
+        # Initialize hidden state if not provided
+        if hidden is None:
+            hidden = self.init_hidden(batch_size, device=x.device)
+        
+        # Pass through LSTM
+        lstm_out, hidden = self.lstm(features, hidden)
+        
+        # Reshape for action head: [batch, seq_len, lstm_hidden_dim] -> [batch * seq_len, lstm_hidden_dim]
+        lstm_out_flat = lstm_out.contiguous().view(-1, self.lstm_hidden_dim)
+        
+        # Predict actions
+        actions_flat = self.action_head(lstm_out_flat)
+        
+        # Reshape back to sequence: [batch * seq_len, action_dim] -> [batch, seq_len, action_dim]
+        actions = actions_flat.view(batch_size, seq_len, self.action_dim)
+        
+        return actions, hidden
+
+
+def create_model(arch: str, input_channels: int, action_dim: int = None, channel_scale: int = 16, mlp_scale: int = 128, input_crop_size: int = None, latent_dim: int = 256, input_size: int = 256, pretrained_encoder_path: str = None, freeze_encoder: bool = False, lstm_hidden_dim: int = 256, lstm_num_layers: int = 1, lstm_dropout: float = 0.0) -> nn.Module:
     """Factory function to create different model architectures"""
     if arch == "vanilla_cnn":
         if action_dim is None:
@@ -880,9 +1177,19 @@ def create_model(arch: str, input_channels: int, action_dim: int = None, channel
         return ResNet18Actor(input_channels=input_channels, action_dim=action_dim, 
                             pretrained_encoder_path=pretrained_encoder_path, 
                             freeze_encoder=freeze_encoder)
+    elif arch == "resnet18_lstm_actor":
+        if action_dim is None:
+            raise ValueError("action_dim required for resnet18_lstm_actor")
+        return ResNet18LSTMActor(input_channels=input_channels, action_dim=action_dim,
+                                pretrained_encoder_path=pretrained_encoder_path,
+                                freeze_encoder=freeze_encoder,
+                                lstm_hidden_dim=lstm_hidden_dim,
+                                lstm_num_layers=lstm_num_layers,
+                                lstm_dropout=lstm_dropout)
     elif arch == "autoencoder_cnn":
         return AutoEncoderCNN(input_channels=input_channels, latent_dim=latent_dim, input_size=input_size, input_crop_size=input_crop_size)
     elif arch == "autoencoder_resnet":
         return AutoEncoderResNet(input_channels=input_channels, latent_dim=latent_dim, input_size=input_size, input_crop_size=input_crop_size)
     else:
         raise ValueError(f"Unknown architecture: {arch}")
+

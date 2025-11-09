@@ -665,4 +665,183 @@ __all__ = [
     'BehaviorCloningDataset',
     'LazyDataset',
     'InMemoryDataset',
+    'TrajectoryDataset',
 ]
+
+class TrajectoryDataset(BaseDataset):
+    """
+    Dataset for trajectory-based behavior cloning with LSTMs.
+    
+    Returns sequences of (observation, action) pairs instead of single transitions.
+    Supports variable-length sequences with padding and masking.
+    """
+    
+    def __init__(self,
+                 dataset_path: Union[str, Path],
+                 sequence_length: int = 20,
+                 stride: int = 1,
+                 transform: Optional[Callable] = None,
+                 target_transform: Optional[Callable] = None,
+                 input_crop_size: Optional[int] = None,
+                 max_examples: Optional[int] = None,
+                 log_scale: bool = False,
+                 target_action_key: str = 'actions',
+                 pad_sequences: bool = True):
+        """
+        Args:
+            dataset_path: Path to dataset directory
+            sequence_length: Length of sequences to extract
+            stride: Stride for sliding window (1 = overlapping sequences)
+            transform: Transform to apply to observations
+            target_transform: Transform to apply to actions
+            input_crop_size: If specified, crop observations to this size
+            max_examples: Optional limit on number of sequences
+            log_scale: Whether to apply log-scaling to observations
+            target_action_key: Key for target actions in dataset
+            pad_sequences: If True, pad short sequences to sequence_length
+        """
+        super().__init__(transform=transform, target_transform=target_transform)
+        
+        self.dataset_path = Path(dataset_path)
+        self.sequence_length = sequence_length
+        self.stride = stride
+        self.input_crop_size = input_crop_size
+        self.max_examples = max_examples
+        self.log_scale = log_scale
+        self.target_action_key = target_action_key
+        self.pad_sequences = pad_sequences
+        
+        # Discover dataset files and build trajectory index
+        self.file_paths, self.dataset_type, self.metadata = DatasetDiscovery.discover_files(dataset_path)
+        self.trajectory_index = self._build_trajectory_index()
+        
+        # Set default transforms
+        self._set_default_transforms()
+        
+        print(f"📊 TrajectoryDataset: {len(self.trajectory_index)} sequences of length {sequence_length}")
+    
+    def _set_default_transforms(self):
+        """Set default transforms based on log_scale setting."""
+        from utils.transforms import ToTensor, LogScale, Compose
+        
+        if self.transform is None:
+            transforms = []
+            # ToTensor must come first to convert numpy array to tensor
+            transforms.append(ToTensor(normalize=True, input_range='auto'))
+            # Then apply log scaling if requested
+            if self.log_scale:
+                transforms.append(LogScale())
+            self.transform = Compose(transforms)
+        
+        if self.target_transform is None:
+            self.target_transform = ToTensor(normalize=False)
+    
+    def _build_trajectory_index(self):
+        """Build an index of all available trajectory sequences."""
+        trajectory_index = []
+        
+        for file_path in self.file_paths:
+            try:
+                # Get number of steps based on dataset type
+                if self.dataset_type == 'hdf5':
+                    data = FileLoader.load_hdf5_observations(file_path, ['observations', self.target_action_key])
+                    if 'observations' in data and self.target_action_key in data:
+                        num_steps = min(len(data['observations']), len(data[self.target_action_key]))
+                    else:
+                        continue
+                        
+                elif self.dataset_type == 'npz':
+                    data = FileLoader.load_npz_observations(file_path, ['observations', self.target_action_key])
+                    if 'observations' in data and self.target_action_key in data:
+                        num_steps = min(len(data['observations']), len(data[self.target_action_key]))
+                    else:
+                        continue
+                        
+                elif self.dataset_type == 'json':
+                    data = FileLoader.load_json_observations(file_path)
+                    if 'observations' in data and self.target_action_key in data:
+                        num_steps = min(len(data['observations']), len(data[self.target_action_key]))
+                    else:
+                        continue
+                else:
+                    continue
+                
+                # Create sliding window sequences for this episode
+                for start_idx in range(0, num_steps - self.sequence_length + 1, self.stride):
+                    end_idx = start_idx + self.sequence_length
+                    trajectory_index.append({
+                        'file_path': file_path,
+                        'start_idx': start_idx,
+                        'end_idx': end_idx,
+                        'length': self.sequence_length
+                    })
+                    
+                    if self.max_examples and len(trajectory_index) >= self.max_examples:
+                        break
+                
+                if self.max_examples and len(trajectory_index) >= self.max_examples:
+                    break
+                    
+            except Exception as e:
+                print(f"  ⚠️  Skipping {file_path}: {e}")
+                continue
+        
+        return trajectory_index
+    
+    def __len__(self):
+        return len(self.trajectory_index)
+    
+    def __getitem__(self, idx):
+        """Get a sequence of (observation, action) pairs."""
+        traj_info = self.trajectory_index[idx]
+        file_path = traj_info['file_path']
+        start_idx = traj_info['start_idx']
+        end_idx = traj_info['end_idx']
+        
+        # Load data from file based on dataset type
+        if self.dataset_type == 'hdf5':
+            data = FileLoader.load_hdf5_observations(file_path, ['observations', self.target_action_key])
+        elif self.dataset_type == 'npz':
+            data = FileLoader.load_npz_observations(file_path, ['observations', self.target_action_key])
+        elif self.dataset_type == 'json':
+            data = FileLoader.load_json_observations(file_path)
+        else:
+            raise ValueError(f"Unknown dataset type: {self.dataset_type}")
+        
+        # Extract observations and actions for this sequence
+        observations = data['observations'][start_idx:end_idx]
+        actions = data[self.target_action_key][start_idx:end_idx]
+        
+        # Convert to tensors
+        obs_tensors = []
+        action_tensors = []
+        
+        for obs, act in zip(observations, actions):
+            # Transform observation
+            if self.transform:
+                obs_tensor = self.transform(obs)
+            else:
+                obs_tensor = torch.from_numpy(obs).float()
+            
+            # Apply cropping if specified
+            if self.input_crop_size is not None:
+                obs_tensor = center_crop_transform(obs_tensor, self.input_crop_size)
+            
+            obs_tensors.append(obs_tensor)
+            
+            # Transform action
+            if self.target_transform:
+                action_tensor = self.target_transform(act)
+            else:
+                action_tensor = torch.from_numpy(act).float()
+            
+            action_tensors.append(action_tensor)
+        
+        # Stack into sequences: [seq_len, channels, height, width] and [seq_len, action_dim]
+        obs_sequence = torch.stack(obs_tensors, dim=0)
+        action_sequence = torch.stack(action_tensors, dim=0)
+        
+        # Create mask for valid timesteps (all True for full sequences)
+        mask = torch.ones(len(obs_tensors), dtype=torch.bool)
+        
+        return obs_sequence, action_sequence, mask
