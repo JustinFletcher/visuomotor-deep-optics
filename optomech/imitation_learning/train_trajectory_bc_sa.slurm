@@ -6,7 +6,7 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./bc_training.out
 #SBATCH --error=./bc_training.err
-#SBATCH --gres=gpu:A100-PCIe:8. 
+#SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=5-00:00:00             # Maximum runtime (5 days)
 
 
@@ -32,7 +32,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --loss-function log_cosh \
         --no-rollouts \
         --no-dataparallel \
-        --no-incremental-mode \
+        --no-force-incremental-mode \
         --target-action sa_actions \
         --num-workers 16 \
         --sequence-length 20 \
