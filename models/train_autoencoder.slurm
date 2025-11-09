@@ -22,8 +22,8 @@ VARIANTS=(
 for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
-    poetry run python models/train_autoencoder.py
-       --dataset-path $WORKDIR/datasets/sa_dataset_100k
+    poetry run python models/train_autoencoder.py \
+       --dataset-path $WORKDIR/datasets/sa_dataset_1m \
        --input-crop-size 256
        --batch-size 1024
        --learning-rate 1e-4
