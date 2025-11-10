@@ -98,7 +98,13 @@ class ModelInterface:
     def reset_hidden_state(self) -> None:
         """Reset hidden state for recurrent models (no-op for feedforward models)."""
         if self.has_hidden_state:
-            self.hidden_state = None
+            # For LSTM models, initialize hidden state properly
+            if hasattr(self.model, 'init_hidden'):
+                # Use model's init_hidden method
+                batch_size = 1  # Single environment rollout
+                self.hidden_state = self.model.init_hidden(batch_size, self.device)
+            else:
+                self.hidden_state = None
     
     def get_action_scale(self) -> float:
         """Get the action scale for exploration noise (default: 1.0)."""
@@ -118,6 +124,18 @@ class SMLModelInterface(ModelInterface):
         print(f"🧠 Loading SML model from: {self.model_path}")
         
         try:
+            # Create stub class for unpickling BC model checkpoints
+            from dataclasses import dataclass
+            import sys
+            
+            @dataclass
+            class TrainingConfig:
+                """Stub class to allow unpickling of BC model checkpoints"""
+                pass
+            
+            # Inject it into __main__ module so pickle can find it
+            sys.modules['__main__'].TrainingConfig = TrainingConfig
+            
             # Load the checkpoint saved by the training script
             checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
             print(f"✅ Checkpoint loaded successfully, type: {type(checkpoint)}")
@@ -153,13 +171,19 @@ class SMLModelInterface(ModelInterface):
                 # Fallback: Extract parameters from state_dict
                 state_dict = checkpoint['model_state_dict']
                 
-                # Check if this is a BC model (ResNet18Actor)
+                # Check if this is a BC model (ResNet18Actor or ResNet18LSTMActor)
                 is_bc_model = any('resnet.encoder' in k or 'resnet.bottleneck' in k for k in state_dict.keys())
+                is_lstm_model = any('lstm' in k for k in state_dict.keys())
                 
                 if is_bc_model:
-                    # BC model (ResNet18Actor)
-                    print("🔍 Detected BC (ResNet18Actor) model")
-                    model_arch = "resnet18actor"
+                    # BC model (ResNet18Actor or ResNet18LSTMActor)
+                    if is_lstm_model:
+                        print("🔍 Detected BC LSTM (ResNet18LSTMActor) model")
+                        model_arch = "resnet18lstm_actor"
+                        self.has_hidden_state = True
+                    else:
+                        print("🔍 Detected BC (ResNet18Actor) model")
+                        model_arch = "resnet18actor"
                     
                     # Extract input channels from encoder first layer
                     if 'resnet.encoder.0.weight' in state_dict:
@@ -196,8 +220,8 @@ class SMLModelInterface(ModelInterface):
                         model_arch = "sml_resnet"
                     print(f"✅ Auto-detected model architecture from state_dict: {model_arch}")
                 
-                # Handle BC models (ResNet18Actor)
-                if is_bc_model or model_arch == "resnet18actor":
+                # Handle BC models (ResNet18Actor or ResNet18LSTMActor)
+                if is_bc_model or model_arch in ["resnet18actor", "resnet18lstm_actor"]:
                     try:
                         import sys
                         from pathlib import Path
@@ -205,19 +229,44 @@ class SMLModelInterface(ModelInterface):
                         project_root = current_dir.parent.parent  # Go up to workspace root
                         sys.path.insert(0, str(project_root))
                         
-                        # Import ResNet18Actor from models module
-                        from models.models import ResNet18Actor
-                        
-                        # Use the from_checkpoint class method which handles architecture detection
-                        print(f"🔄 Loading BC model from checkpoint with architecture auto-detection...")
-                        self.model = ResNet18Actor.from_checkpoint(
-                            checkpoint_path=self.model_path,
-                            device=self.device
-                        )
-                        print(f"✅ Loaded ResNet18Actor model from checkpoint")
+                        # Check if this is an LSTM model
+                        if is_lstm_model or model_arch == "resnet18lstm_actor":
+                            # Import ResNet18LSTMActor from models module
+                            from models.models import ResNet18LSTMActor
+                            
+                            # Use the from_checkpoint class method
+                            print(f"🔄 Loading BC LSTM model from checkpoint with architecture auto-detection...")
+                            self.model = ResNet18LSTMActor.from_checkpoint(
+                                checkpoint_path=self.model_path,
+                                device=self.device
+                            )
+                            print(f"✅ Loaded ResNet18LSTMActor model from checkpoint")
+                            
+                            # Initialize hidden state
+                            self.has_hidden_state = True
+                            self.reset_hidden_state()
+                            
+                            # Model is already on device and in eval mode from from_checkpoint
+                            print(f"✅ Model loaded and ready: {type(self.model)}")
+                            return  # Early return - model is fully loaded
+                        else:
+                            # Import ResNet18Actor from models module
+                            from models.models import ResNet18Actor
+                            
+                            # Use the from_checkpoint class method which handles architecture detection
+                            print(f"🔄 Loading BC model from checkpoint with architecture auto-detection...")
+                            self.model = ResNet18Actor.from_checkpoint(
+                                checkpoint_path=self.model_path,
+                                device=self.device
+                            )
+                            print(f"✅ Loaded ResNet18Actor model from checkpoint")
+                            
+                            # Model is already on device and in eval mode from from_checkpoint
+                            print(f"✅ Model loaded and ready: {type(self.model)}")
+                            return  # Early return - model is fully loaded
                         
                     except ImportError as e:
-                        print(f"❌ Could not import ResNet18Actor: {e}")
+                        print(f"❌ Could not import BC model: {e}")
                         raise ValueError(f"Failed to load BC model: {e}")
                 
                 # Handle SML models
@@ -320,7 +369,7 @@ class SMLModelInterface(ModelInterface):
         
         Args:
             observation: Environment observation (typically image)
-            **kwargs: Ignored for SML models
+            **kwargs: Ignored for SML models (unless LSTM)
             
         Returns:
             Predicted action
@@ -334,14 +383,27 @@ class SMLModelInterface(ModelInterface):
         if len(obs_tensor.shape) == 3:  # Add batch dimension for single observation
             obs_tensor = obs_tensor.unsqueeze(0)
         
-        # Debug: Check tensor shapes
-        # print(f"    DEBUG: obs_tensor shape: {obs_tensor.shape}")
-        # print(f"    DEBUG: model first layer weight shape: {list(self.model.parameters())[0].shape}")
+        # For LSTM models, also add sequence dimension [batch, seq=1, C, H, W]
+        if self.has_hidden_state:
+            obs_tensor = obs_tensor.unsqueeze(1)  # [1, 1, C, H, W]
         
         # Make prediction
         with torch.no_grad():
             try:
-                action_tensor = self.model(obs_tensor)
+                if self.has_hidden_state and self.hidden_state is not None:
+                    # LSTM model: pass hidden state and get new state
+                    action_tensor, self.hidden_state = self.model(obs_tensor, self.hidden_state)
+                    # Extract action from sequence: [batch, seq=1, action_dim] -> [batch, action_dim]
+                    action_tensor = action_tensor.squeeze(1)
+                else:
+                    # Feedforward model or first LSTM step
+                    output = self.model(obs_tensor, self.hidden_state) if self.has_hidden_state else self.model(obs_tensor)
+                    if isinstance(output, tuple):
+                        action_tensor, self.hidden_state = output
+                        if action_tensor.dim() == 3:  # [batch, seq, action_dim]
+                            action_tensor = action_tensor.squeeze(1)
+                    else:
+                        action_tensor = output
             except Exception as e:
                 print(f"    DEBUG: Error in model forward pass: {e}")
                 raise
@@ -874,13 +936,40 @@ class UniversalRolloutEngine:
         
         # Main rollout loop
         start_time = time.time()
+        print(f"\n  {'Step':>6} | {'Reward':>10} | {'Cumulative':>12} | {'Avg(10)':>10} | {'ΔReward':>10}")
+        print(f"  {'-'*6}-+-{'-'*10}-+-{'-'*12}-+-{'-'*10}-+-{'-'*10}")
+        
         while len(self.episodic_returns) < num_episodes:
-            # Progress reporting
+            # Progress reporting every 10 steps
+            if self.global_step % 10 == 0 and self.global_step > 0:
+                # Get rewards from first environment for display
+                if self.current_episode_rewards[0]:
+                    episode_rewards = self.current_episode_rewards[0]
+                    current_reward = episode_rewards[-1] if episode_rewards else 0.0
+                    cumulative = sum(episode_rewards)
+                    
+                    # Calculate average reward over last 10 steps
+                    recent_window = episode_rewards[-10:] if len(episode_rewards) >= 10 else episode_rewards
+                    avg_recent = sum(recent_window) / len(recent_window) if recent_window else 0.0
+                    
+                    # Calculate change in reward (compare last 10 to previous 10)
+                    if len(episode_rewards) >= 20:
+                        prev_10 = episode_rewards[-20:-10]
+                        curr_10 = episode_rewards[-10:]
+                        delta = sum(curr_10) - sum(prev_10)
+                        delta_str = f"{delta:+.4f}"
+                    else:
+                        delta_str = "N/A"
+                    
+                    print(f"  {self.global_step:>6} | {current_reward:>10.4f} | {cumulative:>12.4f} | {avg_recent:>10.4f} | {delta_str:>10}")
+            
+            # Original progress reporting for verbose info
             if self.global_step % 100 == 0:
                 elapsed = time.time() - start_time
-                print(f"📊 Episode {len(self.episodic_returns)}/{num_episodes} | "
-                      f"Step {self.global_step} | "
-                      f"Elapsed: {elapsed:.1f}s")
+                if self.global_step > 0:
+                    print(f"  ⏱️  Episode {len(self.episodic_returns)}/{num_episodes} | "
+                          f"Step {self.global_step} | "
+                          f"Elapsed: {elapsed:.1f}s")
             
             # Create save directories if needed
             if save_episodes and save_path:
@@ -1219,8 +1308,13 @@ class UniversalRolloutEngine:
                 episode_return_val = float(episode_return) if hasattr(episode_return, 'item') else episode_return
                 episode_length_val = int(episode_length) if hasattr(episode_length, 'item') else episode_length
                 
-                print(f"🎯 Episode {len(self.episodic_returns) + 1} complete: "
-                      f"Return = {episode_return_val:.3f}, Length = {episode_length_val}")
+                # Calculate average reward per step
+                avg_reward = episode_return_val / episode_length_val if episode_length_val > 0 else 0.0
+                
+                print(f"\n� Episode {len(self.episodic_returns) + 1} complete:")
+                print(f"   Total reward: {episode_return_val:.4f}")
+                print(f"   Episode length: {episode_length_val} steps")
+                print(f"   Avg reward/step: {avg_reward:.4f}")
                 
                 self.episodic_returns.append(episode_return_val)
                 

@@ -1159,6 +1159,156 @@ class ResNet18LSTMActor(nn.Module):
         actions = actions_flat.view(batch_size, seq_len, self.action_dim)
         
         return actions, hidden
+    
+    @classmethod
+    def from_checkpoint(cls, checkpoint_path: str, device='cpu'):
+        """
+        Load ResNet18LSTMActor model from a checkpoint file.
+        
+        This method handles the complexity of loading models with pretrained encoders,
+        automatically detecting the architecture and reconstructing it correctly.
+        
+        Args:
+            checkpoint_path: Path to the checkpoint file (.pth)
+            device: Device to load the model on ('cpu', 'cuda', 'mps', etc.)
+            
+        Returns:
+            Loaded ResNet18LSTMActor model in eval mode
+        """
+        import torch
+        from pathlib import Path
+        
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        
+        # Create stub class for unpickling
+        from dataclasses import dataclass
+        import sys
+        
+        @dataclass
+        class TrainingConfig:
+            """Stub class to allow unpickling of BC model checkpoints"""
+            pass
+        
+        # Inject it into __main__ module so pickle can find it
+        sys.modules['__main__'].TrainingConfig = TrainingConfig
+        
+        # Load checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        
+        if not isinstance(checkpoint, dict) or 'model_state_dict' not in checkpoint:
+            raise ValueError("Checkpoint must be a dict containing 'model_state_dict'")
+        
+        state_dict = checkpoint['model_state_dict']
+        
+        # Extract model configuration
+        input_channels = checkpoint.get('input_channels', 1)
+        action_dim = checkpoint.get('action_dim', 15)
+        lstm_hidden_dim = checkpoint.get('lstm_hidden_dim', 256)
+        lstm_num_layers = checkpoint.get('lstm_num_layers', 1)
+        
+        # Try to extract from state_dict if not in checkpoint metadata
+        if 'resnet.encoder.0.weight' in state_dict:
+            input_channels = state_dict['resnet.encoder.0.weight'].shape[1]
+        elif 'resnet.conv1.weight' in state_dict:
+            input_channels = state_dict['resnet.conv1.weight'].shape[1]
+        
+        if 'action_head.3.weight' in state_dict:
+            action_dim = state_dict['action_head.3.weight'].shape[0]
+        elif 'action_head.1.weight' in state_dict:
+            action_dim = state_dict['action_head.1.weight'].shape[0]
+        
+        if 'lstm.weight_ih_l0' in state_dict:
+            lstm_hidden_dim = state_dict['lstm.weight_ih_l0'].shape[0] // 4
+        
+        # Count LSTM layers
+        lstm_layer_keys = [k for k in state_dict.keys() if 'lstm.weight_ih_l' in k]
+        if lstm_layer_keys:
+            lstm_num_layers = len(lstm_layer_keys)
+        
+        print(f"🔧 Loading ResNet18LSTMActor from checkpoint:")
+        print(f"   Input channels: {input_channels}")
+        print(f"   Action dim: {action_dim}")
+        print(f"   LSTM hidden dim: {lstm_hidden_dim}")
+        print(f"   LSTM layers: {lstm_num_layers}")
+        
+        # Check if model has pretrained encoder
+        has_pretrained_encoder = any('resnet.encoder' in k for k in state_dict.keys())
+        
+        if has_pretrained_encoder:
+            print(f"   ✅ Detected pretrained encoder architecture")
+            
+            # The checkpoint contains the full trained encoder - reconstruct from state_dict
+            # Extract feature dimension from bottleneck (the encoder output dim)
+            feature_dim = state_dict['resnet.bottleneck.0.weight'].shape[0]
+            print(f"   📐 Detected feature dim from bottleneck: {feature_dim}")
+            
+            # Create a model with standard ResNet18
+            model = cls(
+                input_channels=input_channels,
+                action_dim=action_dim,
+                pretrained_encoder_path=None,
+                freeze_encoder=False,
+                lstm_hidden_dim=lstm_hidden_dim,
+                lstm_num_layers=lstm_num_layers
+            )
+            
+            # Now replace the encoder with one loaded from checkpoint
+            # We need to reconstruct the AutoEncoderResNet encoder structure
+            from models.models import AutoEncoderResNet
+            
+            # Create a temporary autoencoder to get the encoder structure
+            temp_ae = AutoEncoderResNet(
+                input_channels=input_channels,
+                latent_dim=feature_dim,
+                input_size=512  # This doesn't matter for encoder-only
+            )
+            
+            # Extract just the encoder and bottleneck (bottleneck_encode in AutoEncoderResNet)
+            model.resnet = nn.Module()
+            model.resnet.encoder = temp_ae.encoder
+            model.resnet.bottleneck = temp_ae.bottleneck_encode  # Note: bottleneck_encode, not bottleneck
+            model.resnet.forward = lambda x: model.resnet.bottleneck(model.resnet.encoder(x).view(x.size(0), -1))
+            model.feature_dim = feature_dim
+            
+            # Rebuild LSTM with correct input size
+            model.lstm = nn.LSTM(
+                input_size=feature_dim,
+                hidden_size=lstm_hidden_dim,
+                num_layers=lstm_num_layers,
+                batch_first=True
+            )
+            
+            # Load weights for encoder, bottleneck, LSTM, and action_head
+            encoder_state = {k.replace('resnet.', ''): v for k, v in state_dict.items() 
+                            if k.startswith('resnet.encoder') or k.startswith('resnet.bottleneck')}
+            lstm_state = {k.replace('lstm.', ''): v for k, v in state_dict.items() if k.startswith('lstm.')}
+            action_head_state = {k.replace('action_head.', ''): v for k, v in state_dict.items() if k.startswith('action_head.')}
+            
+            model.resnet.load_state_dict(encoder_state)
+            model.lstm.load_state_dict(lstm_state)
+            model.action_head.load_state_dict(action_head_state)
+            
+            print(f"   ✅ Reconstructed model from state dict")
+        else:
+            # Standard ResNet18 + LSTM
+            print(f"   ✅ Standard ResNet18 + LSTM architecture")
+            model = cls(
+                input_channels=input_channels,
+                action_dim=action_dim,
+                pretrained_encoder_path=None,
+                freeze_encoder=False,
+                lstm_hidden_dim=lstm_hidden_dim,
+                lstm_num_layers=lstm_num_layers
+            )
+            model.load_state_dict(state_dict)
+        
+        model.to(device)
+        model.eval()
+        
+        print(f"   ✅ Model loaded and ready for inference")
+        return model
 
 
 def create_model(arch: str, input_channels: int, action_dim: int = None, channel_scale: int = 16, mlp_scale: int = 128, input_crop_size: int = None, latent_dim: int = 256, input_size: int = 256, pretrained_encoder_path: str = None, freeze_encoder: bool = False, lstm_hidden_dim: int = 256, lstm_num_layers: int = 1, lstm_dropout: float = 0.0) -> nn.Module:
