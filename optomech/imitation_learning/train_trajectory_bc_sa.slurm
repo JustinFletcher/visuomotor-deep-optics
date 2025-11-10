@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=bc_simple          # Job name
+#SBATCH --job-name=bc_traj2          # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks-per-node=28          # Number of tasks per node
@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_traj_11 --device cuda:0 --seed 12"
+    "--run-name sa_traj_13 --device cuda:0 --seed 13"
 )
 
 # Run all variants in parallel
