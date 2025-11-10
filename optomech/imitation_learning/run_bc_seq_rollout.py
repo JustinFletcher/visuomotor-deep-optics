@@ -418,6 +418,9 @@ def perform_lstm_rollout(
             episode_rewards = []
             obs, _ = env.reset(seed=seed)
             
+            print(f"  {'Step':>6} | {'Reward':>10} | {'Cumulative':>12} | {'Avg(10)':>10} | {'ΔReward':>10}")
+            print(f"  {'-'*6}-+-{'-'*10}-+-{'-'*12}-+-{'-'*10}-+-{'-'*10}")
+            
             for step in range(rollout_steps):
                 # Get action from LSTM model (maintains hidden state)
                 action = wrapper.predict(obs)
@@ -425,6 +428,28 @@ def perform_lstm_rollout(
                 # Step environment
                 obs, reward, terminated, truncated, info = env.step(action)
                 episode_rewards.append(reward)
+                
+                # Print progress every 10 steps
+                if (step + 1) % 10 == 0 or terminated or truncated:
+                    cumulative = sum(episode_rewards)
+                    
+                    # Calculate average reward over last 10 steps
+                    recent_window = episode_rewards[-10:] if len(episode_rewards) >= 10 else episode_rewards
+                    avg_recent = sum(recent_window) / len(recent_window)
+                    
+                    # Calculate change in reward (compare last 10 to previous 10)
+                    if len(episode_rewards) >= 20:
+                        prev_10 = episode_rewards[-20:-10]
+                        curr_10 = episode_rewards[-10:]
+                        delta = sum(curr_10) - sum(prev_10)
+                        delta_str = f"{delta:+.4f}"
+                    else:
+                        delta_str = "N/A"
+                    
+                    # Status indicator
+                    status = "🏁" if (terminated or truncated) else "  "
+                    
+                    print(f"{status}{step + 1:>6} | {reward:>10.4f} | {cumulative:>12.4f} | {avg_recent:>10.4f} | {delta_str:>10}")
                 
                 if terminated or truncated:
                     break
@@ -435,7 +460,8 @@ def perform_lstm_rollout(
             all_episode_rewards.append(episode_rewards)
             successful_seeds += 1
             
-            print(f"  ✅ Reward: {total_reward:.4f} ({len(episode_rewards)} steps)")
+            print(f"  ✅ Final: {total_reward:.4f} total reward over {len(episode_rewards)} steps")
+            print(f"     Avg reward per step: {total_reward/len(episode_rewards):.4f}")
             
         except Exception as e:
             print(f"  ❌ Failed: {e}")
