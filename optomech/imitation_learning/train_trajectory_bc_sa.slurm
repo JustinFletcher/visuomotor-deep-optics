@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_traj_13 --device cuda:0 --seed 13"
+    "--run-name perfect_traj_13 --device cuda:0 --seed 13"
 )
 
 # Run all variants in parallel
@@ -24,7 +24,7 @@ for VARIANT in "${VARIANTS[@]}"; do
     # Launch autoencoder training
     poetry run python optomech/imitation_learning/train_trajectory_behavior_cloning.py \
         --dataset-path $WORKDIR/datasets/sa_dataset_1m \
-        --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
+        --pretrained-encoder $WORKDIR/models/trained_autoencoder_corrector_last_epoch.pth \
         --num-epochs 1000000 \
         --batch-size 64 \
         --learning-rate 1e-4 \
