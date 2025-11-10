@@ -61,6 +61,62 @@ except ImportError:
     perform_rollout_instrumentation = None
 
 
+def log_sample_observations_to_tensorboard(writer: SummaryWriter, observations: torch.Tensor, 
+                                          epoch: int, prefix: str = "Training"):
+    """
+    Log 4 sample observations from a batch to TensorBoard as a matplotlib figure.
+    Handles sequence data by taking first timestep.
+    
+    Args:
+        writer: TensorBoard SummaryWriter
+        observations: Batch of observations [batch_size, seq_len, C, H, W] or [batch_size, C, H, W]
+        epoch: Current epoch number
+        prefix: Prefix for the TensorBoard tag (e.g., "Training", "Validation")
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    
+    # Handle sequence dimension if present
+    if len(observations.shape) == 5:
+        # [batch_size, seq_len, C, H, W] -> take first timestep
+        observations = observations[:, 0, :, :, :]  # [batch_size, C, H, W]
+    
+    # Take first 4 observations from batch (or fewer if batch is smaller)
+    num_samples = min(4, observations.shape[0])
+    sample_obs = observations[:num_samples].detach().cpu().numpy()  # [num_samples, C, H, W]
+    
+    # Create figure with 2x2 grid
+    fig = plt.figure(figsize=(10, 10))
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.3, wspace=0.3)
+    
+    for idx in range(num_samples):
+        ax = fig.add_subplot(gs[idx // 2, idx % 2])
+        obs = sample_obs[idx]  # [C, H, W]
+        
+        # Handle different channel configurations
+        if obs.shape[0] == 1:
+            # Single channel - show as grayscale
+            im = ax.imshow(obs[0], cmap='viridis', interpolation='nearest')
+        elif obs.shape[0] == 2:
+            # Two channels (complex) - show magnitude
+            magnitude = np.sqrt(obs[0]**2 + obs[1]**2)
+            im = ax.imshow(magnitude, cmap='viridis', interpolation='nearest')
+        else:
+            # Multiple channels - show first channel
+            im = ax.imshow(obs[0], cmap='viridis', interpolation='nearest')
+        
+        ax.set_title(f'Sample {idx + 1} (t=0)', fontsize=12, fontweight='bold')
+        ax.axis('off')
+        
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.ax.tick_params(labelsize=9)
+    
+    # Add figure to TensorBoard
+    writer.add_figure(f'{prefix}/Sample_Observations', fig, epoch)
+    plt.close(fig)
+
+
 @dataclass
 class TrainingConfig:
     """Configuration for trajectory-based behavior cloning training"""
@@ -374,10 +430,10 @@ def create_mae_vs_l2_candlestick(target_l2_norms: np.ndarray,
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optimizer,
                 criterion: nn.Module, device: torch.device, grad_clip: float = None, 
-                tbptt_chunk_size: int = None) -> Tuple[float, Dict, np.ndarray, Dict, np.ndarray, np.ndarray]:
+                tbptt_chunk_size: int = None) -> Tuple[float, Dict, np.ndarray, Dict, np.ndarray, np.ndarray, torch.Tensor]:
     """
     Train for one epoch with TBPTT support and return loss, MAE metrics, raw error distribution, 
-    absolute error metrics, and data for MAE vs target L2 analysis.
+    absolute error metrics, data for MAE vs target L2 analysis, and sample observations from first batch.
     
     Args:
         model: LSTM-based model
@@ -390,7 +446,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
     
     Returns:
         Tuple of (avg_loss, mae_metrics_dict, raw_errors_array, abs_error_metrics_dict, 
-                  target_l2_norms_array, mae_per_sample_array)
+                  target_l2_norms_array, mae_per_sample_array, first_batch_observations)
     """
     model.train()
     total_loss = 0.0
@@ -400,12 +456,17 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
     all_abs_errors = []  # All absolute errors flattened
     all_target_l2_norms = []  # L2 norm of target action per timestep
     all_mae_per_sample = []  # MAE per sample timestep (for MAE vs L2 plot)
+    first_batch_observations = None  # Store observations from first batch
 
     for batch_data in tqdm(dataloader, desc="Training", leave=False):
         observations, actions, masks = batch_data
         observations = observations.to(device)  # [batch, seq_len, C, H, W]
         actions = actions.to(device)  # [batch, seq_len, action_dim]
         masks = masks.to(device)  # [batch, seq_len]
+        
+        # Capture first batch observations for logging
+        if first_batch_observations is None:
+            first_batch_observations = observations.clone().detach()
         
         batch_size, seq_len = observations.shape[0], observations.shape[1]
         
@@ -530,7 +591,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: optim.Optim
         'abs_error_q75': np.percentile(abs_errors_array, 75)
     }
     
-    return avg_loss, mae_metrics, raw_errors_array, abs_error_metrics, target_l2_norms_array, mae_per_sample_array
+    return avg_loss, mae_metrics, raw_errors_array, abs_error_metrics, target_l2_norms_array, mae_per_sample_array, first_batch_observations
 
 
 def validate_epoch(model: nn.Module, dataloader: DataLoader, 
@@ -1246,7 +1307,7 @@ def train_behavior_cloning(config: TrainingConfig):
         epoch_start = time.time()
         
         # Train with detailed metrics and TBPTT
-        train_loss, train_mae_metrics, train_error_distribution, train_abs_error_metrics, train_l2_norms, train_mae_per_sample = train_epoch(
+        train_loss, train_mae_metrics, train_error_distribution, train_abs_error_metrics, train_l2_norms, train_mae_per_sample, train_sample_obs = train_epoch(
             model, train_loader, optimizer, criterion, device, config.grad_clip, config.tbptt_chunk_size
         )
         
@@ -1254,6 +1315,10 @@ def train_behavior_cloning(config: TrainingConfig):
         val_loss, val_mae_metrics, val_error_distribution, val_abs_error_metrics, val_l2_norms, val_mae_per_sample = validate_epoch(
             model, val_loader, criterion, device
         )
+        
+        # Log sample observations to TensorBoard (first batch from training)
+        if train_sample_obs is not None:
+            log_sample_observations_to_tensorboard(writer, train_sample_obs, epoch, prefix="Training")
         
         # Track losses
         train_losses.append(train_loss)

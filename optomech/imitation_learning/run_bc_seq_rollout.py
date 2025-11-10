@@ -92,6 +92,11 @@ def main():
         action='store_true',
         help='Disable incremental control mode'
     )
+    parser.add_argument(
+        '--render-model-view',
+        action='store_true',
+        help='Render what the model sees (observation, action, hidden state, reward) and save as images'
+    )
     
     args = parser.parse_args()
     
@@ -168,7 +173,8 @@ def main():
             save_results=True,
             output_dir=str(output_dir),
             env_config_path=str(effective_config_path),
-            model_type="bc"
+            model_type="bc",
+            render_model_view=args.render_model_view
         )
         
         # Print results

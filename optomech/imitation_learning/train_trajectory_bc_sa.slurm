@@ -33,7 +33,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --no-rollouts \
         --no-dataparallel \
         --no-force-incremental-mode \
-        --target-action sa_actions \
+        --target-action perfect_incremental_actions \
         --num-workers 16 \
         --sequence-length 20 \
         --sequence-stride 10 \
