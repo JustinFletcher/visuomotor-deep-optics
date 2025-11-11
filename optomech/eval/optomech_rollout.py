@@ -820,7 +820,8 @@ class UniversalRolloutEngine:
                  env_args: Optional[Namespace] = None,
                  device: Optional[torch.device] = None,
                  log_scale: bool = False,
-                 input_crop_size: int = 256):
+                 input_crop_size: int = 256,
+                 render_model_view: bool = False):
         """
         Initialize the rollout engine.
         
@@ -830,12 +831,14 @@ class UniversalRolloutEngine:
             device: PyTorch device for computations
             log_scale: Whether to apply log-scaling to observations (for BC models trained on log-scaled data)
             input_crop_size: Size to crop observations to (must match training)
+            render_model_view: Whether to render what the model sees (observation, action, hidden state, reward)
         """
         self.model_interface = model_interface
         self.env_args = env_args
         self.device = device or self._get_device()
         self.log_scale = log_scale
         self.input_crop_size = input_crop_size
+        self.render_model_view = render_model_view
         
         # Rollout state
         self.episodic_returns = []
@@ -855,6 +858,136 @@ class UniversalRolloutEngine:
         else:
             print("💻 Using CPU")
             return torch.device("cpu")
+    
+    def _render_model_view(self, obs: np.ndarray, action: np.ndarray, 
+                          reward: float, step: int, save_dir: str) -> None:
+        """
+        Render what the model sees and produces at this step.
+        
+        Creates a compact visualization showing:
+        - The observation the model sees (preprocessed)
+        - The action the model produced
+        - Hidden state visualization (if LSTM)
+        - The step reward
+        
+        Args:
+            obs: Preprocessed observation [C, H, W]
+            action: Action produced by model [action_dim]
+            reward: Reward received this step
+            step: Current step number
+            save_dir: Directory to save the render
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.gridspec as gridspec
+        
+        # Create renders directory if it doesn't exist
+        renders_dir = Path(save_dir) / "renders"
+        renders_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Determine subplot layout based on whether we have hidden state
+        has_hidden = (self.model_interface and 
+                     self.model_interface.has_hidden_state and 
+                     self.model_interface.hidden_state is not None)
+        
+        # Create figure with compact layout
+        if has_hidden:
+            fig = plt.figure(figsize=(12, 4))
+            gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.3, wspace=0.3)
+            obs_ax = fig.add_subplot(gs[:, 0])  # Observation spans both rows, first column
+            action_ax = fig.add_subplot(gs[0, 1])  # Action in top middle
+            reward_ax = fig.add_subplot(gs[1, 1])  # Reward in bottom middle
+            hidden_ax = fig.add_subplot(gs[:, 2])  # Hidden state spans both rows, last column
+        else:
+            fig = plt.figure(figsize=(10, 4))
+            gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.3, wspace=0.3)
+            obs_ax = fig.add_subplot(gs[:, 0])  # Observation spans both rows
+            action_ax = fig.add_subplot(gs[0, 1])  # Action in top right
+            reward_ax = fig.add_subplot(gs[1, 1])  # Reward in bottom right
+        
+        # 1. Plot observation (what the model sees)
+        if obs.shape[0] == 1:
+            # Single channel - show as grayscale
+            obs_ax.imshow(obs[0], cmap='viridis', interpolation='nearest')
+        elif obs.shape[0] == 2:
+            # Two channels - show magnitude
+            magnitude = np.sqrt(obs[0]**2 + obs[1]**2)
+            obs_ax.imshow(magnitude, cmap='viridis', interpolation='nearest')
+        else:
+            # Multiple channels - show first channel
+            obs_ax.imshow(obs[0], cmap='viridis', interpolation='nearest')
+        
+        obs_ax.set_title(f'Observation (Step {step})', fontsize=10, fontweight='bold')
+        obs_ax.axis('off')
+        
+        # Add colorbar for observation
+        cbar = plt.colorbar(obs_ax.images[0], ax=obs_ax, fraction=0.046, pad=0.04)
+        cbar.ax.tick_params(labelsize=8)
+        
+        # 2. Plot action as bar chart
+        action_indices = np.arange(len(action))
+        action_ax.bar(action_indices, action, color='steelblue', alpha=0.7)
+        action_ax.set_title('Action Output', fontsize=10, fontweight='bold')
+        action_ax.set_xlabel('Action Dim', fontsize=8)
+        action_ax.set_ylabel('Value', fontsize=8)
+        action_ax.tick_params(labelsize=8)
+        action_ax.grid(True, alpha=0.3, linewidth=0.5)
+        
+        # 3. Plot reward
+        reward_ax.text(0.5, 0.5, f'Reward: {reward:.4f}', 
+                      horizontalalignment='center', verticalalignment='center',
+                      fontsize=14, fontweight='bold',
+                      bbox=dict(boxstyle='round', facecolor='lightgreen' if reward > 0 else 'lightcoral', alpha=0.5))
+        reward_ax.set_xlim(0, 1)
+        reward_ax.set_ylim(0, 1)
+        reward_ax.axis('off')
+        
+        # 4. Plot hidden state if available
+        if has_hidden:
+            hidden_state = self.model_interface.hidden_state
+            
+            # Handle LSTM hidden state: (h, c) tuple
+            if isinstance(hidden_state, tuple) and len(hidden_state) == 2:
+                h, c = hidden_state
+                # Flatten hidden state for visualization: [num_layers, batch, hidden_dim]
+                h_flat = h.detach().cpu().numpy().flatten()
+                c_flat = c.detach().cpu().numpy().flatten()
+                
+                # Plot both h and c side by side
+                hidden_combined = np.stack([h_flat, c_flat], axis=0)
+                im = hidden_ax.imshow(hidden_combined, cmap='coolwarm', aspect='auto', 
+                                     interpolation='nearest', vmin=-1, vmax=1)
+                hidden_ax.set_title('Hidden State (h, c)', fontsize=10, fontweight='bold')
+                hidden_ax.set_ylabel('State Type', fontsize=8)
+                hidden_ax.set_yticks([0, 1])
+                hidden_ax.set_yticklabels(['h', 'c'], fontsize=8)
+                hidden_ax.set_xlabel('Hidden Dim', fontsize=8)
+                hidden_ax.tick_params(labelsize=8)
+                
+                # Add colorbar
+                cbar = plt.colorbar(im, ax=hidden_ax, fraction=0.046, pad=0.04)
+                cbar.ax.tick_params(labelsize=8)
+            else:
+                # Single tensor hidden state
+                if torch.is_tensor(hidden_state):
+                    h_flat = hidden_state.detach().cpu().numpy().flatten()
+                else:
+                    h_flat = np.array(hidden_state).flatten()
+                
+                im = hidden_ax.imshow(h_flat.reshape(1, -1), cmap='coolwarm', 
+                                     aspect='auto', interpolation='nearest', vmin=-1, vmax=1)
+                hidden_ax.set_title('Hidden State', fontsize=10, fontweight='bold')
+                hidden_ax.set_xlabel('Hidden Dim', fontsize=8)
+                hidden_ax.tick_params(labelsize=8)
+                hidden_ax.set_yticks([])
+                
+                # Add colorbar
+                cbar = plt.colorbar(im, ax=hidden_ax, fraction=0.046, pad=0.04)
+                cbar.ax.tick_params(labelsize=8)
+        
+        # Save figure with low DPI to save space
+        output_path = renders_dir / f"step_{step:05d}.png"
+        plt.savefig(output_path, dpi=80, bbox_inches='tight')
+        plt.close(fig)
     
     def run_rollout(self, 
                    num_episodes: int = 1,
@@ -1000,6 +1133,17 @@ class UniversalRolloutEngine:
             for env_idx, reward in enumerate(rewards):
                 self.current_episode_rewards[env_idx].append(float(reward))
             
+            # Render model view if requested (only for first environment to avoid clutter)
+            if self.render_model_view and save_path:
+                # Use first environment's observation and action
+                self._render_model_view(
+                    obs=obs[0],  # First environment's preprocessed observation
+                    action=actions[0],  # First environment's action
+                    reward=float(rewards[0]),  # First environment's reward
+                    step=self.global_step,
+                    save_dir=save_path
+                )
+            
             # Update tracking variables
             prior_actions = actions
             prior_rewards = rewards
@@ -1079,47 +1223,50 @@ class UniversalRolloutEngine:
         Preprocess a single observation (from one environment).
         
         Args:
-            obs: Raw observation [channels, height, width] or [height, width]
+            obs: Raw observation [height, width] - intensity data in range [0, 65535]
             
         Returns:
             Preprocessed observation [C, H, W]
         """
-        # Handle log-scaling (convert complex to magnitude, apply log transform)
-        if self.log_scale:
-            # obs shape: [2, H, W] where first channel is real, second is imaginary
-            if len(obs.shape) == 3 and obs.shape[0] == 2:
-                # Convert complex to magnitude
-                magnitude = np.sqrt(obs[0]**2 + obs[1]**2)
-                # Apply log scaling: log10(1 + magnitude)
-                obs = np.log10(1.0 + magnitude)
-                # Add channel dimension: [1, H, W]
-                obs = obs[np.newaxis, ...]
-            elif len(obs.shape) == 2:
-                # 2D array, no channel dimension yet
-                obs = np.log10(1.0 + obs)
-                obs = obs[np.newaxis, ...]
-            else:
-                # Already single channel, just apply log scaling
-                obs = np.log10(1.0 + obs)
-        
-        # Ensure we have channel dimension
+        # Ensure we have the right shape - environment returns [H, W] intensity
         if len(obs.shape) == 2:
-            obs = obs[np.newaxis, ...]
+            # This is the expected case: [H, W] intensity data
+            pass
+        elif len(obs.shape) == 3 and obs.shape[0] == 1:
+            # Already has channel dimension [1, H, W]
+            obs = obs[0]  # Remove it, we'll add it back after processing
+        else:
+            print(f"⚠️  Warning: Unexpected observation shape: {obs.shape}")
+            # Try to handle it anyway
+            if len(obs.shape) == 3:
+                obs = obs[0]  # Take first channel
+        
+        # Handle log-scaling to match training
+        if self.log_scale:
+            # Normalize from uint16 range [0, 65535] to [0, 1]
+            obs = obs.astype(np.float32) / 65535.0
+            
+            # Apply log scaling: ln(1 + x) to match training transform
+            # Using np.log1p which is numerically stable ln(1 + x)
+            obs = np.log1p(obs)
+        else:
+            # No log scaling - just normalize to [0, 1]
+            if obs.max() > 256:
+                obs = obs.astype(np.float32) / 65535.0
+            elif obs.max() > 1.0:
+                obs = obs.astype(np.float32) / 255.0
+            else:
+                obs = obs.astype(np.float32)
+        
+        # Add channel dimension: [H, W] -> [1, H, W]
+        obs = obs[np.newaxis, ...]
         
         # Center crop to input_crop_size
         if obs.shape[-2:] != (self.input_crop_size, self.input_crop_size):
-            # obs shape should be [C, H, W] at this point
-            if len(obs.shape) == 3:
-                _, h, w = obs.shape
-                top = (h - self.input_crop_size) // 2
-                left = (w - self.input_crop_size) // 2
-                obs = obs[:, top:top+self.input_crop_size, left:left+self.input_crop_size]
-            else:
-                print(f"⚠️  Warning: Unexpected observation shape for cropping: {obs.shape}")
-        
-        # Convert uint8 images to float32 and normalize
-        if isinstance(obs, np.ndarray) and obs.dtype == np.uint8:
-            obs = (obs / 255.0).astype(np.float32)
+            _, h, w = obs.shape
+            top = (h - self.input_crop_size) // 2
+            left = (w - self.input_crop_size) // 2
+            obs = obs[:, top:top+self.input_crop_size, left:left+self.input_crop_size]
         
         return obs
     

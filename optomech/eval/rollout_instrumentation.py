@@ -110,7 +110,8 @@ def perform_rollout_instrumentation(
     save_results: bool = True,
     output_dir: str = None,
     env_config_path: str = None,
-    model_type: str = None
+    model_type: str = None,
+    render_model_view: bool = False
 ) -> Tuple[np.ndarray, np.ndarray, Dict]:
     """
     Perform rollout instrumentation using the most recent model.
@@ -124,6 +125,7 @@ def perform_rollout_instrumentation(
         output_dir: Directory to save results (if None, uses model's run dir)
         env_config_path: Path to environment config JSON file (if None, uses default)
         model_type: Type of model ('sml', 'bc', or None for auto-detect)
+        render_model_view: Whether to render what the model sees (observation, action, hidden state, reward)
         
     Returns:
         Tuple of (mean_rewards, std_rewards, metadata)
@@ -408,7 +410,8 @@ def perform_rollout_instrumentation(
         model_interface=model_interface,
         env_args=env_args,
         log_scale=dataset_config.get("log_scale", False),
-        input_crop_size=dataset_config.get("input_crop_size", 256)
+        input_crop_size=dataset_config.get("input_crop_size", 256),
+        render_model_view=render_model_view
     )
     
     # Run rollouts for each seed
@@ -420,12 +423,18 @@ def perform_rollout_instrumentation(
             np.random.seed(seed)
             torch.manual_seed(seed)
             
+            # Determine save path for rendering if needed
+            seed_save_path = None
+            if render_model_view:
+                seed_save_path = os.path.join(output_dir, f"seed_{seed}")
+                os.makedirs(seed_save_path, exist_ok=True)
+            
             # Run single rollout episode
             episodic_returns, step_wise_rewards = rollout_engine.run_rollout(
                 num_episodes=1,
                 exploration_noise=0.0,
-                save_path=None,  # Don't save individual episodes
-                save_episodes=False,
+                save_path=seed_save_path,  # Provide save path if rendering
+                save_episodes=render_model_view,  # Enable episode saving if rendering
                 random_policy=False,
                 zero_policy=False
             )
