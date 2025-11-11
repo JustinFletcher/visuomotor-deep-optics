@@ -19,6 +19,16 @@ Example usage:
         --num-seeds 16 \\
         --rollout-steps 500
     
+    # Enable incremental control mode
+    poetry run python optomech/imitation_learning/run_bc_seq_rollout.py \\
+        --run-dir runs/bc_run_20231103_142530_abc123def \\
+        --incremental-control
+    
+    # Disable incremental control mode
+    poetry run python optomech/imitation_learning/run_bc_seq_rollout.py \\
+        --run-dir runs/bc_run_20231103_142530_abc123def \\
+        --no-incremental-control
+    
     # Use a specific model checkpoint
     poetry run python optomech/imitation_learning/run_bc_seq_rollout.py \\
         --run-dir runs/bc_run_20231103_142530_abc123def \\
@@ -88,9 +98,14 @@ def main():
         help='Override environment episode length'
     )
     parser.add_argument(
+        '--incremental-control',
+        action='store_true',
+        help='Enable incremental control mode (overrides config)'
+    )
+    parser.add_argument(
         '--no-incremental-control',
         action='store_true',
-        help='Disable incremental control mode'
+        help='Disable incremental control mode (overrides config)'
     )
     parser.add_argument(
         '--render-model-view',
@@ -134,7 +149,19 @@ def main():
         print(f"  Rollout episode steps: {args.rollout_episode_steps} (overridden)")
     
     # Handle incremental control override
-    if args.no_incremental_control:
+    if args.incremental_control and args.no_incremental_control:
+        print("❌ Error: Cannot specify both --incremental-control and --no-incremental-control")
+        sys.exit(1)
+    
+    if args.incremental_control:
+        # Add incremental_control flag if not present
+        if 'environment_flags' not in rollout_config:
+            rollout_config['environment_flags'] = []
+        if '--incremental_control' not in rollout_config['environment_flags']:
+            rollout_config['environment_flags'].append('--incremental_control')
+        rollout_config['incremental_control'] = True
+        print(f"  Incremental control: True (overridden)")
+    elif args.no_incremental_control:
         # Remove incremental_control flag if present
         if 'environment_flags' in rollout_config:
             rollout_config['environment_flags'] = [
@@ -143,6 +170,12 @@ def main():
             ]
         rollout_config['incremental_control'] = False
         print(f"  Incremental control: False (overridden)")
+    else:
+        # Show current setting from config
+        has_incremental = False
+        if 'environment_flags' in rollout_config:
+            has_incremental = any('incremental_control' in flag for flag in rollout_config['environment_flags'])
+        print(f"  Incremental control: {has_incremental} (from config)")
     
     # Create output directory for this rollout
     rollout_id = str(uuid.uuid4())[:8]

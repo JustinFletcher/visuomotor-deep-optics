@@ -47,3 +47,23 @@ done
 wait
 
 
+
+    poetry run python optomech/imitation_learning/train_trajectory_behavior_cloning.py \
+        --dataset-path $WORKDIR/datasets/sa_dataset_1m \
+        --pretrained-encoder $WORKDIR/models/trained_autoencoder_corrector_last_epoch.pth \
+        --num-epochs 1000000 \
+        --batch-size 8 \
+        --learning-rate 1e-4 \
+        --optimizer adamw \
+        --loss-function log_cosh \
+        --no-rollouts \
+        --no-dataparallel \
+        --no-force-incremental-mode \
+        --target-action sa_incremental_actions \
+        --num-workers 16 \
+        --sequence-length 64 \
+        --sequence-stride 64 \
+        --lstm-hidden-dim 256 \
+        --lstm-num-layers 1 \
+        --grad-clip 1.0 \
+        --max-examples 1000
