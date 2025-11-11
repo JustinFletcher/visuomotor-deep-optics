@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name sa_inc_1000seq_traj_13 --device cuda:0 --seed 13"
+    "--run-name sa_inc_100seq_traj_13 --device cuda:0 --seed 13"
 )
 
 # Run all variants in parallel
@@ -35,8 +35,8 @@ for VARIANT in "${VARIANTS[@]}"; do
         --no-force-incremental-mode \
         --target-action sa_incremental_actions \
         --num-workers 16 \
-        --sequence-length 1000 \
-        --sequence-stride 1000 \
+        --sequence-length 100 \
+        --sequence-stride 100 \
         --lstm-hidden-dim 256 \
         --lstm-num-layers 1 \
         --grad-clip 1.0 \
