@@ -328,8 +328,10 @@ def main():
                        help="Path to SA dataset directory")
     parser.add_argument("--max-files", type=int, default=None,
                        help="Maximum number of batch files to load (default: all)")
+    parser.add_argument("--output-dir", type=str, default=None,
+                       help="Directory to save analysis outputs (default: dataset directory)")
     parser.add_argument("--save-plot", type=str, default=None,
-                       help="Path to save the plot (default: display only)")
+                       help="Path to save the plot (default: <output-dir>/action_analysis.png)")
     
     args = parser.parse_args()
     
@@ -349,12 +351,20 @@ def main():
     # Print statistics
     print_statistics(stats)
     
+    # Determine output directory
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = Path(args.dataset_path)
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     # Plot histograms
-    save_path = args.save_plot
-    if not save_path and args.dataset_path:
-        # Auto-generate save path in dataset directory
-        dataset_dir = Path(args.dataset_path)
-        save_path = dataset_dir / "action_analysis.png"
+    if args.save_plot:
+        save_path = args.save_plot
+    else:
+        # Auto-generate save path in output directory
+        save_path = output_dir / "action_analysis.png"
     
     plot_action_histograms(stats, save_path=save_path)
     
