@@ -62,7 +62,7 @@ def load_dataset_stats(dataset_path, max_files=None):
     perfect_incremental_actions_all = []
     rewards_all = []
     temperatures_all = []
-    acceptance_deltas_all = []
+    cost_deltas_all = []
     
     total_samples = 0
     
@@ -77,7 +77,11 @@ def load_dataset_stats(dataset_path, max_files=None):
                     perfect_incremental_actions_all.append(f['perfect_incremental_actions'][:])
                     rewards_all.append(f['rewards'][:])
                     temperatures_all.append(f['temperatures'][:])
-                    acceptance_deltas_all.append(f['acceptance_deltas'][:])
+                    # Handle both old and new field names
+                    if 'cost_deltas' in f:
+                        cost_deltas_all.append(f['cost_deltas'][:])
+                    else:
+                        cost_deltas_all.append(f['acceptance_deltas'][:])
                     total_samples += f['sa_actions'].shape[0]
             elif file_path.suffix == '.npz':
                 data = np.load(file_path)
@@ -87,7 +91,11 @@ def load_dataset_stats(dataset_path, max_files=None):
                 perfect_incremental_actions_all.append(data['perfect_incremental_actions'])
                 rewards_all.append(data['rewards'])
                 temperatures_all.append(data['temperatures'])
-                acceptance_deltas_all.append(data['acceptance_deltas'])
+                # Handle both old and new field names
+                if 'cost_deltas' in data:
+                    cost_deltas_all.append(data['cost_deltas'])
+                else:
+                    cost_deltas_all.append(data['acceptance_deltas'])
                 total_samples += data['sa_actions'].shape[0]
         except Exception as e:
             print(f"⚠️  Error loading {file_path}: {e}")
@@ -103,7 +111,7 @@ def load_dataset_stats(dataset_path, max_files=None):
     perfect_incremental_actions = np.concatenate(perfect_incremental_actions_all, axis=0)
     rewards = np.concatenate(rewards_all, axis=0)
     temperatures = np.concatenate(temperatures_all, axis=0)
-    acceptance_deltas = np.concatenate(acceptance_deltas_all, axis=0)
+    cost_deltas = np.concatenate(cost_deltas_all, axis=0)
     
     print(f"✅ Loaded {total_samples} samples from {len(all_files)} files")
     print(f"   Action dimension: {sa_actions.shape[1]}")
@@ -118,7 +126,7 @@ def load_dataset_stats(dataset_path, max_files=None):
         'perfect_incremental_actions': perfect_incremental_actions,
         'rewards': rewards,
         'temperatures': temperatures,
-        'acceptance_deltas': acceptance_deltas,
+        'cost_deltas': cost_deltas,
         # SA action statistics
         'sa_actions_mean': np.mean(sa_actions, axis=0),
         'sa_actions_std': np.std(sa_actions, axis=0),
@@ -303,11 +311,11 @@ def print_statistics(stats):
     print(f"  Min:              {np.min(stats['temperatures']):.6f}")
     print(f"  Max:              {np.max(stats['temperatures']):.6f}")
     
-    print(f"\nAcceptance Deltas:")
-    print(f"  Mean:             {np.mean(stats['acceptance_deltas']):.6f}")
-    print(f"  Std:              {np.std(stats['acceptance_deltas']):.6f}")
-    print(f"  Min:              {np.min(stats['acceptance_deltas']):.6f}")
-    print(f"  Max:              {np.max(stats['acceptance_deltas']):.6f}")
+    print(f"\nCost Deltas:")
+    print(f"  Mean:             {np.mean(stats['cost_deltas']):.6f}")
+    print(f"  Std:              {np.std(stats['cost_deltas']):.6f}")
+    print(f"  Min:              {np.min(stats['cost_deltas']):.6f}")
+    print(f"  Max:              {np.max(stats['cost_deltas']):.6f}")
     
     print("\n" + "=" * 80)
 

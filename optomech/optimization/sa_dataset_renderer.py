@@ -108,6 +108,9 @@ class SADatasetRenderer:
                 if isinstance(episode_id, bytes):
                     episode_id = episode_id.decode('utf-8')
                 
+                # Handle both old (acceptance_deltas) and new (cost_deltas) field names
+                cost_delta_key = 'cost_deltas' if 'cost_deltas' in f else 'acceptance_deltas'
+                
                 sample = {
                     'observation': f['observations'][i],
                     'sa_action': f['sa_actions'][i],
@@ -116,7 +119,9 @@ class SADatasetRenderer:
                     'perfect_incremental_action': f['perfect_incremental_actions'][i],
                     'reward': float(f['rewards'][i]),
                     'temperature': float(f['temperatures'][i]),
-                    'acceptance_delta': float(f['acceptance_deltas'][i]),
+                    'cost_delta': float(f[cost_delta_key][i]),
+                    'accepted': bool(f['accepted'][i]) if 'accepted' in f else True,  # Old datasets only had accepted transitions
+                    'next_observation': f['next_observations'][i] if 'next_observations' in f else None,
                     'episode_id': episode_id,
                     'episode_step': int(f['episode_steps'][i]),
                     'optimization_step': int(f['optimization_steps'][i]) if 'optimization_steps' in f else None,
@@ -133,6 +138,9 @@ class SADatasetRenderer:
         with np.load(batch_file) as data:
             batch_size = data['observations'].shape[0]
             
+            # Handle both old and new field names
+            cost_delta_key = 'cost_deltas' if 'cost_deltas' in data else 'acceptance_deltas'
+            
             for i in range(batch_size):
                 sample = {
                     'observation': data['observations'][i],
@@ -142,7 +150,9 @@ class SADatasetRenderer:
                     'perfect_incremental_action': data['perfect_incremental_actions'][i],
                     'reward': float(data['rewards'][i]),
                     'temperature': float(data['temperatures'][i]),
-                    'acceptance_delta': float(data['acceptance_deltas'][i]),
+                    'cost_delta': float(data[cost_delta_key][i]),
+                    'accepted': bool(data['accepted'][i]) if 'accepted' in data else True,
+                    'next_observation': data['next_observations'][i] if 'next_observations' in data else None,
                     'episode_id': str(data['episode_ids'][i]),
                     'episode_step': int(data['episode_steps'][i]),
                     'optimization_step': int(data['optimization_steps'][i]) if 'optimization_steps' in data else None,
@@ -167,13 +177,26 @@ class SADatasetRenderer:
         
         return stats
     
-    def render_episode_gif(self, episode_id: str, fps: int = 2, figsize: Tuple[int, int] = (24, 16), render_interval: int = 1) -> str:
+    def render_episode_gif(self, episode_id: str, fps: int = 2, figsize: Tuple[int, int] = (24, 16), 
+                          render_interval: int = 1, max_transitions: Optional[int] = None, save_frames: bool = False) -> str:
         """Render a single episode as an animated GIF"""
         if episode_id not in self.episodes:
             raise ValueError(f"Episode {episode_id} not found in dataset")
         
         episode_samples = self.episodes[episode_id]
+        
+        # Limit number of transitions if requested
+        if max_transitions is not None and len(episode_samples) > max_transitions:
+            episode_samples = episode_samples[:max_transitions]
+            print(f"⚠️  Limiting to first {max_transitions} transitions (out of {len(self.episodes[episode_id])})")
+        
         num_steps = len(episode_samples)
+        
+        # Create images subfolder if saving frames
+        if save_frames:
+            images_dir = self.output_dir / "images" / f"episode_{episode_id[:8]}"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            print(f"📁 Saving individual frames to: {images_dir}")
         
         print(f"🎬 Rendering episode {episode_id[:8]}... ({num_steps} steps)")
         
@@ -249,8 +272,17 @@ class SADatasetRenderer:
             
             # 1. Large linear scale observation image
             obs = current_sample['observation']
-            if len(obs.shape) == 3 and obs.shape[0] == 1:
-                obs = obs[0]  # Remove channel dimension if present
+            
+            # Handle multi-channel observations
+            if len(obs.shape) == 3:
+                if obs.shape[0] == 1:
+                    obs = obs[0]  # Remove channel dimension if present
+                elif obs.shape[0] == 2:
+                    # Two channels - compute magnitude (assuming complex or dual measurements)
+                    obs = np.sqrt(obs[0]**2 + obs[1]**2)
+                else:
+                    # Multiple channels - take first channel
+                    obs = obs[0]
             
             im_linear = ax_obs_linear.imshow(obs, cmap='viridis', vmin=0, vmax=65535, interpolation='nearest')
             
@@ -428,10 +460,17 @@ class SADatasetRenderer:
                         f"Step: {current_sample['episode_step']}\n"
                         f"Image Size: {width}×{height} px\n"
                         f"Temperature: {current_sample['temperature']:.4f}\n"
-                        f"Accept Δ: {current_sample['acceptance_delta']:.4f}")
+                        f"Cost Δ: {current_sample['cost_delta']:.4f}\n"
+                        f"Accepted: {current_sample.get('accepted', True)}")
             
             fig.text(0.01, 0.99, info_text, fontsize=11, verticalalignment='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9))
+            
+            # Save frame as individual image if requested
+            if save_frames:
+                frame_filename = f"frame_{frame:04d}_step_{current_sample['episode_step']:04d}.png"
+                frame_path = images_dir / frame_filename
+                fig.savefig(frame_path, dpi=100, bbox_inches='tight')
         
         # Create list of frame indices to render based on interval
         frame_indices = list(range(0, num_steps, render_interval))
@@ -476,7 +515,8 @@ class SADatasetRenderer:
         return str(gif_path)
     
     def render_multiple_episodes(self, episode_ids: Optional[List[str]] = None, 
-                                num_episodes: Optional[int] = None, fps: int = 2, render_interval: int = 1) -> List[str]:
+                                num_episodes: Optional[int] = None, fps: int = 2, render_interval: int = 1,
+                                max_transitions: Optional[int] = None, save_frames: bool = False) -> List[str]:
         """Render multiple episodes as GIFs"""
         if episode_ids is None:
             if num_episodes is None:
@@ -490,7 +530,8 @@ class SADatasetRenderer:
         gif_paths = []
         for episode_id in episode_ids:
             try:
-                gif_path = self.render_episode_gif(episode_id, fps=fps, render_interval=render_interval)
+                gif_path = self.render_episode_gif(episode_id, fps=fps, render_interval=render_interval,
+                                                   max_transitions=max_transitions, save_frames=save_frames)
                 gif_paths.append(gif_path)
                 print(f"✅ Successfully rendered episode {episode_id[:8]}...")
             except Exception as e:
@@ -535,6 +576,10 @@ def main():
                        help="Frames per second for GIF animation")
     parser.add_argument("--render-interval", type=int, default=1,
                        help="Render every Nth frame (default: 1, render all frames)")
+    parser.add_argument("--max-transitions", type=int, default=None,
+                       help="Maximum number of transitions to render per episode (default: None, render all)")
+    parser.add_argument("--render-images", action="store_true",
+                       help="Save individual frame images to images/ subfolder during rendering")
     parser.add_argument("--summary-only", action="store_true",
                        help="Only print dataset summary, don't render")
     
@@ -559,7 +604,9 @@ def main():
             episode_ids=args.episode_ids,
             num_episodes=args.num_episodes,
             fps=args.fps,
-            render_interval=args.render_interval
+            render_interval=args.render_interval,
+            max_transitions=args.max_transitions,
+            save_frames=args.render_images
         )
         
         print(f"\n✅ Rendering complete! Generated {len(gif_paths)} GIFs:")
