@@ -2,7 +2,7 @@
   "dataset_path": "/wdata/scratch/fletch/datasets/sa_full_dataset_1m",
   "pretrained_autoencoder_path": "./models/trained_autoencoder_corrector_last_epoch.pth",
   "run_name": "world_model_default",
-  "batch_size": 4,
+  "batch_size": 32,
   "learning_rate": 0.0001,
   "num_epochs": 10000,
   "device": "auto",
@@ -24,7 +24,7 @@
   "max_examples": null,
   "seed": 42,
   "num_workers": 4,
-  "checkpoint_interval": 10,
+  "checkpoint_interval": 2,
   "log_scale": true,
   "load_in_memory": true
 }
