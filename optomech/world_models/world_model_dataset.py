@@ -30,7 +30,8 @@ class WorldModelSequenceDataset(Dataset):
         transforms=None,
         obs_key: str = 'observations',
         action_key: str = 'actions',
-        load_in_memory: bool = False
+        load_in_memory: bool = False,
+        max_examples: int = None
     ):
         """
         Args:
@@ -41,6 +42,7 @@ class WorldModelSequenceDataset(Dataset):
             obs_key: Key for observations in files
             action_key: Key for actions in files
             load_in_memory: If True, preload all data into memory
+            max_examples: Maximum number of sequences to use (for debugging/testing)
         """
         self.file_paths = file_paths
         self.dataset_type = dataset_type
@@ -49,14 +51,38 @@ class WorldModelSequenceDataset(Dataset):
         self.obs_key = obs_key
         self.action_key = action_key
         self.load_in_memory = load_in_memory
+        self.max_examples = max_examples
         
         # Build index of valid sequence start positions
         self.sequence_indices = []  # List of (file_idx, start_idx, end_idx)
         self._build_sequence_index()
         
+        # Apply max_examples limit if specified
+        if self.max_examples is not None and len(self.sequence_indices) > self.max_examples:
+            print(f"⚠️  Limiting dataset to {self.max_examples} sequences (from {len(self.sequence_indices)})")
+            self.sequence_indices = self.sequence_indices[:self.max_examples]
+        
         # Optionally load all data into memory
         self.data_cache = {}  # {file_idx: (obs, actions)}
         if self.load_in_memory:
+            self._load_all_data()
+    
+    def __getstate__(self):
+        """Custom pickle method for multiprocessing compatibility."""
+        # Return state without the data_cache to avoid pickling large arrays
+        state = self.__dict__.copy()
+        # Store whether we had a cache
+        state['_had_cache'] = bool(state['data_cache'])
+        # Don't pickle the actual cache
+        state['data_cache'] = {}
+        return state
+    
+    def __setstate__(self, state):
+        """Custom unpickle method for multiprocessing compatibility."""
+        # Restore state
+        self.__dict__.update(state)
+        # If we had a cache, reload it in the worker process
+        if state.get('_had_cache', False) and self.load_in_memory:
             self._load_all_data()
     
     def _build_sequence_index(self):
@@ -94,11 +120,16 @@ class WorldModelSequenceDataset(Dataset):
         print(f"✅ Sequence index built: {len(self.sequence_indices)} sequences from {len(self.file_paths)} files")
     
     def _load_all_data(self):
-        """Load all data files into memory."""
-        print(f"💾 Preloading all data into memory...")
+        """Load data files that are referenced in sequence indices into memory."""
+        # Determine which files are actually needed
+        needed_file_indices = set(file_idx for file_idx, _, _ in self.sequence_indices)
+        print(f"💾 Preloading data into memory ({len(needed_file_indices)} files needed)...")
         
-        for file_idx, file_path in enumerate(self.file_paths):
+        loaded_count = 0
+        for file_idx in needed_file_indices:
             try:
+                file_path = self.file_paths[file_idx]
+                
                 if self.dataset_type == 'hdf5':
                     with h5py.File(file_path, 'r') as f:
                         obs = f[self.obs_key][:]
@@ -112,9 +143,10 @@ class WorldModelSequenceDataset(Dataset):
                 
                 # Store in cache
                 self.data_cache[file_idx] = (obs, actions)
+                loaded_count += 1
                 
-                if file_idx % 100 == 0 and file_idx > 0:
-                    print(f"  💾 Loaded {file_idx}/{len(self.file_paths)} files into memory")
+                if loaded_count % 100 == 0:
+                    print(f"  💾 Loaded {loaded_count}/{len(needed_file_indices)} files into memory")
             
             except Exception as e:
                 print(f"  ⚠️  Error loading {file_path}: {e}")
@@ -141,11 +173,11 @@ class WorldModelSequenceDataset(Dataset):
         
         # Load sequence data (from cache if available)
         if self.load_in_memory and file_idx in self.data_cache:
-            # Use cached data
+            # Use cached data - make copies to avoid shared memory issues in multiprocessing
             obs_all, actions_all = self.data_cache[file_idx]
-            obs = obs_all[start_idx:end_idx]
-            next_obs = obs_all[start_idx+1:end_idx+1]
-            actions = actions_all[start_idx:end_idx]
+            obs = obs_all[start_idx:end_idx].copy()
+            next_obs = obs_all[start_idx+1:end_idx+1].copy()
+            actions = actions_all[start_idx:end_idx].copy()
         else:
             # Load from disk
             file_path = self.file_paths[file_idx]
@@ -168,12 +200,7 @@ class WorldModelSequenceDataset(Dataset):
             else:
                 raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
         
-        # Convert to tensors
-        obs = torch.from_numpy(obs).float()
-        next_obs = torch.from_numpy(next_obs).float()
-        actions = torch.from_numpy(actions).float()
-        
-        # Apply transforms if provided
+        # Apply transforms if provided (before converting to tensors)
         if self.transforms is not None:
             # Apply transforms to each frame in sequence
             obs_list = []
@@ -185,6 +212,12 @@ class WorldModelSequenceDataset(Dataset):
                 next_obs_list.append(next_obs_i)
             obs = torch.stack(obs_list)
             next_obs = torch.stack(next_obs_list)
+            actions = torch.from_numpy(actions).float()
+        else:
+            # Convert to tensors
+            obs = torch.from_numpy(obs).float()
+            next_obs = torch.from_numpy(next_obs).float()
+            actions = torch.from_numpy(actions).float()
         
         return obs, actions, next_obs
 

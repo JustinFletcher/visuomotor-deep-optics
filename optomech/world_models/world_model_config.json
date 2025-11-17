@@ -21,7 +21,7 @@
   "optimizer": "adam",
   "model_save_path": "saved_models/world_model.pth",
   "no_save": false,
-  "max_examples": null,
+  "max_examples": 100,
   "seed": 42,
   "num_workers": 4,
   "checkpoint_interval": 10,

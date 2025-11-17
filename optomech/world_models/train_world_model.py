@@ -1872,7 +1872,8 @@ def train_world_model(config: WorldModelConfig):
             transforms=transforms,
             obs_key=config.obs_key,
             action_key=config.action_key,
-            load_in_memory=True
+            load_in_memory=True,
+            max_examples=config.max_examples
         )
         print(f"✅ Dataset loaded into memory")
     else:
@@ -2222,7 +2223,9 @@ def main():
         max_examples=get_config_value('max_examples'),
         seed=get_config_value('seed', 42),
         num_workers=get_config_value('num_workers', 4),
-        checkpoint_interval=get_config_value('checkpoint_interval', 10)
+        checkpoint_interval=get_config_value('checkpoint_interval', 10),
+        log_scale=get_config_value('log_scale', False),
+        load_in_memory=get_config_value('load_in_memory', False)
     )
     
     # Print configuration
