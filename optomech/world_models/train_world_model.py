@@ -42,8 +42,11 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from torchinfo import summary
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add workspace root to path for imports
+# This file is at: workspace_root/optomech/world_models/train_world_model.py
+# So we need to go up 2 levels to get to workspace root
+workspace_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(workspace_root))
 
 # Import model architectures and utilities
 from models import create_model, AutoEncoderCNN, AutoEncoderResNet
