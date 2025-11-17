@@ -59,9 +59,7 @@ from utils.data_loading import DatasetDiscovery, FileLoader, CacheManager
 from utils.transforms import center_crop_transform, get_autoencoder_transforms
 
 # Import world model dataset
-import sys
-sys.path.insert(0, str(Path(__file__).parent))
-from world_model_dataset import WorldModelSequenceDataset, WorldModelLazyDataset, collate_sequences
+from optomech.world_models.world_model_dataset import WorldModelSequenceDataset, WorldModelLazyDataset, collate_sequences
 
 # Optional HDF5 support
 try:
