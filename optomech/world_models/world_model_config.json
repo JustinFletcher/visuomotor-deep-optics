@@ -1,6 +1,6 @@
 {
-  "dataset_path": "datasets/sa_full_dataset_1m",
-  "pretrained_autoencoder_path": "models/trained_autoencoder_corrector_last_epoch.pth",
+  "dataset_path": "/wdata/scratch/fletch/datasets/sa_full_dataset_1m",
+  "pretrained_autoencoder_path": "./models/trained_autoencoder_corrector_last_epoch.pth",
   "run_name": "world_model_default",
   "batch_size": 4,
   "learning_rate": 0.0001,
