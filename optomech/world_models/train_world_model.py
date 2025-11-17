@@ -714,6 +714,12 @@ class WorldModelConfig:
     weight_decay: float = 1e-5  # L2 regularization
     scheduler: str = "cosine"  # cosine, step, none
     
+    # Learning rate scheduler settings (ReduceLROnPlateau)
+    use_scheduler: bool = True  # Use ReduceLROnPlateau scheduler
+    scheduler_patience: int = 50  # Epochs to wait before reducing LR
+    scheduler_factor: float = 0.5  # Factor to reduce LR by
+    scheduler_min_lr: float = 1e-7  # Minimum learning rate
+    
     # Data settings
     max_examples: int = None  # Limit dataset size for debugging
     num_workers: int = 4  # DataLoader workers
@@ -1180,25 +1186,26 @@ def validate_world_model_epoch(model, val_loader, criterion, device):
     return avg_loss
 
 
-def visualize_world_model_predictions(model, val_loader, device, writer, epoch, num_timesteps=4):
+def visualize_world_model_predictions(model, val_loader, device, writer, epoch, num_timesteps=4, prefix='Validation'):
     """
     Visualize world model predictions for debugging.
     
     Shows 4 timesteps from a sequence, each column containing:
+    - Residual (error magnitude)
     - Input observation
-    - Action vector (as text)
+    - Action vector (as heatmap)
     - Hidden state (as heatmap)
     - Target next observation
     - Model prediction
-    - Residual (target - prediction)
     
     Args:
         model: World model
-        val_loader: Validation data loader
+        val_loader: Data loader (train or validation)
         device: Device to run on
         writer: TensorBoard writer
         epoch: Current epoch number
         num_timesteps: Number of timesteps to visualize (default: 4)
+        prefix: Prefix for TensorBoard tag (default: 'Validation')
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
@@ -1276,7 +1283,7 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
         
         # Create figure: 6 rows (residual, obs, action, hidden, target, pred) × num_timesteps columns
         fig, axes = plt.subplots(6, num_timesteps, figsize=(4*num_timesteps, 24))
-        fig.suptitle(f'World Model Predictions - Epoch {epoch+1}', fontsize=16, fontweight='bold')
+        fig.suptitle(f'{prefix} World Model Predictions - Epoch {epoch+1}', fontsize=16, fontweight='bold')
         
         for t in range(num_timesteps):
             col = t
@@ -1357,10 +1364,10 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
         
         # Convert to tensor [C, H, W] format for TensorBoard
         img_tensor = torch.from_numpy(img_array).permute(2, 0, 1)
-        writer.add_image('Validation/WorldModelPredictions', img_tensor, epoch)
+        writer.add_image(f'{prefix}/WorldModelPredictions', img_tensor, epoch)
         
         plt.close(fig)
-        print(f"📊 Saved world model prediction visualization to TensorBoard")
+        print(f"📊 Saved {prefix.lower()} world model prediction visualization to TensorBoard")
 
 
 def save_reconstruction_samples(model, test_loader, device, save_path, num_samples=4, use_log_scale=False, sample_randomly=True):
@@ -2194,12 +2201,22 @@ def train_world_model(config: WorldModelConfig):
     print(f"⚡ Optimizer: {config.optimizer} (lr={config.learning_rate})")
     
     # Setup learning rate scheduler
-    if config.scheduler == "cosine":
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.num_epochs)
-    elif config.scheduler == "step":
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+    scheduler = None
+    if config.use_scheduler:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=config.scheduler_factor,
+            patience=config.scheduler_patience,
+            min_lr=config.scheduler_min_lr,
+            verbose=True
+        )
+        print(f"📉 Learning Rate Scheduler: ReduceLROnPlateau")
+        print(f"   Patience: {config.scheduler_patience} epochs")
+        print(f"   Factor: {config.scheduler_factor}")
+        print(f"   Min LR: {config.scheduler_min_lr}")
     else:
-        scheduler = None
+        print(f"📉 Learning Rate Scheduler: None (constant LR)")
     
     # Setup TensorBoard
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -2235,21 +2252,30 @@ def train_world_model(config: WorldModelConfig):
         
         # Visualize world model predictions (only on certain epochs to save memory)
         if (epoch + 1) % config.reconstruction_interval == 0:
-            print(f"🎨 Creating world model prediction visualization...")
+            # Training visualization
+            print(f"🎨 Creating training world model prediction visualization...")
             try:
-                visualize_world_model_predictions(model, val_loader, device, writer, epoch, num_timesteps=4)
+                visualize_world_model_predictions(model, train_loader, device, writer, epoch, num_timesteps=4, prefix='Train')
             except Exception as e:
-                print(f"⚠️  Visualization failed: {e}")
-                print(f"   Continuing training without visualization...")
+                print(f"⚠️  Training visualization failed: {e}")
+                print(f"   Continuing without training visualization...")
+            
+            # Validation visualization
+            print(f"🎨 Creating validation world model prediction visualization...")
+            try:
+                visualize_world_model_predictions(model, val_loader, device, writer, epoch, num_timesteps=4, prefix='Validation')
+            except Exception as e:
+                print(f"⚠️  Validation visualization failed: {e}")
+                print(f"   Continuing without validation visualization...")
         
         # Log to TensorBoard
         writer.add_scalar('Loss/Train', train_loss, epoch)
         writer.add_scalar('Loss/Val', val_loss, epoch)
         writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch)
         
-        # Update learning rate
+        # Update learning rate based on validation loss
         if scheduler is not None:
-            scheduler.step()
+            scheduler.step(val_loss)
         
         # Print epoch summary
         print(f"\n📊 Epoch {epoch+1}/{config.num_epochs} Summary:")
@@ -2379,6 +2405,18 @@ def main():
                        choices=["adam", "adamw", "sgd"],
                        help="Optimizer")
     
+    # Learning rate scheduler settings
+    parser.add_argument("--use-scheduler", action="store_true", default=True,
+                       help="Use learning rate scheduler (ReduceLROnPlateau)")
+    parser.add_argument("--no-scheduler", action="store_false", dest="use_scheduler",
+                       help="Disable learning rate scheduler")
+    parser.add_argument("--scheduler-patience", type=int, default=50,
+                       help="Epochs to wait before reducing LR (default: 50)")
+    parser.add_argument("--scheduler-factor", type=float, default=0.5,
+                       help="Factor to reduce LR by (default: 0.5)")
+    parser.add_argument("--scheduler-min-lr", type=float, default=1e-7,
+                       help="Minimum learning rate (default: 1e-7)")
+    
     # Output settings
     parser.add_argument("--model-save-path", type=str,
                        help="Path to save trained model")
@@ -2440,6 +2478,10 @@ def main():
         action_key=get_config_value('action_key', 'sa_incremental_actions'),
         loss_function=get_config_value('loss_function', 'mse'),
         optimizer=get_config_value('optimizer', 'adam'),
+        use_scheduler=get_config_value('use_scheduler', True),
+        scheduler_patience=get_config_value('scheduler_patience', 50),
+        scheduler_factor=get_config_value('scheduler_factor', 0.5),
+        scheduler_min_lr=get_config_value('scheduler_min_lr', 1e-7),
         model_save_path=get_config_value('model_save_path', 'saved_models/world_model.pth'),
         save_model=not get_config_value('no_save', False),
         max_examples=get_config_value('max_examples'),
