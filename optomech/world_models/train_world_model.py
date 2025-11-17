@@ -1477,491 +1477,6 @@ def save_checkpoint(model, optimizer, epoch, train_loss, val_loss, config, save_
     torch.save(checkpoint, save_path)
 
 
-def train_autoencoder(config: AutoencoderConfig):
-    """Main training function"""
-    print("🚀 Starting Autoencoder Training")
-    print("=" * 60)
-    
-    # Set random seeds
-    torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
-    random.seed(config.seed)
-    
-    # Get device
-    device = get_device(config.device)
-    
-    # Discover dataset files (memory efficient)
-    print(f"\n📂 Discovering dataset files in: {config.dataset_path}")
-    file_paths, dataset_type, metadata = DatasetDiscovery.discover_files(config.dataset_path)
-    
-    if config.log_scale:
-        print(f"📈 Log-scaling enabled: Observations will be log-transformed for better dynamic range")
-    
-    # Determine if we should use lazy loading or in-memory loading
-    total_obs = metadata['total_observations']
-    
-    # User-requested in-memory loading
-    if config.load_in_memory:
-        use_lazy_loading = False
-        print(f"💾 User requested in-memory loading for dataset ({total_obs} observations)")
-        print(f"⚠️  This will load the entire dataset into RAM")
-    # For very small datasets, we can still load into memory
-    elif config.max_examples and config.max_examples <= 1000:
-        use_lazy_loading = False
-        print(f"💡 Using in-memory loading for small dataset ({config.max_examples} examples)")
-    elif total_obs <= 1000:
-        use_lazy_loading = False
-        print(f"💡 Using in-memory loading for small dataset ({total_obs} examples)")
-    else:
-        use_lazy_loading = True
-        print(f"💾 Using lazy loading for large dataset ({total_obs} total observations)")
-        print(f"💡 Use --load-in-memory flag to load entire dataset into RAM for faster training")
-    
-    # Create dataset using unified utilities
-    if use_lazy_loading:
-        print(f"\n📂 Creating lazy-loading dataset...")
-        dataset = LazyDataset(
-            dataset_path=config.dataset_path,
-            task_type='autoencoder',
-            input_crop_size=config.input_crop_size,
-            max_examples=config.max_examples,
-            use_cache=True,
-            log_scale=config.log_scale
-        )
-    elif config.load_in_memory:
-        # Use new in-memory dataset for fastest training
-        print(f"\n📂 Loading dataset into memory...")
-        dataset = InMemoryAutoencoderDataset(
-            dataset_path=config.dataset_path,
-            input_crop_size=config.input_crop_size,
-            max_examples=config.max_examples,
-            log_scale=config.log_scale
-        )
-    else:
-        # Use old method for small datasets
-        print(f"\n📂 Loading small dataset into memory...")
-        observations = load_data_from_dataset(config.dataset_path, config.max_examples)
-        dataset = AutoencoderDataset(
-            observations=observations,
-            input_crop_size=config.input_crop_size
-        )
-    
-    # Split dataset
-    total_size = len(dataset)
-    train_size = int(config.train_split * total_size)
-    val_size = int(config.val_split * total_size)
-    test_size = total_size - train_size - val_size
-    
-    train_dataset, val_dataset, test_dataset = random_split(
-        dataset, [train_size, val_size, test_size],
-        generator=torch.Generator().manual_seed(config.seed)
-    )
-    
-    print(f"📊 Dataset splits: Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
-    
-    # Create data loaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.batch_size,
-        shuffle=True,
-        num_workers=config.num_workers,
-        pin_memory=config.pin_memory and device.type == 'cuda'
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.batch_size,
-        shuffle=True,
-        num_workers=config.num_workers,
-        pin_memory=config.pin_memory and device.type == 'cuda'
-    )
-    
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=config.batch_size,
-        shuffle=True,
-        num_workers=config.num_workers,
-        pin_memory=config.pin_memory and device.type == 'cuda'
-    )
-    
-    # Get input dimensions from metadata
-    obs_shape = metadata['observation_shape']
-    
-    # Apply cropping if specified
-    if config.input_crop_size:
-        effective_shape = (obs_shape[0], config.input_crop_size, config.input_crop_size)
-        print(f"🔄 Input will be center-cropped from {obs_shape} to {effective_shape}")
-        obs_shape = effective_shape
-    
-    input_channels = obs_shape[0] if len(obs_shape) == 3 else 1
-    
-    print(f"🔍 Input channels detected: {input_channels}")
-    print(f"🔍 Input shape: {obs_shape}")
-    
-    # Create model
-    # Determine effective input size after any cropping
-    effective_input_size = config.input_crop_size if config.input_crop_size else obs_shape[-1]
-    
-    print(f"\n🏗️  Creating model: {config.arch}")
-    print(f"🔍 Effective input size: {effective_input_size}x{effective_input_size}")
-    model = create_model(
-        arch=config.arch,
-        input_channels=input_channels,
-        latent_dim=config.latent_dim,
-        input_size=effective_input_size,
-        input_crop_size=config.input_crop_size
-    )
-    
-    # Print model summary
-    print("\n📋 Model Summary:")
-    try:
-        sample_input = torch.randn(1, input_channels, obs_shape[-2], obs_shape[-1])
-        summary(model, input_data=sample_input, verbose=0)
-    except:
-        print(f"  Model: {config.arch}")
-        print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
-    
-    # Multi-GPU setup
-    gpu_count = torch.cuda.device_count()
-    if gpu_count > 1 and not config.no_dataparallel:
-        print(f"🔧 Using DataParallel with {gpu_count} GPUs")
-        model = DataParallel(model)
-    elif gpu_count > 1 and config.no_dataparallel:
-        print(f"⚠️  Multiple GPUs detected ({gpu_count}) but DataParallel is disabled")
-        print(f"   Training will only use GPU 0")
-    
-    model.to(device)
-    
-    # Create loss function
-    criterion = create_loss_function(config.loss_function, config.huber_delta)
-    
-    # Create optimizer
-    if config.optimizer == "adam":
-        optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    elif config.optimizer == "adamw":
-        optimizer = optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    elif config.optimizer == "sgd":
-        optimizer = optim.SGD(model.parameters(), lr=config.learning_rate, momentum=0.9, weight_decay=config.weight_decay)
-    else:
-        raise ValueError(f"Unknown optimizer: {config.optimizer}")
-    
-    # Create scheduler
-    if config.scheduler == "cosine":
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.num_epochs)
-    elif config.scheduler == "step":
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=config.num_epochs // 3, gamma=0.1)
-    else:
-        scheduler = None
-    
-    # Setup output directory
-    timestamp = int(time.time())
-    save_dir = Path(f"runs/autoencoder_{config.arch}_{timestamp}")
-    save_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Save config
-    config_path = save_dir / "config.json"
-    with open(config_path, 'w') as f:
-        json.dump(config.__dict__, f, indent=2)
-    
-    # Setup TensorBoard
-    writer = SummaryWriter(save_dir / "tensorboard")
-    
-    # Log hyperparameters to TensorBoard
-    hparams = {
-        'arch': config.arch,
-        'latent_dim': config.latent_dim,
-        'batch_size': config.batch_size,
-        'learning_rate': config.learning_rate,
-        'optimizer': config.optimizer,
-        'loss_function': config.loss_function,
-        'input_crop_size': config.input_crop_size if config.input_crop_size else 'None',
-        'log_scale': config.log_scale,
-        'load_in_memory': config.load_in_memory,
-        'weight_decay': config.weight_decay,
-        'scheduler': config.scheduler,
-    }
-    
-    # Log text description
-    config_text = '\n'.join([f'{k}: {v}' for k, v in hparams.items()])
-    writer.add_text('Configuration', config_text, 0)
-    
-    # Log model architecture as text
-    model_summary = str(model)
-    writer.add_text('Model/Architecture', model_summary, 0)
-    
-    # Resume from checkpoint if specified
-    start_epoch = config.start_epoch
-    best_val_loss = float('inf')
-    train_losses = []
-    val_losses = []
-    
-    if config.resume_from:
-        print(f"📂 Resuming from checkpoint: {config.resume_from}")
-        checkpoint = torch.load(config.resume_from, map_location=device, weights_only=False)
-        
-        if gpu_count > 1 and not config.no_dataparallel:
-            model.module.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch']
-        best_val_loss = checkpoint['val_loss']
-        print(f"Resumed from epoch {start_epoch}")
-    
-    print(f"🎯 Training Configuration:")
-    print(f"  Architecture: {config.arch}")
-    print(f"  Latent dim: {config.latent_dim}")
-    print(f"  Batch size: {config.batch_size}")
-    print(f"  Learning rate: {config.learning_rate}")
-    print(f"  Loss function: {config.loss_function}")
-    print(f"  Optimizer: {config.optimizer}")
-    print(f"  Epochs: {config.num_epochs}")
-    print(f"  Device: {device}")
-    print(f"  Lazy loading: {use_lazy_loading}")
-    print(f"  DataParallel: {'Disabled' if config.no_dataparallel else 'Enabled' if gpu_count > 1 else 'N/A (single GPU)'}")
-    
-    # Training loop
-    print(f"\n🏃 Starting training for {config.num_epochs} epochs...")
-    print("=" * 60)
-    
-    for epoch in range(start_epoch, config.num_epochs):
-        print(f"\n🎯 Starting epoch {epoch+1}/{config.num_epochs}")
-        epoch_start_time = time.time()
-        
-        # Train
-        print(f"🚂 Epoch {epoch+1}: Starting training phase...")
-        train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
-        print(f"✅ Epoch {epoch+1}: Training complete. Loss: {train_loss:.6f}")
-        
-        # Validate
-        print(f"🔍 Epoch {epoch+1}: Starting validation phase...")
-        val_loss = validate_epoch(model, val_loader, criterion, device)
-        print(f"✅ Epoch {epoch+1}: Validation complete. Loss: {val_loss:.6f}")
-        
-        # Save reconstruction samples after validation
-        if (epoch + 1) % config.reconstruction_interval == 0 or epoch == config.num_epochs - 1:
-            print(f"🖼️  Epoch {epoch+1}: Saving reconstruction samples...")
-            samples_path = save_dir / f"reconstruction_epoch_{epoch+1:03d}.png"
-            save_reconstruction_samples(model, val_loader, device, str(samples_path), 
-                                       use_log_scale=config.log_scale, sample_randomly=True)
-            print(f"✅ Epoch {epoch+1}: Reconstruction samples saved")
-        else:
-            print(f"⏭️  Epoch {epoch+1}: Skipping reconstruction samples (interval={config.reconstruction_interval})")
-        
-        # Update scheduler
-        print(f"⚙️  Epoch {epoch+1}: Updating scheduler...")
-        if scheduler:
-            scheduler.step()
-        print(f"✅ Epoch {epoch+1}: Scheduler updated")
-        
-        # Record losses
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-        
-        # Log to TensorBoard
-        print(f"📊 Epoch {epoch+1}: Logging to TensorBoard...")
-        
-        # Loss metrics
-        writer.add_scalar('Loss/Train', train_loss, epoch)
-        writer.add_scalar('Loss/Validation', val_loss, epoch)
-        writer.add_scalar('Loss/BestValidation', best_val_loss, epoch)
-        
-        # Learning rate
-        writer.add_scalar('Training/LearningRate', optimizer.param_groups[0]['lr'], epoch)
-        
-        # Model weights histograms (every 5 epochs to avoid overhead)
-        if epoch % 5 == 0:
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    writer.add_histogram(f'Weights/{name}', param.data, epoch)
-                    if param.grad is not None:
-                        writer.add_histogram(f'Gradients/{name}', param.grad, epoch)
-        
-        # Log reconstruction images (sample from validation set)
-        if ((epoch + 1) % config.reconstruction_interval == 0 or epoch == config.num_epochs - 1):
-            model.eval()
-            with torch.no_grad():
-                # Get a batch from validation loader
-                val_batch = next(iter(val_loader))
-                val_images, _ = val_batch
-                val_images = val_images[:8].to(device)  # Take first 8 images
-                
-                # Get reconstructions
-                if hasattr(model, 'forward') and len(model.forward.__code__.co_varnames) > 2:
-                    reconstructions, _ = model(val_images)
-                else:
-                    reconstructions = model(val_images)
-                
-                # Compute residuals
-                residuals = torch.abs(val_images - reconstructions)
-                
-                # Normalize images to [0, 1] for TensorBoard display
-                val_images_norm = normalize_for_display(val_images)
-                reconstructions_norm = normalize_for_display(reconstructions)
-                residuals_norm = normalize_for_display(residuals)
-                
-                # Log images to TensorBoard
-                writer.add_images('Validation/Original', val_images_norm, epoch)
-                writer.add_images('Validation/Reconstructed', reconstructions_norm, epoch)
-                writer.add_images('Validation/Residuals', residuals_norm, epoch)
-                
-                # Log statistics (use unnormalized values for meaningful metrics)
-                writer.add_scalar('Validation/MeanResidual', residuals.mean().item(), epoch)
-                writer.add_scalar('Validation/MaxResidual', residuals.max().item(), epoch)
-                writer.add_scalar('Validation/StdResidual', residuals.std().item(), epoch)
-        
-        # Flush writer to ensure data is written
-        writer.flush()
-        
-        print(f"✅ Epoch {epoch+1}: TensorBoard logging complete")
-        
-        # Print progress
-        epoch_time = time.time() - epoch_start_time
-        print(f"Epoch {epoch+1:3d}/{config.num_epochs} | "
-              f"Train Loss: {train_loss:.6f} | "
-              f"Val Loss: {val_loss:.6f} | "
-              f"Time: {epoch_time:.1f}s")
-        
-        # Save best model
-        is_best = val_loss < best_val_loss
-        if is_best:
-            best_val_loss = val_loss
-            print(f"  🎉 New best validation loss: {best_val_loss:.6f}")
-            # Save best checkpoint
-            best_checkpoint_path = save_dir / "autoencoder_checkpoint_best.pth"
-            save_checkpoint(model, optimizer, epoch + 1, train_loss, val_loss, 
-                          config, str(best_checkpoint_path), is_best=False)
-            print(f"💾 Epoch {epoch+1}: Saved best model checkpoint")
-        
-        # Save checkpoint periodically (but not if we just saved best)
-        should_save_periodic = (epoch + 1) % config.checkpoint_interval == 0 or epoch == config.num_epochs - 1
-        if should_save_periodic and not is_best:
-            checkpoint_path = save_dir / f"autoencoder_checkpoint_epoch_{epoch+1}.pth"
-            save_checkpoint(model, optimizer, epoch + 1, train_loss, val_loss, 
-                          config, str(checkpoint_path), is_best=False)
-            print(f"💾 Epoch {epoch+1}: Saved periodic checkpoint (interval={config.checkpoint_interval})")
-        elif not is_best:
-            print(f"💾 Epoch {epoch+1}: Skipping checkpoint (next save at epoch {((epoch + 1) // config.checkpoint_interval + 1) * config.checkpoint_interval})")
-    
-    # Save final model using model utilities
-    if config.save_model:
-        # Get the actual model (unwrap from DataParallel if needed)
-        save_model = model.module if (gpu_count > 1 and not config.no_dataparallel) else model
-        
-        # Create model ID based on config
-        model_id = f"autoencoder_{config.arch}_{timestamp}"
-        
-        # Prepare model config for reproducibility
-        model_config = {
-            'input_channels': input_channels,
-            'latent_dim': config.latent_dim,
-            'input_crop_size': config.input_crop_size
-        }
-        
-        # Prepare training info
-        training_info = {
-            'dataset_path': config.dataset_path,
-            'num_epochs': config.num_epochs,
-            'batch_size': config.batch_size,
-            'learning_rate': config.learning_rate,
-            'best_val_loss': float(best_val_loss),
-            'loss_function': config.loss_function,
-            'optimizer': config.optimizer,
-            'train_split': config.train_split,
-            'val_split': config.val_split,
-            'test_split': config.test_split,
-            'lazy_loading_used': use_lazy_loading
-        }
-        
-        # Create example input for TorchScript
-        example_input = torch.randn(1, input_channels, 
-                                   obs_shape[-2], obs_shape[-1]).to(device)
-        
-        # Save with full metadata
-        save_path = save_trained_model(
-            model=save_model,
-            model_id=model_id,
-            architecture=config.arch,
-            model_config=model_config,
-            training_info=training_info,
-            task="autoencoder",
-            save_dir=str(save_dir.parent / "saved_models"),
-            example_input=example_input
-        )
-        
-        print(f"\n💾 Model saved with full metadata:")
-        print(f"   Model ID: {model_id}")
-        print(f"   Path: {save_path}")
-        print(f"   Encoder/Decoder: Available for reuse")
-        print(f"   TorchScript: Available for deployment")
-    
-    # Test set evaluation
-    print(f"\n🧪 Evaluating on test set...")
-    test_loss = validate_epoch(model, test_loader, criterion, device)
-    print(f"📊 Test Loss: {test_loss:.6f}")
-    
-    # Log test results to TensorBoard
-    writer.add_scalar('Loss/Test', test_loss, config.num_epochs)
-    
-    # Log test set reconstructions
-    model.eval()
-    with torch.no_grad():
-        test_batch = next(iter(test_loader))
-        test_images, _ = test_batch
-        test_images = test_images[:8].to(device)
-        
-        if hasattr(model, 'forward') and len(model.forward.__code__.co_varnames) > 2:
-            test_reconstructions, test_latents = model(test_images)
-        else:
-            test_reconstructions = model(test_images)
-        
-        test_residuals = torch.abs(test_images - test_reconstructions)
-        
-        # Normalize images to [0, 1] for TensorBoard display
-        test_images_norm = normalize_for_display(test_images)
-        test_reconstructions_norm = normalize_for_display(test_reconstructions)
-        test_residuals_norm = normalize_for_display(test_residuals)
-        
-        writer.add_images('Test/Original', test_images_norm, config.num_epochs)
-        writer.add_images('Test/Reconstructed', test_reconstructions_norm, config.num_epochs)
-        writer.add_images('Test/Residuals', test_residuals_norm, config.num_epochs)
-        
-        writer.add_scalar('Test/MeanResidual', test_residuals.mean().item(), config.num_epochs)
-        writer.add_scalar('Test/MaxResidual', test_residuals.max().item(), config.num_epochs)
-    
-    # Save reconstruction samples
-    print(f"🖼️  Saving reconstruction samples...")
-    samples_path = save_dir / "reconstruction_samples.png"
-    save_reconstruction_samples(model, test_loader, device, str(samples_path), 
-                               use_log_scale=config.log_scale, sample_randomly=False)
-    
-    # Plot training curves
-    if config.plot_losses:
-        plot_path = save_dir / "training_curves.png"
-        plot_training_curves(train_losses, val_losses, str(plot_path))
-    
-    # Log final metrics summary to TensorBoard hparams
-    metric_dict = {
-        'hparam/best_val_loss': best_val_loss,
-        'hparam/final_test_loss': test_loss,
-        'hparam/final_train_loss': train_losses[-1] if train_losses else 0,
-    }
-    writer.add_hparams(hparams, metric_dict)
-    
-    # Close TensorBoard writer
-    writer.flush()
-    writer.close()
-    
-    print("\n✅ Training completed successfully!")
-    print(f"🏆 Best validation loss: {best_val_loss:.6f}")
-    print(f"📊 Final test loss: {test_loss:.6f}")
-    print(f"📁 Results saved to: {save_dir}")
-    print(f"📊 TensorBoard logs: {save_dir / 'tensorboard'}")
-    print(f"   To view: tensorboard --logdir={save_dir / 'tensorboard'}")
-    print("=" * 60)
-
-
 def train_world_model(config: WorldModelConfig):
     """Main training function for world models"""
     print("🚀 Starting World Model Training")
@@ -2234,8 +1749,11 @@ def train_world_model(config: WorldModelConfig):
     best_val_loss = float('inf')
     train_losses = []
     val_losses = []
+    epoch_times = []
     
     for epoch in range(config.num_epochs):
+        epoch_start_time = time.time()
+        
         print(f"\n{'='*60}")
         print(f"Epoch {epoch+1}/{config.num_epochs}")
         print(f"Sequence length: {config.sequence_length} steps")
@@ -2277,11 +1795,34 @@ def train_world_model(config: WorldModelConfig):
         if scheduler is not None:
             scheduler.step(val_loss)
         
+        # Calculate epoch timing and ETA
+        epoch_time = time.time() - epoch_start_time
+        epoch_times.append(epoch_time)
+        
+        avg_epoch_time = np.mean(epoch_times)
+        remaining_epochs = config.num_epochs - (epoch + 1)
+        eta_seconds = remaining_epochs * avg_epoch_time
+        eta_hours = eta_seconds / 3600
+        
+        # Log timing metrics to TensorBoard
+        writer.add_scalar('Timing/Epoch_Time_Seconds', epoch_time, epoch)
+        writer.add_scalar('Timing/Epoch_Time_Minutes', epoch_time / 60, epoch)
+        writer.add_scalar('Timing/Average_Epoch_Time_Minutes', avg_epoch_time / 60, epoch)
+        writer.add_scalar('Timing/ETA_Hours', eta_hours, epoch)
+        
         # Print epoch summary
+        if eta_hours >= 1:
+            eta_str = f"{eta_hours:.1f}h"
+        elif eta_hours * 60 >= 1:
+            eta_str = f"{eta_hours * 60:.1f}m"
+        else:
+            eta_str = f"{eta_seconds:.0f}s"
+        
         print(f"\n📊 Epoch {epoch+1}/{config.num_epochs} Summary:")
         print(f"   Train Loss: {train_loss:.6f}")
         print(f"   Val Loss: {val_loss:.6f}")
         print(f"   Best Val Loss: {best_val_loss:.6f} (Epoch {val_losses.index(min(val_losses)) + 1})")
+        print(f"   Epoch Time: {epoch_time/60:.2f}m | Avg: {avg_epoch_time/60:.2f}m | ETA: {eta_str}")
         print(f"   Sequences per epoch: {len(train_loader) * config.batch_size}")
         print(f"   Total timesteps per epoch: {len(train_loader) * config.batch_size * config.sequence_length}")
         
