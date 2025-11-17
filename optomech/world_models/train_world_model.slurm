@@ -7,7 +7,7 @@
 #SBATCH --output=./wm_training.out
 #SBATCH --error=./wm_training.err
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=8-00:00:00             # Maximum runtime (5 days)
+#SBATCH --time=5-00:00:00             # Maximum runtime (5 days)
 
 
 
