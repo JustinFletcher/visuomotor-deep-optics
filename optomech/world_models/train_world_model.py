@@ -1239,12 +1239,21 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
             next_obs_cropped = center_crop_transform(next_obs_flat, target_size)
             next_obs = next_obs_cropped.reshape(batch_size, seq_len, *next_obs_cropped.shape[1:])
         
-        # Take first sequence from batch
+        # Move to CPU immediately and delete GPU tensors
         obs_seq = obs[0].cpu()  # [seq_len, C, H, W]
         actions_seq = actions[0].cpu()  # [seq_len, action_dim]
         next_obs_seq = next_obs[0].cpu()  # [seq_len, C, H, W]
         pred_seq = next_obs_pred[0].cpu()  # [seq_len, C, H, W]
         lstm_out_seq = lstm_out[0].cpu()  # [seq_len, hidden_dim] - use lstm output instead of hidden state
+        
+        # Delete large GPU tensors immediately
+        del obs, actions, next_obs, obs_flat, latent_flat, latent, hidden, lstm_out
+        del state, action_encoded, fused, fused_flat, next_obs_pred_flat, next_obs_pred
+        if 'obs_cropped' in locals():
+            del obs_cropped
+        if 'next_obs_cropped' in locals():
+            del next_obs_cropped
+        torch.cuda.empty_cache()
         
         # Compute residuals
         residuals = torch.abs(next_obs_seq - pred_seq)
