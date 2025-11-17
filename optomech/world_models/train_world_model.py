@@ -944,6 +944,9 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device):
     for batch_idx, (obs, actions, next_obs) in enumerate(train_loader):
         batch_start = time.time()
         
+        # Zero gradients before forward pass
+        optimizer.zero_grad()
+        
         # Print progress every 100 batches
         if batch_idx % 100 == 0 and batch_idx > 0:
             avg_batch_time = np.mean(batch_times[-100:])
@@ -2222,9 +2225,14 @@ def train_world_model(config: WorldModelConfig):
         val_loss = validate_world_model_epoch(model, val_loader, criterion, device)
         val_losses.append(val_loss)
         
-        # Visualize world model predictions
-        print(f"🎨 Creating world model prediction visualization...")
-        visualize_world_model_predictions(model, val_loader, device, writer, epoch, num_timesteps=4)
+        # Visualize world model predictions (only on certain epochs to save memory)
+        if (epoch + 1) % config.reconstruction_interval == 0:
+            print(f"🎨 Creating world model prediction visualization...")
+            try:
+                visualize_world_model_predictions(model, val_loader, device, writer, epoch, num_timesteps=4)
+            except Exception as e:
+                print(f"⚠️  Visualization failed: {e}")
+                print(f"   Continuing training without visualization...")
         
         # Log to TensorBoard
         writer.add_scalar('Loss/Train', train_loss, epoch)
