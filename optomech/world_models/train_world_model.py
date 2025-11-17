@@ -2230,7 +2230,7 @@ def train_world_model(config: WorldModelConfig):
         print(f"\n📊 Epoch {epoch+1}/{config.num_epochs} Summary:")
         print(f"   Train Loss: {train_loss:.6f}")
         print(f"   Val Loss: {val_loss:.6f}")
-        print(f"   Best Val Loss: {best_val_loss:.6f} (Epoch {train_losses.index(min(val_losses)) + 1})")
+        print(f"   Best Val Loss: {best_val_loss:.6f} (Epoch {val_losses.index(min(val_losses)) + 1})")
         print(f"   Sequences per epoch: {len(train_loader) * config.batch_size}")
         print(f"   Total timesteps per epoch: {len(train_loader) * config.batch_size * config.sequence_length}")
         
