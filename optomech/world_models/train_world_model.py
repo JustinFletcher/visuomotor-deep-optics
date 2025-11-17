@@ -30,6 +30,9 @@ from typing import List, Tuple, Dict, Optional, Union
 from dataclasses import dataclass
 import pickle
 
+# Set CUDA memory allocator config to reduce fragmentation
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -1035,6 +1038,11 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device):
             print(f"✅ Batch {batch_idx}: Optimizer step complete in {opt_time:.3f}s")
         
         running_loss += loss.item()
+        
+        # Explicitly delete tensors and clear cache to prevent memory buildup
+        del obs, actions, next_obs, next_obs_pred, latent, loss
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
         
         batch_time = time.time() - batch_start
         batch_times.append(batch_time)
