@@ -1254,33 +1254,40 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
         global_vmin = all_obs_data.min().item()
         global_vmax = all_obs_data.max().item()
         
-        # Create figure: 6 rows (obs, action, hidden, target, pred, residual) × num_timesteps columns
+        # Create figure: 6 rows (residual, obs, action, hidden, target, pred) × num_timesteps columns
         fig, axes = plt.subplots(6, num_timesteps, figsize=(4*num_timesteps, 24))
         fig.suptitle(f'World Model Predictions - Epoch {epoch+1}', fontsize=16, fontweight='bold')
         
         for t in range(num_timesteps):
             col = t
             
-            # Row 0: Input observation
-            obs_img = obs_seq[t, 0].numpy()  # [H, W]
-            im0 = axes[0, col].imshow(obs_img, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
-            axes[0, col].set_title(f'Step {t+1}\nInput Obs', fontsize=10)
+            # Row 0: Residual (FIRST for quick assessment)
+            residual_img = residuals[t, 0].numpy()
+            im0 = axes[0, col].imshow(residual_img, cmap='hot', vmin=0, vmax=residual_img.max())
+            axes[0, col].set_title(f'Step {t+1}\nResidual (MAE={residual_img.mean():.6f})', fontsize=10)
             axes[0, col].axis('off')
             plt.colorbar(im0, ax=axes[0, col], fraction=0.046)
             
-            # Row 1: Action vector (as heatmap)
+            # Row 1: Input observation
+            obs_img = obs_seq[t, 0].numpy()  # [H, W]
+            im1 = axes[1, col].imshow(obs_img, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
+            axes[1, col].set_title('Input Obs', fontsize=10)
+            axes[1, col].axis('off')
+            plt.colorbar(im1, ax=axes[1, col], fraction=0.046)
+            
+            # Row 2: Action vector (as heatmap)
             action_vec = actions_seq[t].numpy()
             # Reshape to match hidden state width for consistent visualization
             action_size = len(action_vec)
             # Create a 1D horizontal bar visualization with same width as hidden state
             action_2d = action_vec.reshape(1, -1)  # [1, action_dim]
             
-            im1 = axes[1, col].imshow(action_2d, cmap='coolwarm', aspect='auto', vmin=-1, vmax=1)
-            axes[1, col].set_title(f'Action ({action_size} dims)', fontsize=10)
-            axes[1, col].axis('off')
-            plt.colorbar(im1, ax=axes[1, col], fraction=0.046)
+            im2 = axes[2, col].imshow(action_2d, cmap='coolwarm', aspect='auto', vmin=-1, vmax=1)
+            axes[2, col].set_title(f'Action ({action_size} dims)', fontsize=10)
+            axes[2, col].axis('off')
+            plt.colorbar(im2, ax=axes[2, col], fraction=0.046)
             
-            # Row 2: Hidden state (as heatmap)
+            # Row 3: Hidden state (as heatmap)
             if lstm_out_seq is not None:
                 hidden_vec = lstm_out_seq[t].numpy()
                 # Flatten if multi-dimensional (e.g., from multi-layer or bidirectional LSTM)
@@ -1296,32 +1303,25 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
                 # Truncate to exact size needed for reshape
                 hidden_2d = hidden_vec[:h_rows*h_cols].reshape(h_rows, h_cols)
                 
-                im2 = axes[2, col].imshow(hidden_2d, cmap='coolwarm', aspect='auto')
-                axes[2, col].set_title(f'Hidden State ({h_rows}x{h_cols})', fontsize=10)
-                axes[2, col].axis('off')
-                plt.colorbar(im2, ax=axes[2, col], fraction=0.046)
+                im3 = axes[3, col].imshow(hidden_2d, cmap='coolwarm', aspect='auto')
+                axes[3, col].set_title(f'Hidden State ({h_rows}x{h_cols})', fontsize=10)
+                axes[3, col].axis('off')
+                plt.colorbar(im3, ax=axes[3, col], fraction=0.046)
             else:
-                axes[2, col].text(0.5, 0.5, 'No hidden\nstate', ha='center', va='center')
-                axes[2, col].axis('off')
+                axes[3, col].text(0.5, 0.5, 'No hidden\nstate', ha='center', va='center')
+                axes[3, col].axis('off')
             
-            # Row 3: Target next observation
+            # Row 4: Target next observation
             target_img = next_obs_seq[t, 0].numpy()
-            im3 = axes[3, col].imshow(target_img, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
-            axes[3, col].set_title('Target Next Obs', fontsize=10)
-            axes[3, col].axis('off')
-            plt.colorbar(im3, ax=axes[3, col], fraction=0.046)
-            
-            # Row 4: Model prediction
-            pred_img = pred_seq[t, 0].numpy()
-            im4 = axes[4, col].imshow(pred_img, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
-            axes[4, col].set_title('Prediction', fontsize=10)
+            im4 = axes[4, col].imshow(target_img, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
+            axes[4, col].set_title('Target Next Obs', fontsize=10)
             axes[4, col].axis('off')
             plt.colorbar(im4, ax=axes[4, col], fraction=0.046)
             
-            # Row 5: Residual
-            residual_img = residuals[t, 0].numpy()
-            im5 = axes[5, col].imshow(residual_img, cmap='hot', vmin=0, vmax=residual_img.max())
-            axes[5, col].set_title(f'Residual\n(MAE={residual_img.mean():.6f})', fontsize=10)
+            # Row 5: Model prediction
+            pred_img = pred_seq[t, 0].numpy()
+            im5 = axes[5, col].imshow(pred_img, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
+            axes[5, col].set_title('Prediction', fontsize=10)
             axes[5, col].axis('off')
             plt.colorbar(im5, ax=axes[5, col], fraction=0.046)
         
@@ -2201,6 +2201,8 @@ def train_world_model(config: WorldModelConfig):
     for epoch in range(config.num_epochs):
         print(f"\n{'='*60}")
         print(f"Epoch {epoch+1}/{config.num_epochs}")
+        print(f"Sequence length: {config.sequence_length} steps")
+        print(f"Learning rate: {optimizer.param_groups[0]['lr']:.6f}")
         print(f"{'='*60}")
         
         # Training
@@ -2223,6 +2225,14 @@ def train_world_model(config: WorldModelConfig):
         # Update learning rate
         if scheduler is not None:
             scheduler.step()
+        
+        # Print epoch summary
+        print(f"\n📊 Epoch {epoch+1}/{config.num_epochs} Summary:")
+        print(f"   Train Loss: {train_loss:.6f}")
+        print(f"   Val Loss: {val_loss:.6f}")
+        print(f"   Best Val Loss: {best_val_loss:.6f} (Epoch {train_losses.index(min(val_losses)) + 1})")
+        print(f"   Sequences per epoch: {len(train_loader) * config.batch_size}")
+        print(f"   Total timesteps per epoch: {len(train_loader) * config.batch_size * config.sequence_length}")
         
         # Save best model
         if val_loss < best_val_loss:
