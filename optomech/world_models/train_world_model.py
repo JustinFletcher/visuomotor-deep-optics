@@ -988,6 +988,9 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device):
         if next_obs_pred.shape != next_obs.shape:
             # Need to crop next_obs to match prediction size
             from models.models import center_crop_transform
+            if batch_idx == 0:
+                print(f"   Target shape mismatch detected: pred={next_obs_pred.shape}, target={next_obs.shape}")
+            
             batch_size, seq_len = next_obs.shape[0], next_obs.shape[1]
             next_obs_flat = next_obs.reshape(batch_size * seq_len, *next_obs.shape[2:])
             target_size = next_obs_pred.shape[-1]  # Assuming square images
@@ -995,7 +998,8 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device):
             next_obs = next_obs_cropped.reshape(batch_size, seq_len, *next_obs_cropped.shape[1:])
             
             if batch_idx == 0:
-                print(f"   Cropped target from {next_obs_flat.shape} to {next_obs_cropped.shape}")
+                print(f"   Cropped target: {next_obs.shape[2:]} → {next_obs_pred.shape[2:]} (center crop)")
+                print(f"   Final target shape matches prediction: {next_obs.shape}")
         
         # Compute prediction loss
         if batch_idx == 0:
@@ -1133,6 +1137,9 @@ def validate_world_model_epoch(model, val_loader, criterion, device):
             # Match target size to prediction size (in case encoder crops the input)
             if next_obs_pred.shape != next_obs.shape:
                 from models.models import center_crop_transform
+                if batch_idx == 0:
+                    print(f"   Target shape mismatch detected: pred={next_obs_pred.shape}, target={next_obs.shape}")
+                
                 batch_size, seq_len = next_obs.shape[0], next_obs.shape[1]
                 next_obs_flat = next_obs.reshape(batch_size * seq_len, *next_obs.shape[2:])
                 target_size = next_obs_pred.shape[-1]
@@ -1140,7 +1147,8 @@ def validate_world_model_epoch(model, val_loader, criterion, device):
                 next_obs = next_obs_cropped.reshape(batch_size, seq_len, *next_obs_cropped.shape[1:])
                 
                 if batch_idx == 0:
-                    print(f"   Cropped target to match prediction size: {next_obs.shape}")
+                    print(f"   Cropped target: {next_obs.shape[2:]} → {next_obs_pred.shape[2:]} (center crop)")
+                    print(f"   Final target shape matches prediction: {next_obs.shape}")
             
             # Compute loss
             if batch_idx == 0:
@@ -1158,6 +1166,180 @@ def validate_world_model_epoch(model, val_loader, criterion, device):
     print(f"🏁 Validation complete in {val_time/60:.2f} minutes")
     print(f"   Average loss: {avg_loss:.6f}")
     return avg_loss
+
+
+def visualize_world_model_predictions(model, val_loader, device, writer, epoch, num_timesteps=4):
+    """
+    Visualize world model predictions for debugging.
+    
+    Shows 4 timesteps from a sequence, each column containing:
+    - Input observation
+    - Action vector (as text)
+    - Hidden state (as heatmap)
+    - Target next observation
+    - Model prediction
+    - Residual (target - prediction)
+    
+    Args:
+        model: World model
+        val_loader: Validation data loader
+        device: Device to run on
+        writer: TensorBoard writer
+        epoch: Current epoch number
+        num_timesteps: Number of timesteps to visualize (default: 4)
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from models.models import center_crop_transform
+    
+    model.eval()
+    
+    with torch.no_grad():
+        # Get first batch from validation set
+        obs, actions, next_obs = next(iter(val_loader))
+        obs = obs.to(device)
+        actions = actions.to(device)
+        next_obs = next_obs.to(device)
+        
+        # Get predictions - we need to manually call forward to get lstm_out
+        batch_size, seq_len = obs.shape[0], obs.shape[1]
+        device = obs.device
+        
+        # Encode observations
+        obs_flat = obs.reshape(batch_size * seq_len, *obs.shape[2:])
+        latent_flat = model.encoder(obs_flat)
+        latent = latent_flat.reshape(batch_size, seq_len, -1)
+        
+        # LSTM forward pass - get lstm_out for visualization
+        hidden = model.get_zero_hidden(batch_size, device)
+        lstm_out, hidden = model.lstm(latent, hidden)  # lstm_out: [batch, seq_len, hidden_dim]
+        
+        # Rest of forward pass
+        state = model.state_projection(lstm_out)
+        action_encoded = model.action_encoder(actions)
+        fused = state + action_encoded
+        fused_flat = fused.reshape(batch_size * seq_len, -1)
+        next_obs_pred_flat = model.decoder(fused_flat)
+        decoder_output_shape = next_obs_pred_flat.shape[1:]
+        next_obs_pred = next_obs_pred_flat.reshape(batch_size, seq_len, *decoder_output_shape)
+        
+        # Crop observations and targets to match predictions if needed
+        if next_obs_pred.shape != next_obs.shape:
+            batch_size, seq_len = next_obs.shape[0], next_obs.shape[1]
+            target_size = next_obs_pred.shape[-1]
+            
+            # Crop input observations
+            obs_flat = obs.reshape(batch_size * seq_len, *obs.shape[2:])
+            obs_cropped = center_crop_transform(obs_flat, target_size)
+            obs = obs_cropped.reshape(batch_size, seq_len, *obs_cropped.shape[1:])
+            
+            # Crop target observations
+            next_obs_flat = next_obs.reshape(batch_size * seq_len, *next_obs.shape[2:])
+            next_obs_cropped = center_crop_transform(next_obs_flat, target_size)
+            next_obs = next_obs_cropped.reshape(batch_size, seq_len, *next_obs_cropped.shape[1:])
+        
+        # Take first sequence from batch
+        obs_seq = obs[0].cpu()  # [seq_len, C, H, W]
+        actions_seq = actions[0].cpu()  # [seq_len, action_dim]
+        next_obs_seq = next_obs[0].cpu()  # [seq_len, C, H, W]
+        pred_seq = next_obs_pred[0].cpu()  # [seq_len, C, H, W]
+        lstm_out_seq = lstm_out[0].cpu()  # [seq_len, hidden_dim] - use lstm output instead of hidden state
+        
+        # Compute residuals
+        residuals = torch.abs(next_obs_seq - pred_seq)
+        
+        # Compute global min/max for consistent scaling across all observation images
+        all_obs_data = torch.cat([obs_seq, next_obs_seq, pred_seq], dim=0)
+        global_vmin = all_obs_data.min().item()
+        global_vmax = all_obs_data.max().item()
+        
+        # Create figure: 6 rows (obs, action, hidden, target, pred, residual) × num_timesteps columns
+        fig, axes = plt.subplots(6, num_timesteps, figsize=(4*num_timesteps, 24))
+        fig.suptitle(f'World Model Predictions - Epoch {epoch+1}', fontsize=16, fontweight='bold')
+        
+        for t in range(num_timesteps):
+            col = t
+            
+            # Row 0: Input observation
+            obs_img = obs_seq[t, 0].numpy()  # [H, W]
+            im0 = axes[0, col].imshow(obs_img, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
+            axes[0, col].set_title(f'Step {t+1}\nInput Obs', fontsize=10)
+            axes[0, col].axis('off')
+            plt.colorbar(im0, ax=axes[0, col], fraction=0.046)
+            
+            # Row 1: Action vector (as heatmap)
+            action_vec = actions_seq[t].numpy()
+            # Reshape to match hidden state width for consistent visualization
+            action_size = len(action_vec)
+            # Create a 1D horizontal bar visualization with same width as hidden state
+            action_2d = action_vec.reshape(1, -1)  # [1, action_dim]
+            
+            im1 = axes[1, col].imshow(action_2d, cmap='coolwarm', aspect='auto', vmin=-1, vmax=1)
+            axes[1, col].set_title(f'Action ({action_size} dims)', fontsize=10)
+            axes[1, col].axis('off')
+            plt.colorbar(im1, ax=axes[1, col], fraction=0.046)
+            
+            # Row 2: Hidden state (as heatmap)
+            if lstm_out_seq is not None:
+                hidden_vec = lstm_out_seq[t].numpy()
+                # Flatten if multi-dimensional (e.g., from multi-layer or bidirectional LSTM)
+                if hidden_vec.ndim > 1:
+                    hidden_vec = hidden_vec.flatten()
+                # Reshape hidden state into 2D for visualization
+                hidden_size = len(hidden_vec)
+                # Find factors close to square root for better visualization
+                h_rows = int(np.sqrt(hidden_size))
+                while hidden_size % h_rows != 0 and h_rows > 1:
+                    h_rows -= 1
+                h_cols = hidden_size // h_rows
+                # Truncate to exact size needed for reshape
+                hidden_2d = hidden_vec[:h_rows*h_cols].reshape(h_rows, h_cols)
+                
+                im2 = axes[2, col].imshow(hidden_2d, cmap='coolwarm', aspect='auto')
+                axes[2, col].set_title(f'Hidden State ({h_rows}x{h_cols})', fontsize=10)
+                axes[2, col].axis('off')
+                plt.colorbar(im2, ax=axes[2, col], fraction=0.046)
+            else:
+                axes[2, col].text(0.5, 0.5, 'No hidden\nstate', ha='center', va='center')
+                axes[2, col].axis('off')
+            
+            # Row 3: Target next observation
+            target_img = next_obs_seq[t, 0].numpy()
+            im3 = axes[3, col].imshow(target_img, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
+            axes[3, col].set_title('Target Next Obs', fontsize=10)
+            axes[3, col].axis('off')
+            plt.colorbar(im3, ax=axes[3, col], fraction=0.046)
+            
+            # Row 4: Model prediction
+            pred_img = pred_seq[t, 0].numpy()
+            im4 = axes[4, col].imshow(pred_img, cmap='viridis', vmin=global_vmin, vmax=global_vmax)
+            axes[4, col].set_title('Prediction', fontsize=10)
+            axes[4, col].axis('off')
+            plt.colorbar(im4, ax=axes[4, col], fraction=0.046)
+            
+            # Row 5: Residual
+            residual_img = residuals[t, 0].numpy()
+            im5 = axes[5, col].imshow(residual_img, cmap='hot', vmin=0, vmax=residual_img.max())
+            axes[5, col].set_title(f'Residual\n(MAE={residual_img.mean():.6f})', fontsize=10)
+            axes[5, col].axis('off')
+            plt.colorbar(im5, ax=axes[5, col], fraction=0.046)
+        
+        plt.tight_layout()
+        
+        # Convert plot to image and log to TensorBoard
+        fig.canvas.draw()
+        # Use buffer_rgba() for compatibility with Mac backend
+        img_array = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        img_array = img_array.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+        # Remove alpha channel to get RGB
+        img_array = img_array[:, :, :3]
+        
+        # Convert to tensor [C, H, W] format for TensorBoard
+        img_tensor = torch.from_numpy(img_array).permute(2, 0, 1)
+        writer.add_image('Validation/WorldModelPredictions', img_tensor, epoch)
+        
+        plt.close(fig)
+        print(f"📊 Saved world model prediction visualization to TensorBoard")
 
 
 def save_reconstruction_samples(model, test_loader, device, save_path, num_samples=4, use_log_scale=False, sample_randomly=True):
@@ -2027,6 +2209,10 @@ def train_world_model(config: WorldModelConfig):
         # Validation
         val_loss = validate_world_model_epoch(model, val_loader, criterion, device)
         val_losses.append(val_loss)
+        
+        # Visualize world model predictions
+        print(f"🎨 Creating world model prediction visualization...")
+        visualize_world_model_predictions(model, val_loader, device, writer, epoch, num_timesteps=4)
         
         # Log to TensorBoard
         writer.add_scalar('Loss/Train', train_loss, epoch)
