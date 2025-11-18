@@ -1732,6 +1732,113 @@ def train_world_model(config: WorldModelConfig):
     print(f"📁 Results directory: {save_dir}")
     print(f"📊 TensorBoard: tensorboard --logdir=runs")
     
+    # Save model summary to file
+    print(f"\n💾 Saving model summary and configuration...")
+    summary_file = save_dir / "model_summary.txt"
+    config_file = save_dir / "config.txt"
+    
+    # Write model summary using torchinfo
+    try:
+        # Create dummy input to get model summary
+        dummy_obs = torch.randn(config.batch_size, config.sequence_length, config.input_channels, 
+                                config.input_crop_size, config.input_crop_size).to(device)
+        dummy_action = torch.randn(config.batch_size, config.sequence_length, 4).to(device)
+        
+        with open(summary_file, 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write("WORLD MODEL ARCHITECTURE SUMMARY\n")
+            f.write("=" * 80 + "\n\n")
+            
+            # Get summary as string
+            model_summary = summary(
+                model, 
+                input_data=[dummy_obs, dummy_action],
+                verbose=0,
+                col_names=["input_size", "output_size", "num_params", "trainable"],
+                depth=4
+            )
+            f.write(str(model_summary))
+            f.write("\n\n" + "=" * 80 + "\n")
+            f.write("PARAMETER SUMMARY\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"Total parameters:      {total_params:,}\n")
+            f.write(f"Trainable parameters:  {trainable_params:,}\n")
+            f.write(f"Frozen parameters:     {total_params - trainable_params:,}\n")
+            f.write(f"Trainable percentage:  {100 * trainable_params / total_params:.2f}%\n")
+        
+        print(f"   ✅ Model summary saved to: {summary_file}")
+    except Exception as e:
+        print(f"   ⚠️  Failed to save model summary: {e}")
+    
+    # Write configuration to file
+    try:
+        with open(config_file, 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write("TRAINING CONFIGURATION\n")
+            f.write("=" * 80 + "\n\n")
+            
+            # Training settings
+            f.write("TRAINING SETTINGS:\n")
+            f.write(f"  Run name:              {config.run_name}\n")
+            f.write(f"  Batch size:            {config.batch_size}\n")
+            f.write(f"  Learning rate:         {config.learning_rate}\n")
+            f.write(f"  Number of epochs:      {config.num_epochs}\n")
+            f.write(f"  Device:                {device}\n")
+            f.write(f"  Optimizer:             {config.optimizer}\n")
+            f.write(f"  Loss function:         {config.loss_function}\n")
+            f.write(f"  Weight decay:          {config.weight_decay}\n")
+            f.write(f"  Random seed:           {config.seed}\n")
+            f.write(f"  Use AMP:               {config.use_amp}\n")
+            
+            # Scheduler settings
+            f.write(f"\nSCHEDULER SETTINGS:\n")
+            f.write(f"  Use scheduler:         {config.use_scheduler}\n")
+            if config.use_scheduler:
+                f.write(f"  Scheduler type:        ReduceLROnPlateau\n")
+                f.write(f"  Patience:              {config.scheduler_patience}\n")
+                f.write(f"  Factor:                {config.scheduler_factor}\n")
+                f.write(f"  Min LR:                {config.scheduler_min_lr}\n")
+            
+            # Model architecture
+            f.write(f"\nMODEL ARCHITECTURE:\n")
+            f.write(f"  State dim:             {config.state_dim}\n")
+            f.write(f"  Hidden dim:            {config.hidden_dim}\n")
+            f.write(f"  Num LSTM layers:       {config.num_lstm_layers}\n")
+            f.write(f"  Action hidden dim:     {config.action_hidden_dim}\n")
+            f.write(f"  Latent dim:            {config.latent_dim}\n")
+            f.write(f"  Input channels:        {config.input_channels}\n")
+            f.write(f"  Input crop size:       {config.input_crop_size}\n")
+            f.write(f"  Sequence length:       {config.sequence_length}\n")
+            f.write(f"  Freeze encoder:        {config.freeze_encoder}\n")
+            f.write(f"  Freeze decoder:        {config.freeze_decoder}\n")
+            
+            # Data settings
+            f.write(f"\nDATA SETTINGS:\n")
+            f.write(f"  Dataset path:          {config.dataset_path}\n")
+            f.write(f"  Observation key:       {config.obs_key}\n")
+            f.write(f"  Action key:            {config.action_key}\n")
+            f.write(f"  Load in memory:        {config.load_in_memory}\n")
+            f.write(f"  Log scale:             {config.log_scale}\n")
+            f.write(f"  Max examples:          {config.max_examples}\n")
+            f.write(f"  Num workers:           {config.num_workers}\n")
+            f.write(f"  Prefetch factor:       {config.prefetch_factor}\n")
+            f.write(f"  Persistent workers:    {config.persistent_workers}\n")
+            
+            # Output settings
+            f.write(f"\nOUTPUT SETTINGS:\n")
+            f.write(f"  Model save path:       {config.model_save_path}\n")
+            f.write(f"  No save:               {config.no_save}\n")
+            f.write(f"  Checkpoint interval:   {config.checkpoint_interval}\n")
+            f.write(f"  Reconstruction interval: {config.reconstruction_interval}\n")
+            
+            # Autoencoder settings
+            f.write(f"\nPRETRAINED AUTOENCODER:\n")
+            f.write(f"  Path:                  {config.pretrained_autoencoder_path}\n")
+            
+        print(f"   ✅ Configuration saved to: {config_file}")
+    except Exception as e:
+        print(f"   ⚠️  Failed to save configuration: {e}")
+    
     # Training loop
     print(f"\n🏋️  Starting training for {config.num_epochs} epochs...")
     print("=" * 60)
