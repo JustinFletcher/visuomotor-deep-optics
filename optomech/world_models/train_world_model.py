@@ -1772,14 +1772,20 @@ def train_world_model(config: WorldModelConfig):
         with open(summary_file, 'w') as f:
             f.write(model_summary_text)
         
-        # Add to TensorBoard as text (convert to markdown format)
-        # TensorBoard text uses markdown, so we need proper line breaks
-        markdown_summary = model_summary_text.replace('\n', '\n\n')
-        writer.add_text('Config/Model_Architecture', markdown_summary, global_step=0)
-        
-        print(f"   ✅ Model summary saved to: {summary_file}")
-        print(f"   ✅ Model summary added to TensorBoard (Config/Model_Architecture)")
+        # Add to TensorBoard as text (using code block for better formatting)
+        try:
+            # Format as code block for TensorBoard
+            tb_summary = f"```\n{model_summary_text}\n```"
+            writer.add_text('Model_Architecture', tb_summary, global_step=0)
+            print(f"   ✅ Model summary saved to: {summary_file}")
+            print(f"   ✅ Model summary added to TensorBoard")
+        except Exception as tb_e:
+            print(f"   ⚠️  Failed to add model summary to TensorBoard: {tb_e}")
+            print(f"   ✅ Model summary saved to file: {summary_file}")
     except Exception as e:
+        print(f"   ⚠️  Failed to generate model summary: {e}")
+        import traceback
+        traceback.print_exc()
         print(f"   ⚠️  Failed to save model summary: {e}")
     
     # Write configuration to file
@@ -1850,17 +1856,27 @@ def train_world_model(config: WorldModelConfig):
         with open(config_file, 'w') as f:
             f.write(config_text)
         
-        # Add to TensorBoard as text (convert to markdown format)
-        markdown_config = config_text.replace('\n', '\n\n')
-        writer.add_text('Config/Training_Settings', markdown_config, global_step=0)
-        
-        print(f"   ✅ Configuration saved to: {config_file}")
-        print(f"   ✅ Configuration added to TensorBoard (Config/Training_Settings)")
+        # Add to TensorBoard as text (using code block for better formatting)
+        try:
+            # Format as code block for TensorBoard
+            tb_config = f"```\n{config_text}\n```"
+            writer.add_text('Training_Configuration', tb_config, global_step=0)
+            print(f"   ✅ Configuration saved to: {config_file}")
+            print(f"   ✅ Configuration added to TensorBoard")
+        except Exception as tb_e:
+            print(f"   ⚠️  Failed to add configuration to TensorBoard: {tb_e}")
+            print(f"   ✅ Configuration saved to file: {config_file}")
     except Exception as e:
         print(f"   ⚠️  Failed to save configuration: {e}")
+        import traceback
+        traceback.print_exc()
     
-    # Flush writer to ensure text is written
-    writer.flush()
+    # Flush writer to ensure all data is written
+    try:
+        writer.flush()
+        print(f"   ✅ TensorBoard writer flushed")
+    except Exception as e:
+        print(f"   ⚠️  Failed to flush TensorBoard writer: {e}")
     
     # Training loop
     print(f"\n🏋️  Starting training for {config.num_epochs} epochs...")
