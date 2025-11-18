@@ -2087,6 +2087,15 @@ def main():
         if action.dest != 'help' and hasattr(action, 'default'):
             parser_defaults[action.dest] = action.default
     
+    # Check which arguments were actually provided on command line
+    import sys
+    provided_on_cli = set()
+    for arg in sys.argv[1:]:
+        if arg.startswith('--'):
+            # Strip -- and convert kebab-case to snake_case
+            arg_name = arg[2:].replace('-', '_')
+            provided_on_cli.add(arg_name)
+    
     # Load config from JSON file if provided
     config_dict = {}
     if args.config:
@@ -2096,18 +2105,16 @@ def main():
     
     # Helper function to get value with priority: CLI args > config file > argparse default
     def get_config_value(arg_name, default=None):
-        arg_value = getattr(args, arg_name, None)
-        parser_default = parser_defaults.get(arg_name, None)
-        
-        # If the arg value differs from parser default, it was provided on CLI (highest priority)
-        if arg_value != parser_default:
-            return arg_value
+        # If argument was explicitly provided on CLI (highest priority)
+        if arg_name in provided_on_cli:
+            return getattr(args, arg_name, default)
         
         # Config file (medium priority)
         if arg_name in config_dict:
             return config_dict[arg_name]
         
-        # Use argparse default if available, otherwise the provided default
+        # Argparse default or provided default (lowest priority)
+        arg_value = getattr(args, arg_name, None)
         if arg_value is not None:
             return arg_value
         return default
