@@ -955,116 +955,52 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device, s
         device: Device to train on
         scaler: GradScaler for mixed precision training (None to disable AMP)
     """
-    print("🚂 Starting world model training epoch...")
-    epoch_start = time.time()
     model.train()
     running_loss = 0.0
     total_batches = len(train_loader)
     use_amp = scaler is not None
     
-    print(f"📊 Training on {total_batches} batches")
-    if use_amp:
-        print(f"⚡ Using Automatic Mixed Precision (AMP)")
+    # Progress tracking
+    last_print_time = time.time()
+    print_interval = 1.0  # Print progress every second
     
-    batch_times = []
     for batch_idx, (obs, actions, next_obs) in enumerate(train_loader):
-        batch_start = time.time()
-        
         # Zero gradients before forward pass
         optimizer.zero_grad()
         
-        # Print progress every 100 batches
-        if batch_idx % 100 == 0 and batch_idx > 0:
-            avg_batch_time = np.mean(batch_times[-100:])
-            batches_remaining = total_batches - batch_idx
-            eta_seconds = avg_batch_time * batches_remaining
-            eta_minutes = eta_seconds / 60
-            print(f"  📦 Batch {batch_idx}/{total_batches} | "
-                  f"Avg Loss: {running_loss / batch_idx:.6f} | "
-                  f"Batch Time: {avg_batch_time:.3f}s | "
-                  f"ETA: {eta_minutes:.1f}m")
-        
-        if batch_idx == 0:
-            print(f"🔄 Batch {batch_idx}: Moving data to device...")
-            data_transfer_start = time.time()
-        
+        # Move data to device
         obs = obs.to(device)
         actions = actions.to(device)
         next_obs = next_obs.to(device)
         
-        if batch_idx == 0:
-            data_transfer_time = time.time() - data_transfer_start
-            print(f"✅ Batch {batch_idx}: Data moved to {device} in {data_transfer_time:.3f}s")
-            print(f"   Obs shape: {obs.shape}")
-            print(f"   Actions shape: {actions.shape}")
-            print(f"   Next obs shape: {next_obs.shape}")
-        
-        optimizer.zero_grad()
-        
         # Forward pass with BPTT (with optional AMP)
-        if batch_idx == 0:
-            print(f"➡️  Batch {batch_idx}: Forward pass (BPTT)...")
-            forward_start = time.time()
-        
-        # Use autocast for mixed precision if enabled
         if use_amp:
             with torch.cuda.amp.autocast():
                 next_obs_pred, latent, hidden = model(obs, actions)
         else:
             next_obs_pred, latent, hidden = model(obs, actions)
         
-        if batch_idx == 0:
-            forward_time = time.time() - forward_start
-            print(f"✅ Batch {batch_idx}: Forward pass complete in {forward_time:.3f}s")
-            print(f"   Predicted next obs shape: {next_obs_pred.shape}")
-            print(f"   Latent shape: {latent.shape}")
-        
         # Match target size to prediction size (in case encoder crops the input)
         if next_obs_pred.shape != next_obs.shape:
-            # Need to crop next_obs to match prediction size
             from models.models import center_crop_transform
-            if batch_idx == 0:
-                print(f"   Target shape mismatch detected: pred={next_obs_pred.shape}, target={next_obs.shape}")
-            
             batch_size, seq_len = next_obs.shape[0], next_obs.shape[1]
             next_obs_flat = next_obs.reshape(batch_size * seq_len, *next_obs.shape[2:])
-            target_size = next_obs_pred.shape[-1]  # Assuming square images
+            target_size = next_obs_pred.shape[-1]
             next_obs_cropped = center_crop_transform(next_obs_flat, target_size)
             next_obs = next_obs_cropped.reshape(batch_size, seq_len, *next_obs_cropped.shape[1:])
-            
-            if batch_idx == 0:
-                print(f"   Cropped target: {next_obs.shape[2:]} → {next_obs_pred.shape[2:]} (center crop)")
-                print(f"   Final target shape matches prediction: {next_obs.shape}")
         
         # Compute prediction loss (with optional AMP)
-        if batch_idx == 0:
-            print(f"📊 Batch {batch_idx}: Computing loss...")
-            loss_start = time.time()
-        
         if use_amp:
             with torch.cuda.amp.autocast():
                 loss = criterion(next_obs_pred, next_obs)
         else:
             loss = criterion(next_obs_pred, next_obs)
         
-        if batch_idx == 0:
-            loss_time = time.time() - loss_start
-            print(f"✅ Batch {batch_idx}: Loss computed in {loss_time:.3f}s")
-            print(f"   Loss value: {loss.item():.6f}")
-        
         # Backward pass (with optional AMP)
-        if batch_idx == 0:
-            print(f"⬅️  Batch {batch_idx}: Backward pass (BPTT)...")
-            backward_start = time.time()
-        
         if use_amp:
             scaler.scale(loss).backward()
         else:
             loss.backward()
-        
-        if batch_idx == 0:
-            backward_time = time.time() - backward_start
-            print(f"✅ Batch {batch_idx}: Backward pass complete in {backward_time:.3f}s")
         
         # Optimizer step (with optional AMP)
         if use_amp:
@@ -1073,29 +1009,36 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device, s
         else:
             optimizer.step()
         
-        if batch_idx == 0:
-            opt_time = time.time() - batch_start - data_transfer_time - forward_time - loss_time - backward_time
-            print(f"✅ Batch {batch_idx}: Optimizer step complete in {opt_time:.3f}s")
-        
         running_loss += loss.item()
+        
+        # Progress bar style printing (update every second or at milestones)
+        current_time = time.time()
+        should_print = (
+            batch_idx == 0 or  # First batch
+            batch_idx == total_batches - 1 or  # Last batch
+            (current_time - last_print_time) >= print_interval or  # Time interval
+            (batch_idx + 1) % max(1, total_batches // 10) == 0  # Every 10%
+        )
+        
+        if should_print:
+            progress = (batch_idx + 1) / total_batches
+            bar_length = 40
+            filled = int(bar_length * progress)
+            bar = '█' * filled + '░' * (bar_length - filled)
+            avg_loss = running_loss / (batch_idx + 1)
+            
+            print(f'\r🚂 Train: [{bar}] {progress*100:5.1f}% | '
+                  f'Batch {batch_idx+1}/{total_batches} | '
+                  f'Loss: {avg_loss:.6f}', end='', flush=True)
+            last_print_time = current_time
         
         # Explicitly delete tensors and clear cache to prevent memory buildup
         del obs, actions, next_obs, next_obs_pred, latent, loss
         if device.type == 'cuda':
             torch.cuda.empty_cache()
-        
-        batch_time = time.time() - batch_start
-        batch_times.append(batch_time)
-        
-        if batch_idx == 0:
-            print(f"🎯 First batch completed successfully!")
-            print(f"   Total batch time: {batch_time:.3f}s")
     
-    epoch_time = time.time() - epoch_start
+    print()  # New line after progress bar
     avg_loss = running_loss / len(train_loader)
-    print(f"🏁 Training epoch complete in {epoch_time/60:.2f} minutes")
-    print(f"   Average loss: {avg_loss:.6f}")
-    print(f"   Average batch time: {np.mean(batch_times):.3f}s")
     return avg_loss
 
 
@@ -1148,75 +1091,60 @@ def validate_epoch(model, val_loader, criterion, device):
 
 def validate_world_model_epoch(model, val_loader, criterion, device):
     """Validate world model for one epoch"""
-    print("🔍 Starting world model validation epoch...")
-    val_start = time.time()
     model.eval()
     running_loss = 0.0
     total_batches = len(val_loader)
     
-    print(f"📊 Validating on {total_batches} batches")
+    # Progress tracking
+    last_print_time = time.time()
+    print_interval = 1.0  # Print progress every second
     
     with torch.no_grad():
         for batch_idx, (obs, actions, next_obs) in enumerate(val_loader):
-            # Print progress every 100 batches
-            if batch_idx % 100 == 0 and batch_idx > 0:
-                print(f"  🔍 Validating batch {batch_idx}/{total_batches} | "
-                      f"Avg Loss: {running_loss / batch_idx:.6f}")
-            
-            if batch_idx == 0:
-                print(f"🔄 Val Batch {batch_idx}: Moving data to device...")
-            
+            # Move data to device
             obs = obs.to(device)
             actions = actions.to(device)
             next_obs = next_obs.to(device)
             
-            if batch_idx == 0:
-                print(f"✅ Val Batch {batch_idx}: Data moved to {device}")
-                print(f"   Obs shape: {obs.shape}")
-                print(f"   Actions shape: {actions.shape}")
-                print(f"   Next obs shape: {next_obs.shape}")
-            
             # Forward pass
-            if batch_idx == 0:
-                print(f"➡️  Val Batch {batch_idx}: Forward pass...")
-            
             next_obs_pred, latent, hidden = model(obs, actions)
-            
-            if batch_idx == 0:
-                print(f"✅ Val Batch {batch_idx}: Forward pass complete")
-                print(f"   Predicted next obs shape: {next_obs_pred.shape}")
             
             # Match target size to prediction size (in case encoder crops the input)
             if next_obs_pred.shape != next_obs.shape:
                 from models.models import center_crop_transform
-                if batch_idx == 0:
-                    print(f"   Target shape mismatch detected: pred={next_obs_pred.shape}, target={next_obs.shape}")
-                
                 batch_size, seq_len = next_obs.shape[0], next_obs.shape[1]
                 next_obs_flat = next_obs.reshape(batch_size * seq_len, *next_obs.shape[2:])
                 target_size = next_obs_pred.shape[-1]
                 next_obs_cropped = center_crop_transform(next_obs_flat, target_size)
                 next_obs = next_obs_cropped.reshape(batch_size, seq_len, *next_obs_cropped.shape[1:])
-                
-                if batch_idx == 0:
-                    print(f"   Cropped target: {next_obs.shape[2:]} → {next_obs_pred.shape[2:]} (center crop)")
-                    print(f"   Final target shape matches prediction: {next_obs.shape}")
             
             # Compute loss
-            if batch_idx == 0:
-                print(f"📊 Val Batch {batch_idx}: Computing loss...")
-            
             loss = criterion(next_obs_pred, next_obs)
-            
-            if batch_idx == 0:
-                print(f"✅ Val Batch {batch_idx}: Loss computed: {loss.item():.6f}")
-            
             running_loss += loss.item()
+            
+            # Progress bar style printing (update every second or at milestones)
+            current_time = time.time()
+            should_print = (
+                batch_idx == 0 or  # First batch
+                batch_idx == total_batches - 1 or  # Last batch
+                (current_time - last_print_time) >= print_interval or  # Time interval
+                (batch_idx + 1) % max(1, total_batches // 10) == 0  # Every 10%
+            )
+            
+            if should_print:
+                progress = (batch_idx + 1) / total_batches
+                bar_length = 40
+                filled = int(bar_length * progress)
+                bar = '█' * filled + '░' * (bar_length - filled)
+                avg_loss = running_loss / (batch_idx + 1)
+                
+                print(f'\r🔍 Valid: [{bar}] {progress*100:5.1f}% | '
+                      f'Batch {batch_idx+1}/{total_batches} | '
+                      f'Loss: {avg_loss:.6f}', end='', flush=True)
+                last_print_time = current_time
     
+    print()  # New line after progress bar
     avg_loss = running_loss / len(val_loader)
-    val_time = time.time() - val_start
-    print(f"🏁 Validation complete in {val_time/60:.2f} minutes")
-    print(f"   Average loss: {avg_loss:.6f}")
     return avg_loss
 
 
@@ -1728,6 +1656,16 @@ def train_world_model(config: WorldModelConfig):
     print(f"   Total parameters: {total_params:,}")
     print(f"   Trainable parameters: {trainable_params:,}")
     print(f"   Frozen parameters: {total_params - trainable_params:,}")
+    
+    # Check if there are any trainable parameters
+    if trainable_params == 0:
+        raise ValueError(
+            "❌ No trainable parameters! Cannot train model.\n"
+            "   You have frozen both encoder and decoder, leaving no parameters to train.\n"
+            "   The world model consists of: encoder (frozen) → LSTM → decoder (frozen)\n"
+            "   At least one of encoder or decoder must be trainable.\n"
+            "   Suggestion: Remove --freeze-decoder flag to train the decoder."
+        )
     
     # Setup loss function
     if config.loss_function == "mse":

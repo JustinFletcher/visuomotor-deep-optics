@@ -141,8 +141,9 @@ class WorldModel(nn.Module):
         obs_flat = obs.reshape(batch_size * seq_len, *obs.shape[2:])
         
         # Encode observations to latent space
-        with torch.set_grad_enabled(self.encoder.training and any(p.requires_grad for p in self.encoder.parameters())):
-            latent_flat = self.encoder(obs_flat)
+        # Note: Even if encoder is frozen, we still need gradients to flow through
+        # for training downstream components (LSTM, action encoder)
+        latent_flat = self.encoder(obs_flat)
         
         # Reshape back to [batch, seq_len, latent_dim]
         latent = latent_flat.reshape(batch_size, seq_len, -1)
@@ -167,8 +168,9 @@ class WorldModel(nn.Module):
         fused_flat = fused.reshape(batch_size * seq_len, -1)
         
         # Decode to predict next observations
-        with torch.set_grad_enabled(self.decoder.training and any(p.requires_grad for p in self.decoder.parameters())):
-            next_obs_pred_flat = self.decoder(fused_flat)
+        # Note: Even if decoder is frozen, we still need gradients to flow through
+        # for training upstream components (LSTM, action encoder)
+        next_obs_pred_flat = self.decoder(fused_flat)
         
         # Get the actual output shape from decoder (may differ from input due to cropping)
         decoder_output_shape = next_obs_pred_flat.shape[1:]  # [channels, height, width]
