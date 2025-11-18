@@ -1772,11 +1772,13 @@ def train_world_model(config: WorldModelConfig):
         with open(summary_file, 'w') as f:
             f.write(model_summary_text)
         
-        # Add to TensorBoard as text
-        writer.add_text('Model/Architecture_Summary', model_summary_text.replace('\n', '  \n'), 0)
+        # Add to TensorBoard as text (convert to markdown format)
+        # TensorBoard text uses markdown, so we need proper line breaks
+        markdown_summary = model_summary_text.replace('\n', '\n\n')
+        writer.add_text('Config/Model_Architecture', markdown_summary, global_step=0)
         
         print(f"   ✅ Model summary saved to: {summary_file}")
-        print(f"   ✅ Model summary added to TensorBoard")
+        print(f"   ✅ Model summary added to TensorBoard (Config/Model_Architecture)")
     except Exception as e:
         print(f"   ⚠️  Failed to save model summary: {e}")
     
@@ -1848,13 +1850,17 @@ def train_world_model(config: WorldModelConfig):
         with open(config_file, 'w') as f:
             f.write(config_text)
         
-        # Add to TensorBoard as text
-        writer.add_text('Model/Training_Configuration', config_text.replace('\n', '  \n'), 0)
+        # Add to TensorBoard as text (convert to markdown format)
+        markdown_config = config_text.replace('\n', '\n\n')
+        writer.add_text('Config/Training_Settings', markdown_config, global_step=0)
         
         print(f"   ✅ Configuration saved to: {config_file}")
-        print(f"   ✅ Configuration added to TensorBoard")
+        print(f"   ✅ Configuration added to TensorBoard (Config/Training_Settings)")
     except Exception as e:
         print(f"   ⚠️  Failed to save configuration: {e}")
+    
+    # Flush writer to ensure text is written
+    writer.flush()
     
     # Training loop
     print(f"\n🏋️  Starting training for {config.num_epochs} epochs...")
