@@ -1974,6 +1974,12 @@ def main():
     
     args = parser.parse_args()
     
+    # Get the parser defaults to compare against
+    parser_defaults = {}
+    for action in parser._actions:
+        if action.dest != 'help' and hasattr(action, 'default'):
+            parser_defaults[action.dest] = action.default
+    
     # Load config from JSON file if provided
     config_dict = {}
     if args.config:
@@ -1981,37 +1987,23 @@ def main():
         config_dict = load_config_from_json(args.config)
         print(f"✅ Loaded {len(config_dict)} config values from {args.config}")
     
-    # Get list of arguments that were explicitly provided on command line
-    # Parse the command line to see what was actually passed
-    import sys
-    provided_args = set()
-    i = 1
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg.startswith('--'):
-            # Remove the '--' and convert to underscore format
-            arg_name = arg.lstrip('-').replace('-', '_')
-            provided_args.add(arg_name)
-            # Skip the next item if this argument takes a value (not a flag)
-            if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith('--'):
-                i += 2
-            else:
-                i += 1
-        else:
-            i += 1
-    
     # Helper function to get value with priority: CLI args > config file > argparse default
     def get_config_value(arg_name, default=None):
-        # Command line argument (highest priority) - only if explicitly provided
-        if arg_name in provided_args:
-            arg_value = getattr(args, arg_name, None)
-            return arg_value if arg_value is not None else default
+        arg_value = getattr(args, arg_name, None)
+        parser_default = parser_defaults.get(arg_name, None)
+        
+        # If the arg value differs from parser default, it was provided on CLI (highest priority)
+        if arg_value != parser_default:
+            return arg_value
+        
         # Config file (medium priority)
         if arg_name in config_dict:
             return config_dict[arg_name]
-        # Argparse default or provided default (lowest priority)
-        arg_value = getattr(args, arg_name, None)
-        return arg_value if arg_value is not None else default
+        
+        # Use argparse default if available, otherwise the provided default
+        if arg_value is not None:
+            return arg_value
+        return default
     
     # Validate required arguments
     if not get_config_value('dataset_path'):
