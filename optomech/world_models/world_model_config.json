@@ -27,8 +27,10 @@
   "no_save": false,
   "max_examples": null,
   "seed": 42,
-  "num_workers": 4,
+  "num_workers": 12,
   "checkpoint_interval": 10,
+  "reconstruction_interval": 10,
   "log_scale": true,
-  "load_in_memory": true
+  "load_in_memory": true,
+  "use_amp": true
 }

@@ -723,12 +723,17 @@ class WorldModelConfig:
     # Data settings
     max_examples: int = None  # Limit dataset size for debugging
     num_workers: int = 4  # DataLoader workers
+    prefetch_factor: int = 2  # Number of batches to prefetch per worker
+    persistent_workers: bool = True  # Keep workers alive between epochs
     pin_memory: bool = True  # Pin memory for GPU training
     log_scale: bool = False  # Apply log-scaling to observations
     load_in_memory: bool = False  # Load entire dataset into memory for faster training
     no_dataparallel: bool = False  # Disable DataParallel for multi-GPU training
     reconstruction_interval: int = 1  # Save reconstruction samples every N epochs
     checkpoint_interval: int = 10  # Save model checkpoints every N epochs
+    
+    # Training optimizations
+    use_amp: bool = False  # Use automatic mixed precision training
 
 
 # Keep the old config class for backwards compatibility
@@ -939,15 +944,27 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
     return avg_loss
 
 
-def train_world_model_epoch(model, train_loader, criterion, optimizer, device):
-    """Train world model for one epoch with BPTT"""
+def train_world_model_epoch(model, train_loader, criterion, optimizer, device, scaler=None):
+    """Train world model for one epoch with BPTT
+    
+    Args:
+        model: World model
+        train_loader: Training data loader
+        criterion: Loss function
+        optimizer: Optimizer
+        device: Device to train on
+        scaler: GradScaler for mixed precision training (None to disable AMP)
+    """
     print("🚂 Starting world model training epoch...")
     epoch_start = time.time()
     model.train()
     running_loss = 0.0
     total_batches = len(train_loader)
+    use_amp = scaler is not None
     
     print(f"📊 Training on {total_batches} batches")
+    if use_amp:
+        print(f"⚡ Using Automatic Mixed Precision (AMP)")
     
     batch_times = []
     for batch_idx, (obs, actions, next_obs) in enumerate(train_loader):
@@ -984,12 +1001,17 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device):
         
         optimizer.zero_grad()
         
-        # Forward pass with BPTT
+        # Forward pass with BPTT (with optional AMP)
         if batch_idx == 0:
             print(f"➡️  Batch {batch_idx}: Forward pass (BPTT)...")
             forward_start = time.time()
         
-        next_obs_pred, latent, hidden = model(obs, actions)
+        # Use autocast for mixed precision if enabled
+        if use_amp:
+            with torch.cuda.amp.autocast():
+                next_obs_pred, latent, hidden = model(obs, actions)
+        else:
+            next_obs_pred, latent, hidden = model(obs, actions)
         
         if batch_idx == 0:
             forward_time = time.time() - forward_start
@@ -1014,30 +1036,42 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device):
                 print(f"   Cropped target: {next_obs.shape[2:]} → {next_obs_pred.shape[2:]} (center crop)")
                 print(f"   Final target shape matches prediction: {next_obs.shape}")
         
-        # Compute prediction loss
+        # Compute prediction loss (with optional AMP)
         if batch_idx == 0:
             print(f"📊 Batch {batch_idx}: Computing loss...")
             loss_start = time.time()
         
-        loss = criterion(next_obs_pred, next_obs)
+        if use_amp:
+            with torch.cuda.amp.autocast():
+                loss = criterion(next_obs_pred, next_obs)
+        else:
+            loss = criterion(next_obs_pred, next_obs)
         
         if batch_idx == 0:
             loss_time = time.time() - loss_start
             print(f"✅ Batch {batch_idx}: Loss computed in {loss_time:.3f}s")
             print(f"   Loss value: {loss.item():.6f}")
         
-        # Backward pass
+        # Backward pass (with optional AMP)
         if batch_idx == 0:
             print(f"⬅️  Batch {batch_idx}: Backward pass (BPTT)...")
             backward_start = time.time()
         
-        loss.backward()
+        if use_amp:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
         
         if batch_idx == 0:
             backward_time = time.time() - backward_start
             print(f"✅ Batch {batch_idx}: Backward pass complete in {backward_time:.3f}s")
         
-        optimizer.step()
+        # Optimizer step (with optional AMP)
+        if use_amp:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         
         if batch_idx == 0:
             opt_time = time.time() - batch_start - data_transfer_time - forward_time - loss_time - backward_time
@@ -1625,14 +1659,16 @@ def train_world_model(config: WorldModelConfig):
     
     print(f"📊 Dataset splits: Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
     
-    # Create data loaders with custom collate function
+    # Create data loaders with custom collate function and optimized settings
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
         shuffle=True,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory and device.type == 'cuda',
-        collate_fn=collate_sequences
+        collate_fn=collate_sequences,
+        prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
+        persistent_workers=config.persistent_workers if config.num_workers > 0 else False
     )
     
     val_loader = DataLoader(
@@ -1641,7 +1677,9 @@ def train_world_model(config: WorldModelConfig):
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory and device.type == 'cuda',
-        collate_fn=collate_sequences
+        collate_fn=collate_sequences,
+        prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
+        persistent_workers=config.persistent_workers if config.num_workers > 0 else False
     )
     
     test_loader = DataLoader(
@@ -1650,7 +1688,9 @@ def train_world_model(config: WorldModelConfig):
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory and device.type == 'cuda',
-        collate_fn=collate_sequences
+        collate_fn=collate_sequences,
+        prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
+        persistent_workers=config.persistent_workers if config.num_workers > 0 else False
     )
     
     # Infer action_dim from the first batch
@@ -1733,6 +1773,18 @@ def train_world_model(config: WorldModelConfig):
     else:
         print(f"📉 Learning Rate Scheduler: None (constant LR)")
     
+    # Setup Automatic Mixed Precision (AMP)
+    scaler = None
+    if config.use_amp and device.type == 'cuda':
+        scaler = torch.cuda.amp.GradScaler()
+        print(f"⚡ Automatic Mixed Precision (AMP): Enabled")
+        print(f"   Using torch.cuda.amp.GradScaler for gradient scaling")
+    elif config.use_amp and device.type != 'cuda':
+        print(f"⚠️  AMP requested but device is {device.type}, disabling AMP")
+        print(f"   AMP only works with CUDA devices")
+    else:
+        print(f"⚡ Automatic Mixed Precision (AMP): Disabled")
+    
     # Setup TensorBoard
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     save_dir = Path(f"runs/{config.run_name}_{timestamp}")
@@ -1761,7 +1813,7 @@ def train_world_model(config: WorldModelConfig):
         print(f"{'='*60}")
         
         # Training
-        train_loss = train_world_model_epoch(model, train_loader, criterion, optimizer, device)
+        train_loss = train_world_model_epoch(model, train_loader, criterion, optimizer, device, scaler)
         train_losses.append(train_loss)
         
         # Validation
@@ -1967,8 +2019,20 @@ def main():
     parser.add_argument("--max-examples", type=int, help="Limit dataset size for debugging")
     parser.add_argument("--seed", type=int, help="Random seed")
     parser.add_argument("--num-workers", type=int, help="DataLoader workers")
+    parser.add_argument("--prefetch-factor", type=int, default=2,
+                       help="Number of batches to prefetch per worker (default: 2)")
+    parser.add_argument("--no-persistent-workers", action="store_false", dest="persistent_workers",
+                       help="Disable persistent workers (restart workers between epochs)")
     parser.add_argument("--checkpoint-interval", type=int,
                        help="Save model checkpoints every N epochs")
+    parser.add_argument("--reconstruction-interval", type=int,
+                       help="Save reconstruction visualizations every N epochs")
+    
+    # Training optimizations
+    parser.add_argument("--use-amp", action="store_true",
+                       help="Use Automatic Mixed Precision (AMP) training")
+    parser.add_argument("--no-amp", action="store_false", dest="use_amp",
+                       help="Disable AMP training")
     
     args = parser.parse_args()
     
@@ -2028,9 +2092,13 @@ def main():
         max_examples=get_config_value('max_examples'),
         seed=get_config_value('seed', 42),
         num_workers=get_config_value('num_workers', 4),
+        prefetch_factor=get_config_value('prefetch_factor', 2),
+        persistent_workers=get_config_value('persistent_workers', True),
         checkpoint_interval=get_config_value('checkpoint_interval', 10),
+        reconstruction_interval=get_config_value('reconstruction_interval', 1),
         log_scale=get_config_value('log_scale', False),
-        load_in_memory=get_config_value('load_in_memory', False)
+        load_in_memory=get_config_value('load_in_memory', False),
+        use_amp=get_config_value('use_amp', False)
     )
     
     # Print configuration
