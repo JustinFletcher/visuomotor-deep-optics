@@ -1981,16 +1981,30 @@ def main():
         config_dict = load_config_from_json(args.config)
         print(f"✅ Loaded {len(config_dict)} config values from {args.config}")
     
-    # Helper function to get value with priority: CLI args > config file > default
+    # Get list of arguments that were explicitly provided on command line
+    # by comparing sys.argv to see what was actually passed
+    import sys
+    provided_args = set()
+    for arg in sys.argv[1:]:
+        if arg.startswith('--'):
+            # Remove the '--' and convert to underscore format
+            arg_name = arg.lstrip('-').replace('-', '_')
+            provided_args.add(arg_name)
+    
+    # Helper function to get value with priority: CLI args > config file > argparse default
     def get_config_value(arg_name, default=None):
-        # Command line argument (highest priority)
-        arg_value = getattr(args, arg_name, None)
-        if arg_value is not None:
-            return arg_value
+        # Command line argument (highest priority) - only if explicitly provided
+        if arg_name in provided_args:
+            arg_value = getattr(args, arg_name, None)
+            if arg_value is not None:
+                return arg_value
         # Config file (medium priority)
         if arg_name in config_dict:
             return config_dict[arg_name]
-        # Default (lowest priority)
+        # Argparse default or provided default (lowest priority)
+        arg_value = getattr(args, arg_name, None)
+        if arg_value is not None:
+            return arg_value
         return default
     
     # Validate required arguments
