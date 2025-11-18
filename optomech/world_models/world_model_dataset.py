@@ -102,11 +102,10 @@ class WorldModelSequenceDataset(Dataset):
                     print(f"  ⚠️  Unsupported dataset type: {self.dataset_type}")
                     continue
                 
-                # Add all valid sequence start positions for this episode
+                # Add non-overlapping sequences from this episode
                 # We need sequence_length+1 timesteps (for obs_t and obs_t+1)
-                num_sequences = max(0, episode_length - self.sequence_length)
-                
-                for start_idx in range(num_sequences):
+                # Step by sequence_length to avoid redundancy
+                for start_idx in range(0, episode_length - self.sequence_length, self.sequence_length):
                     end_idx = start_idx + self.sequence_length
                     self.sequence_indices.append((file_idx, start_idx, end_idx))
                 
@@ -281,10 +280,9 @@ class WorldModelLazyDataset(Dataset):
                     print(f"  ⚠️  Unsupported dataset type: {self.dataset_type}")
                     continue
                 
-                # Add all valid sequence start positions
-                num_sequences = max(0, episode_length - self.sequence_length)
-                
-                for start_idx in range(num_sequences):
+                # Add non-overlapping sequences from this episode
+                # Step by sequence_length to avoid redundancy
+                for start_idx in range(0, episode_length - self.sequence_length, self.sequence_length):
                     end_idx = start_idx + self.sequence_length
                     self.sequence_indices.append((file_idx, start_idx, end_idx))
                 
