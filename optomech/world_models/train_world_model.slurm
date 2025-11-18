@@ -23,6 +23,7 @@ for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
     poetry run python optomech/world_models/train_world_model.py \
+        --runs-dir /wdata/scratch/fletch/runs \
         --config optomech/world_models/world_model_config.json \
         $VARIANT &  # Run in background
 done

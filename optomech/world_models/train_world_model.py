@@ -674,6 +674,7 @@ class WorldModelConfig:
     """Configuration for world model training"""
     dataset_path: str = "datasets/sml_100k_dataset"
     run_name: str = "world_model_default"  # Name for this training run
+    runs_dir: str = "runs"  # Root directory for runs (default: ./runs)
     batch_size: int = 4
     learning_rate: float = 1e-4
     num_epochs: int = 100
@@ -1725,12 +1726,12 @@ def train_world_model(config: WorldModelConfig):
     
     # Setup TensorBoard
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    save_dir = Path(f"runs/{config.run_name}_{timestamp}")
+    save_dir = Path(config.runs_dir) / f"{config.run_name}_{timestamp}"
     save_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(save_dir))
     
     print(f"📁 Results directory: {save_dir}")
-    print(f"📊 TensorBoard: tensorboard --logdir=runs")
+    print(f"📊 TensorBoard: tensorboard --logdir={config.runs_dir}")
     
     # Save model summary to file
     print(f"\n💾 Saving model summary and configuration...")
@@ -2040,6 +2041,8 @@ def main():
     # Run settings
     parser.add_argument("--run-name", type=str, default="world_model_default",
                        help="Name for this training run (used in output directory)")
+    parser.add_argument("--runs-dir", type=str, default="runs",
+                       help="Root directory for runs (default: runs)")
     
     # Dataset settings
     parser.add_argument("--dataset-path", type=str,
@@ -2165,6 +2168,7 @@ def main():
     config = WorldModelConfig(
         dataset_path=get_value('dataset_path'),
         run_name=get_value('run_name', 'world_model_default'),
+        runs_dir=get_value('runs_dir', 'runs'),
         batch_size=get_value('batch_size', 4),
         learning_rate=get_value('learning_rate', 1e-4),
         num_epochs=get_value('num_epochs', 100),
