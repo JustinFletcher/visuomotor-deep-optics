@@ -2079,22 +2079,8 @@ def main():
     parser.add_argument("--no-amp", action="store_false", dest="use_amp",
                        help="Disable AMP training")
     
-    args = parser.parse_args()
-    
-    # Get the parser defaults to compare against
-    parser_defaults = {}
-    for action in parser._actions:
-        if action.dest != 'help' and hasattr(action, 'default'):
-            parser_defaults[action.dest] = action.default
-    
-    # Check which arguments were actually provided on command line
-    import sys
-    provided_on_cli = set()
-    for arg in sys.argv[1:]:
-        if arg.startswith('--'):
-            # Strip -- and convert kebab-case to snake_case
-            arg_name = arg[2:].replace('-', '_')
-            provided_on_cli.add(arg_name)
+    # Parse arguments but don't use defaults yet
+    args, unknown = parser.parse_known_args()
     
     # Load config from JSON file if provided
     config_dict = {}
@@ -2103,66 +2089,77 @@ def main():
         config_dict = load_config_from_json(args.config)
         print(f"✅ Loaded {len(config_dict)} config values from {args.config}")
     
-    # Helper function to get value with priority: CLI args > config file > argparse default
-    def get_config_value(arg_name, default=None):
-        # If argument was explicitly provided on CLI (highest priority)
-        if arg_name in provided_on_cli:
-            return getattr(args, arg_name, default)
+    # Build a set of which arguments were explicitly provided on command line
+    import sys
+    cli_provided = set()
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i].startswith('--'):
+            arg_name = sys.argv[i][2:].replace('-', '_')
+            cli_provided.add(arg_name)
+        i += 1
+    
+    # Helper function with correct priority: CLI > config > default
+    def get_value(arg_name, default_value=None):
+        """Get config value with priority: command line > config file > default"""
+        # 1. Command line (highest priority)
+        if arg_name in cli_provided:
+            cli_value = getattr(args, arg_name, None)
+            # For store_true/store_false actions, the value will be set even if not provided
+            # So we trust that if it's in cli_provided, we should use the args value
+            return cli_value
         
-        # Config file (medium priority)
+        # 2. Config file (medium priority)
         if arg_name in config_dict:
             return config_dict[arg_name]
         
-        # Argparse default or provided default (lowest priority)
-        arg_value = getattr(args, arg_name, None)
-        if arg_value is not None:
-            return arg_value
-        return default
+        # 3. Default value (lowest priority)
+        return default_value
     
     # Validate required arguments
-    if not get_config_value('dataset_path'):
+    if not get_value('dataset_path'):
         parser.error("--dataset-path is required (or provide via config file)")
-    if not get_config_value('pretrained_autoencoder_path'):
+    if not get_value('pretrained_autoencoder_path'):
         parser.error("--pretrained-autoencoder-path is required (or provide via config file)")
     
-    # Create config with proper priority
+    # Create config with proper priority: CLI > config file > defaults
     config = WorldModelConfig(
-        dataset_path=get_config_value('dataset_path'),
-        run_name=get_config_value('run_name', 'world_model_default'),
-        batch_size=get_config_value('batch_size', 4),
-        learning_rate=get_config_value('learning_rate', 1e-4),
-        num_epochs=get_config_value('num_epochs', 100),
-        device=get_config_value('device', 'auto'),
-        pretrained_autoencoder_path=get_config_value('pretrained_autoencoder_path'),
-        state_dim=get_config_value('state_dim', 256),
-        hidden_dim=get_config_value('hidden_dim', 512),
-        num_lstm_layers=get_config_value('num_lstm_layers', 1),
-        action_hidden_dim=get_config_value('action_hidden_dim', 128),
-        freeze_encoder=get_config_value('freeze_encoder', True),
-        freeze_decoder=get_config_value('freeze_decoder', False),
-        latent_dim=get_config_value('latent_dim', 256),
-        input_crop_size=get_config_value('input_crop_size'),
-        sequence_length=get_config_value('sequence_length', 10),
-        obs_key=get_config_value('obs_key', 'observations'),
-        action_key=get_config_value('action_key', 'sa_incremental_actions'),
-        loss_function=get_config_value('loss_function', 'mse'),
-        optimizer=get_config_value('optimizer', 'adam'),
-        use_scheduler=get_config_value('use_scheduler', True),
-        scheduler_patience=get_config_value('scheduler_patience', 50),
-        scheduler_factor=get_config_value('scheduler_factor', 0.5),
-        scheduler_min_lr=get_config_value('scheduler_min_lr', 1e-7),
-        model_save_path=get_config_value('model_save_path', 'saved_models/world_model.pth'),
-        save_model=not get_config_value('no_save', False),
-        max_examples=get_config_value('max_examples'),
-        seed=get_config_value('seed', 42),
-        num_workers=get_config_value('num_workers', 4),
-        prefetch_factor=get_config_value('prefetch_factor', 2),
-        persistent_workers=get_config_value('persistent_workers', True),
-        checkpoint_interval=get_config_value('checkpoint_interval', 10),
-        reconstruction_interval=get_config_value('reconstruction_interval', 1),
-        log_scale=get_config_value('log_scale', False),
-        load_in_memory=get_config_value('load_in_memory', False),
-        use_amp=get_config_value('use_amp', False)
+        dataset_path=get_value('dataset_path'),
+        run_name=get_value('run_name', 'world_model_default'),
+        batch_size=get_value('batch_size', 4),
+        learning_rate=get_value('learning_rate', 1e-4),
+        num_epochs=get_value('num_epochs', 100),
+        device=get_value('device', 'auto'),
+        pretrained_autoencoder_path=get_value('pretrained_autoencoder_path'),
+        state_dim=get_value('state_dim', 256),
+        hidden_dim=get_value('hidden_dim', 512),
+        num_lstm_layers=get_value('num_lstm_layers', 1),
+        action_hidden_dim=get_value('action_hidden_dim', 128),
+        freeze_encoder=get_value('freeze_encoder', False),
+        freeze_decoder=get_value('freeze_decoder', False),
+        latent_dim=get_value('latent_dim', 256),
+        input_crop_size=get_value('input_crop_size'),
+        sequence_length=get_value('sequence_length', 10),
+        obs_key=get_value('obs_key', 'observations'),
+        action_key=get_value('action_key', 'sa_incremental_actions'),
+        loss_function=get_value('loss_function', 'mse'),
+        optimizer=get_value('optimizer', 'adam'),
+        use_scheduler=get_value('use_scheduler', True),
+        scheduler_patience=get_value('scheduler_patience', 50),
+        scheduler_factor=get_value('scheduler_factor', 0.5),
+        scheduler_min_lr=get_value('scheduler_min_lr', 1e-7),
+        model_save_path=get_value('model_save_path', 'saved_models/world_model.pth'),
+        save_model=not get_value('no_save', False),
+        max_examples=get_value('max_examples'),
+        seed=get_value('seed', 42),
+        num_workers=get_value('num_workers', 4),
+        prefetch_factor=get_value('prefetch_factor', 2),
+        persistent_workers=get_value('persistent_workers', True),
+        checkpoint_interval=get_value('checkpoint_interval', 10),
+        reconstruction_interval=get_value('reconstruction_interval', 1),
+        log_scale=get_value('log_scale', False),
+        load_in_memory=get_value('load_in_memory', False),
+        use_amp=get_value('use_amp', False)
     )
     
     # Print configuration
