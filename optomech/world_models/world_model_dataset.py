@@ -57,7 +57,8 @@ class WorldModelSequenceDataset(Dataset):
         obs_key: str = 'observations',
         action_key: str = 'actions',
         load_in_memory: bool = False,
-        max_examples: int = None
+        max_examples: int = None,
+        use_multiprocessing: bool = False
     ):
         """
         Args:
@@ -69,6 +70,7 @@ class WorldModelSequenceDataset(Dataset):
             action_key: Key for actions in files
             load_in_memory: If True, preload all data into memory
             max_examples: Maximum number of sequences to use (for debugging/testing)
+            use_multiprocessing: If True, use parallel loading (faster but may have compatibility issues)
         """
         self.file_paths = file_paths
         self.dataset_type = dataset_type
@@ -78,6 +80,7 @@ class WorldModelSequenceDataset(Dataset):
         self.action_key = action_key
         self.load_in_memory = load_in_memory
         self.max_examples = max_examples
+        self.use_multiprocessing = use_multiprocessing
         
         # Build index of valid sequence start positions
         self.sequence_indices = []  # List of (file_idx, start_idx, end_idx)
@@ -145,7 +148,7 @@ class WorldModelSequenceDataset(Dataset):
         print(f"✅ Sequence index built: {len(self.sequence_indices)} sequences from {len(self.file_paths)} files")
     
     def _load_all_data(self):
-        """Load data files that are referenced in sequence indices into memory using parallel loading."""
+        """Load data files that are referenced in sequence indices into memory."""
         import time
         
         # Determine which files are actually needed
@@ -155,38 +158,71 @@ class WorldModelSequenceDataset(Dataset):
         # Prepare list of files to load
         files_to_load = [(file_idx, self.file_paths[file_idx]) for file_idx in sorted(needed_file_indices)]
         
-        # Use parallel loading for faster data loading
-        num_workers = min(cpu_count(), len(files_to_load), 16)  # Cap at 16 workers to avoid overwhelming the system
-        print(f"   Using {num_workers} parallel workers for loading...")
-        
         load_start = time.time()
         
-        # Create partial function with fixed parameters
-        load_func = partial(_load_single_file, 
-                           dataset_type=self.dataset_type,
-                           obs_key=self.obs_key,
-                           action_key=self.action_key)
-        
-        # Load files in parallel with progress updates
-        loaded_count = 0
-        print(f"   Progress: 0/{len(files_to_load)} files loaded...", end='', flush=True)
-        
-        with Pool(processes=num_workers) as pool:
-            # Use imap_unordered for progress tracking
-            for i, (file_idx, data) in enumerate(pool.starmap(load_func, files_to_load), 1):
-                if data is not None:
-                    self.data_cache[file_idx] = data
+        if self.use_multiprocessing:
+            # Use parallel loading for faster data loading
+            num_workers = min(cpu_count(), len(files_to_load), 16)  # Cap at 16 workers
+            print(f"   Using {num_workers} parallel workers for loading...")
+            
+            # Create partial function with fixed parameters
+            load_func = partial(_load_single_file, 
+                               dataset_type=self.dataset_type,
+                               obs_key=self.obs_key,
+                               action_key=self.action_key)
+            
+            # Load files in parallel with progress updates
+            loaded_count = 0
+            print(f"   Progress: 0/{len(files_to_load)} files loaded...", end='', flush=True)
+            
+            with Pool(processes=num_workers) as pool:
+                # Use imap_unordered for progress tracking
+                for i, (file_idx, data) in enumerate(pool.starmap(load_func, files_to_load), 1):
+                    if data is not None:
+                        self.data_cache[file_idx] = data
+                        loaded_count += 1
+                    
+                    # Print progress every 100 files or at 10% milestones
+                    if i % 100 == 0 or i % max(1, len(files_to_load) // 10) == 0 or i == len(files_to_load):
+                        elapsed = time.time() - load_start
+                        rate = i / elapsed if elapsed > 0 else 0
+                        eta = (len(files_to_load) - i) / rate if rate > 0 else 0
+                        print(f"\r   Progress: {i}/{len(files_to_load)} files ({100*i/len(files_to_load):.1f}%) | "
+                              f"Speed: {rate:.1f} files/s | ETA: {eta/60:.1f} min", end='', flush=True)
+            
+            print()  # New line after progress
+        else:
+            # Sequential loading (more compatible, slower)
+            print(f"   Using sequential loading (use --use-multiprocessing for faster parallel loading)...")
+            loaded_count = 0
+            
+            for i, (file_idx, file_path) in enumerate(files_to_load, 1):
+                try:
+                    if self.dataset_type == 'hdf5':
+                        with h5py.File(file_path, 'r') as f:
+                            obs = f[self.obs_key][:]
+                            actions = f[self.action_key][:]
+                    elif self.dataset_type == 'npz':
+                        data = np.load(file_path)
+                        obs = data[self.obs_key]
+                        actions = data[self.action_key]
+                    else:
+                        continue
+                    
+                    self.data_cache[file_idx] = (obs, actions)
                     loaded_count += 1
+                    
+                    # Print progress every 100 files or at 10% milestones
+                    if i % 100 == 0 or i % max(1, len(files_to_load) // 10) == 0 or i == len(files_to_load):
+                        elapsed = time.time() - load_start
+                        rate = i / elapsed if elapsed > 0 else 0
+                        eta = (len(files_to_load) - i) / rate if rate > 0 else 0
+                        print(f"   Progress: {i}/{len(files_to_load)} files ({100*i/len(files_to_load):.1f}%) | "
+                              f"Speed: {rate:.1f} files/s | ETA: {eta/60:.1f} min")
                 
-                # Print progress every 100 files or at 10% milestones
-                if i % 100 == 0 or i % max(1, len(files_to_load) // 10) == 0 or i == len(files_to_load):
-                    elapsed = time.time() - load_start
-                    rate = i / elapsed if elapsed > 0 else 0
-                    eta = (len(files_to_load) - i) / rate if rate > 0 else 0
-                    print(f"\r   Progress: {i}/{len(files_to_load)} files ({100*i/len(files_to_load):.1f}%) | "
-                          f"Speed: {rate:.1f} files/s | ETA: {eta/60:.1f} min", end='', flush=True)
+                except Exception as e:
+                    print(f"  ⚠️  Error loading {file_path}: {e}")
         
-        print()  # New line after progress
         load_time = time.time() - load_start
         
         # Calculate memory usage
