@@ -24,6 +24,7 @@ for VARIANT in "${VARIANTS[@]}"; do
     # Launch autoencoder training
     poetry run python optomech/world_models/train_world_model.py \
         --config optomech/world_models/world_model_config_overfit.json \
+        --runs-dir /wdata/scratch/fletch/runs \
         --max-examples 100 \
         --no-save \
         --freeze-encoder \
