@@ -23,9 +23,11 @@ for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
     poetry run python optomech/world_models/train_world_model.py \
-        --config optomech/world_models/world_model_config.json \
+        --config optomech/world_models/world_model_config_overfit.json \
         --max-examples 100 \
         --no-save \
+        --freeze-encoder \
+        --freeze-decoder \
         $VARIANT &  # Run in background
 done
 
