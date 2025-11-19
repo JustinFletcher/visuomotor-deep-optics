@@ -732,6 +732,7 @@ class WorldModelConfig:
     no_dataparallel: bool = False  # Disable DataParallel for multi-GPU training
     reconstruction_interval: int = 1  # Save reconstruction samples every N epochs
     checkpoint_interval: int = 10  # Save model checkpoints every N epochs
+    use_multiprocessing: bool = False  # Use parallel loading for in-memory dataset (faster but may have issues)
     
     # Training optimizations
     use_amp: bool = False  # Use automatic mixed precision training
@@ -1553,6 +1554,8 @@ def train_world_model(config: WorldModelConfig):
     if config.load_in_memory:
         # Load all data into memory for faster training
         print(f"💾 Loading dataset into memory...")
+        if config.use_multiprocessing:
+            print(f"   Multiprocessing enabled for parallel data loading")
         dataset = WorldModelSequenceDataset(
             file_paths=file_paths,
             dataset_type=dataset_type,
@@ -1561,7 +1564,8 @@ def train_world_model(config: WorldModelConfig):
             obs_key=config.obs_key,
             action_key=config.action_key,
             load_in_memory=True,
-            max_examples=config.max_examples
+            max_examples=config.max_examples,
+            use_multiprocessing=config.use_multiprocessing
         )
         print(f"✅ Dataset loaded into memory")
     else:
@@ -2110,6 +2114,8 @@ def main():
                        help="Number of batches to prefetch per worker (default: 2)")
     parser.add_argument("--no-persistent-workers", action="store_false", dest="persistent_workers",
                        help="Disable persistent workers (restart workers between epochs)")
+    parser.add_argument("--use-multiprocessing", action="store_true",
+                       help="Enable parallel data loading (8-16x faster but may have compatibility issues on some systems)")
     parser.add_argument("--checkpoint-interval", type=int,
                        help="Save model checkpoints every N epochs")
     parser.add_argument("--reconstruction-interval", type=int,
@@ -2198,6 +2204,7 @@ def main():
         num_workers=get_value('num_workers', 4),
         prefetch_factor=get_value('prefetch_factor', 2),
         persistent_workers=get_value('persistent_workers', True),
+        use_multiprocessing=get_value('use_multiprocessing', False),
         checkpoint_interval=get_value('checkpoint_interval', 10),
         reconstruction_interval=get_value('reconstruction_interval', 1),
         log_scale=get_value('log_scale', False),
