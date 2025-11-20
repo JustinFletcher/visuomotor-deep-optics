@@ -729,7 +729,7 @@ class WorldModelConfig:
     pin_memory: bool = True  # Pin memory for GPU training
     log_scale: bool = False  # Apply log-scaling to observations
     load_in_memory: bool = False  # Load entire dataset into memory for faster training
-    no_dataparallel: bool = False  # Disable DataParallel for multi-GPU training
+    use_data_parallel: bool = False  # Use DataParallel for multi-GPU training (uses all available GPUs)
     reconstruction_interval: int = 1  # Save reconstruction samples every N epochs
     checkpoint_interval: int = 10  # Save model checkpoints every N epochs
     use_multiprocessing: bool = False  # Use parallel loading for in-memory dataset (faster but may have issues)
@@ -776,7 +776,7 @@ class AutoencoderConfig:
     pin_memory: bool = True  # Pin memory for GPU training
     log_scale: bool = False  # Apply log-scaling to observations
     load_in_memory: bool = False  # Load entire dataset into memory for faster training
-    no_dataparallel: bool = False  # Disable DataParallel for multi-GPU training
+    use_data_parallel: bool = False  # Use DataParallel for multi-GPU training (uses all available GPUs)
     reconstruction_interval: int = 1  # Save reconstruction samples every N epochs
     checkpoint_interval: int = 10  # Save model checkpoints every N epochs
 
@@ -1429,9 +1429,12 @@ def plot_training_curves(train_losses, val_losses, save_path):
 
 def save_checkpoint(model, optimizer, epoch, train_loss, val_loss, config, save_path, is_best=False):
     """Save training checkpoint"""
+    # If model is wrapped in DataParallel, get the underlying model
+    model_to_save = model.module if isinstance(model, torch.nn.DataParallel) else model
+    
     checkpoint = {
         'epoch': epoch,
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': model_to_save.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'train_loss': train_loss,
         'val_loss': val_loss,
@@ -1653,6 +1656,13 @@ def train_world_model(config: WorldModelConfig):
         freeze_decoder=config.freeze_decoder
     )
     model = model.to(device)
+    
+    # Wrap model in DataParallel if requested
+    if config.use_data_parallel and torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        print(f"🔧 Using DataParallel with {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+    elif config.use_data_parallel:
+        print(f"⚠️  DataParallel requested but only {torch.cuda.device_count()} GPU(s) available - using single GPU/CPU")
     
     # Print model summary
     total_params = sum(p.numel() for p in model.parameters())
@@ -1972,10 +1982,12 @@ def train_world_model(config: WorldModelConfig):
             best_val_loss = val_loss
             print(f"🏆 New best validation loss: {best_val_loss:.6f}")
             if config.save_model:
+                # Get the underlying model if wrapped in DataParallel
+                model_to_save = model.module if isinstance(model, torch.nn.DataParallel) else model
                 checkpoint_path = save_dir / "best_model.pth"
                 torch.save({
                     'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
+                    'model_state_dict': model_to_save.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'train_loss': train_loss,
                     'val_loss': val_loss,
@@ -1985,10 +1997,12 @@ def train_world_model(config: WorldModelConfig):
         
         # Save periodic checkpoints
         if (epoch + 1) % config.checkpoint_interval == 0:
+            # Get the underlying model if wrapped in DataParallel
+            model_to_save = model.module if isinstance(model, torch.nn.DataParallel) else model
             checkpoint_path = save_dir / f"checkpoint_epoch_{epoch+1}.pth"
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': model_to_save.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': train_loss,
                 'val_loss': val_loss,
@@ -2005,9 +2019,11 @@ def train_world_model(config: WorldModelConfig):
     
     # Save final model
     if config.save_model:
+        # Get the underlying model if wrapped in DataParallel
+        model_to_save = model.module if isinstance(model, torch.nn.DataParallel) else model
         final_model_path = save_dir / "final_model.pth"
         torch.save({
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': model_to_save.state_dict(),
             'config': config,
             'best_val_loss': best_val_loss,
             'test_loss': test_loss
@@ -2061,6 +2077,8 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--num-epochs", type=int, default=100, help="Number of epochs")
     parser.add_argument("--device", type=str, default="auto", help="Device to use (auto/cuda/mps/cpu)")
+    parser.add_argument("--use-data-parallel", action="store_true",
+                       help="Use DataParallel for multi-GPU training (uses all available GPUs)")
     
     # Model settings - pretrained autoencoder
     parser.add_argument("--pretrained-autoencoder-path", type=str,
@@ -2205,6 +2223,7 @@ def main():
         prefetch_factor=get_value('prefetch_factor', 2),
         persistent_workers=get_value('persistent_workers', True),
         use_multiprocessing=get_value('use_multiprocessing', False),
+        use_data_parallel=get_value('use_data_parallel', False),
         checkpoint_interval=get_value('checkpoint_interval', 10),
         reconstruction_interval=get_value('reconstruction_interval', 1),
         log_scale=get_value('log_scale', False),
