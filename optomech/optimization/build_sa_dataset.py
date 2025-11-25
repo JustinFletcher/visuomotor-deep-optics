@@ -518,6 +518,7 @@ def build_sa_dataset(args):
         sa_incremental_actions = np.array([pair['sa_incremental_action'] for pair in sample_pairs], dtype=np.float32)
         perfect_incremental_actions = np.array([pair['perfect_incremental_action'] for pair in sample_pairs], dtype=np.float32)
         rewards = np.array([pair['reward'] for pair in sample_pairs], dtype=np.float32)
+        next_observations = np.array([pair['next_observation'] for pair in sample_pairs], dtype=np.uint16)
         temperatures = np.array([pair['temperature'] for pair in sample_pairs], dtype=np.float32)
         acceptance_deltas = np.array([pair['acceptance_delta'] for pair in sample_pairs], dtype=np.float32)
         episode_ids = [pair['episode_id'] for pair in sample_pairs]  # Keep as strings for UUID storage
@@ -540,6 +541,7 @@ def build_sa_dataset(args):
                 f.create_dataset('sa_incremental_actions', data=sa_incremental_actions, compression='gzip', compression_opts=6)
                 f.create_dataset('perfect_incremental_actions', data=perfect_incremental_actions, compression='gzip', compression_opts=6)
                 f.create_dataset('rewards', data=rewards, compression='gzip', compression_opts=6)
+                f.create_dataset('next_observations', data=next_observations, compression='gzip', compression_opts=6)
                 f.create_dataset('temperatures', data=temperatures, compression='gzip', compression_opts=6)
                 f.create_dataset('acceptance_deltas', data=acceptance_deltas, compression='gzip', compression_opts=6)
                 f.create_dataset('episode_steps', data=episode_steps, compression='gzip', compression_opts=6)
@@ -579,6 +581,7 @@ def build_sa_dataset(args):
                 sa_incremental_actions=sa_incremental_actions,
                 perfect_incremental_actions=perfect_incremental_actions,
                 rewards=rewards,
+                next_observations=next_observations,
                 temperatures=temperatures,
                 acceptance_deltas=acceptance_deltas,
                 episode_ids=np.array(episode_ids, dtype='U36'),  # 36 chars for UUID strings

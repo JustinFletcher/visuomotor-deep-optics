@@ -17,24 +17,34 @@ from multiprocessing import Pool, cpu_count
 from functools import partial
 
 
-def _load_single_file(file_idx: int, file_path: Path, dataset_type: str, obs_key: str, action_key: str) -> Tuple[int, Optional[Tuple[np.ndarray, np.ndarray]]]:
+def _load_single_file(file_idx: int, file_path: Path, dataset_type: str, obs_key: str, action_key: str) -> Tuple[int, Optional[Tuple]]:
     """
     Helper function to load a single file in parallel.
-    Returns (file_idx, (obs, actions)) or (file_idx, None) if error.
+    Returns (file_idx, (obs, actions)) or (file_idx, (obs, actions, next_obs)) or (file_idx, None) if error.
     """
     try:
         if dataset_type == 'hdf5':
             with h5py.File(file_path, 'r') as f:
                 obs = f[obs_key][:]
                 actions = f[action_key][:]
+                # Load next_observations if available (new format)
+                if 'next_observations' in f:
+                    next_obs = f['next_observations'][:]
+                    return (file_idx, (obs, actions, next_obs))
+                else:
+                    return (file_idx, (obs, actions))
         elif dataset_type == 'npz':
             data = np.load(file_path)
             obs = data[obs_key]
             actions = data[action_key]
+            # Load next_observations if available (new format)
+            if 'next_observations' in data:
+                next_obs = data['next_observations']
+                return (file_idx, (obs, actions, next_obs))
+            else:
+                return (file_idx, (obs, actions))
         else:
             return (file_idx, None)
-        
-        return (file_idx, (obs, actions))
     except Exception as e:
         print(f"  ⚠️  Error loading {file_path}: {e}")
         return (file_idx, None)
@@ -202,14 +212,25 @@ class WorldModelSequenceDataset(Dataset):
                         with h5py.File(file_path, 'r') as f:
                             obs = f[self.obs_key][:]
                             actions = f[self.action_key][:]
+                            # Load next_observations if available (new format)
+                            if 'next_observations' in f:
+                                next_obs = f['next_observations'][:]
+                                self.data_cache[file_idx] = (obs, actions, next_obs)
+                            else:
+                                self.data_cache[file_idx] = (obs, actions)
                     elif self.dataset_type == 'npz':
                         data = np.load(file_path)
                         obs = data[self.obs_key]
                         actions = data[self.action_key]
+                        # Load next_observations if available (new format)
+                        if 'next_observations' in data:
+                            next_obs = data['next_observations']
+                            self.data_cache[file_idx] = (obs, actions, next_obs)
+                        else:
+                            self.data_cache[file_idx] = (obs, actions)
                     else:
                         continue
                     
-                    self.data_cache[file_idx] = (obs, actions)
                     loaded_count += 1
                     
                     # Print progress every 100 files or at 10% milestones
@@ -227,8 +248,13 @@ class WorldModelSequenceDataset(Dataset):
         
         # Calculate memory usage
         total_memory_gb = 0
-        for obs, actions in self.data_cache.values():
-            total_memory_gb += (obs.nbytes + actions.nbytes) / (1024**3)
+        for cached_data in self.data_cache.values():
+            if len(cached_data) == 3:
+                obs, actions, next_obs = cached_data
+                total_memory_gb += (obs.nbytes + actions.nbytes + next_obs.nbytes) / (1024**3)
+            else:
+                obs, actions = cached_data
+                total_memory_gb += (obs.nbytes + actions.nbytes) / (1024**3)
         
         print(f"✅ All data loaded into memory in {load_time:.1f} seconds ({load_time/60:.1f} minutes)")
         print(f"   Loaded {loaded_count}/{len(needed_file_indices)} files successfully")
@@ -256,28 +282,51 @@ class WorldModelSequenceDataset(Dataset):
         # Load sequence data (from cache if available)
         if self.load_in_memory and file_idx in self.data_cache:
             # Use cached data - make copies to avoid shared memory issues in multiprocessing
-            obs_all, actions_all = self.data_cache[file_idx]
-            obs = obs_all[start_idx:end_idx].copy()
-            next_obs = obs_all[start_idx+1:end_idx+1].copy()
-            actions = actions_all[start_idx:end_idx].copy()
+            # Check if we have next_observations in the cache (tuple of 3) or just obs and actions (tuple of 2)
+            cached_data = self.data_cache[file_idx]
+            if len(cached_data) == 3:
+                # New format: (obs, actions, next_obs)
+                obs_all, actions_all, next_obs_all = cached_data
+                obs = obs_all[start_idx:end_idx].copy()
+                actions = actions_all[start_idx:end_idx].copy()
+                next_obs = next_obs_all[start_idx:end_idx].copy()
+            else:
+                # Old format: (obs, actions) - compute next_obs from shifted obs
+                obs_all, actions_all = cached_data
+                obs = obs_all[start_idx:end_idx].copy()
+                next_obs = obs_all[start_idx+1:end_idx+1].copy()
+                actions = actions_all[start_idx:end_idx].copy()
         else:
             # Load from disk
             file_path = self.file_paths[file_idx]
             
             if self.dataset_type == 'hdf5':
                 with h5py.File(file_path, 'r') as f:
-                    # Load obs_t (start_idx to end_idx)
-                    obs = f[self.obs_key][start_idx:end_idx]
-                    # Load obs_t+1 (start_idx+1 to end_idx+1)
-                    next_obs = f[self.obs_key][start_idx+1:end_idx+1]
-                    # Load actions (start_idx to end_idx)
-                    actions = f[self.action_key][start_idx:end_idx]
+                    # Check if next_observations field exists (new format)
+                    if 'next_observations' in f:
+                        # New format: use explicit next_observations
+                        obs = f[self.obs_key][start_idx:end_idx]
+                        actions = f[self.action_key][start_idx:end_idx]
+                        next_obs = f['next_observations'][start_idx:end_idx]
+                    else:
+                        # Old format: compute next_obs from shifted observations
+                        obs = f[self.obs_key][start_idx:end_idx]
+                        next_obs = f[self.obs_key][start_idx+1:end_idx+1]
+                        actions = f[self.action_key][start_idx:end_idx]
             
             elif self.dataset_type == 'npz':
                 data = np.load(file_path)
-                obs = data[self.obs_key][start_idx:end_idx]
-                next_obs = data[self.obs_key][start_idx+1:end_idx+1]
-                actions = data[self.action_key][start_idx:end_idx]
+                # Check if next_observations field exists (new format)
+                if 'next_observations' in data:
+                    # New format: use explicit next_observations
+                    obs = data[self.obs_key][start_idx:end_idx]
+                    actions = data[self.action_key][start_idx:end_idx]
+                    next_obs = data['next_observations'][start_idx:end_idx]
+                else:
+                    # Old format: compute next_obs from shifted observations
+                    obs = data[self.obs_key][start_idx:end_idx]
+                    next_obs = data[self.obs_key][start_idx+1:end_idx+1]
+                    actions = data[self.action_key][start_idx:end_idx]
             
             else:
                 raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
@@ -392,15 +441,31 @@ class WorldModelLazyDataset(Dataset):
         
         if self.dataset_type == 'hdf5':
             with h5py.File(file_path, 'r') as f:
-                obs = f[self.obs_key][start_idx:end_idx][:]
-                next_obs = f[self.obs_key][start_idx+1:end_idx+1][:]
-                actions = f[self.action_key][start_idx:end_idx][:]
+                # Check if next_observations field exists (new format)
+                if 'next_observations' in f:
+                    # New format: use explicit next_observations
+                    obs = f[self.obs_key][start_idx:end_idx][:]
+                    actions = f[self.action_key][start_idx:end_idx][:]
+                    next_obs = f['next_observations'][start_idx:end_idx][:]
+                else:
+                    # Old format: compute next_obs from shifted observations
+                    obs = f[self.obs_key][start_idx:end_idx][:]
+                    next_obs = f[self.obs_key][start_idx+1:end_idx+1][:]
+                    actions = f[self.action_key][start_idx:end_idx][:]
         
         elif self.dataset_type == 'npz':
             data = np.load(file_path)
-            obs = data[self.obs_key][start_idx:end_idx]
-            next_obs = data[self.obs_key][start_idx+1:end_idx+1]
-            actions = data[self.action_key][start_idx:end_idx]
+            # Check if next_observations field exists (new format)
+            if 'next_observations' in data:
+                # New format: use explicit next_observations
+                obs = data[self.obs_key][start_idx:end_idx]
+                actions = data[self.action_key][start_idx:end_idx]
+                next_obs = data['next_observations'][start_idx:end_idx]
+            else:
+                # Old format: compute next_obs from shifted observations
+                obs = data[self.obs_key][start_idx:end_idx]
+                next_obs = data[self.obs_key][start_idx+1:end_idx+1]
+                actions = data[self.action_key][start_idx:end_idx]
         
         else:
             raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
