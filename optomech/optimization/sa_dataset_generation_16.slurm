@@ -46,7 +46,6 @@ for VARIANT in "${VARIANTS[@]}"; do
     poetry run python optomech/optimization/build_sa_dataset.py \
         --job-config-file optomech/optimization/sa_dataset_config.json \
         --dataset-save-path /wdata/scratch/fletch/datasets \
-        --dataset-name sa_dataset_tuning \
         $VARIANT &
 done
 
