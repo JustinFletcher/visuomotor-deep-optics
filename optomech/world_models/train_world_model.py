@@ -1859,7 +1859,7 @@ def train_world_model(config: WorldModelConfig):
         # Output settings
         config_text += f"\nOUTPUT SETTINGS:\n"
         config_text += f"  Model save path:       {config.model_save_path}\n"
-        config_text += f"  No save:               {config.no_save}\n"
+        config_text += f"  Save model:            {config.save_model}\n"
         config_text += f"  Checkpoint interval:   {config.checkpoint_interval}\n"
         config_text += f"  Reconstruction interval: {config.reconstruction_interval}\n"
         
@@ -2108,9 +2108,9 @@ def main():
                        help="Optimizer")
     
     # Learning rate scheduler settings
-    parser.add_argument("--use-scheduler", action="store_true", default=True,
+    parser.add_argument("--use-scheduler", action="store_true",
                        help="Use learning rate scheduler (ReduceLROnPlateau)")
-    parser.add_argument("--no-scheduler", action="store_false", dest="use_scheduler",
+    parser.add_argument("--no-scheduler", action="store_true",
                        help="Disable learning rate scheduler")
     parser.add_argument("--scheduler-patience", type=int, default=50,
                        help="Epochs to wait before reducing LR (default: 50)")
@@ -2188,6 +2188,15 @@ def main():
     if not get_value('pretrained_autoencoder_path'):
         parser.error("--pretrained-autoencoder-path is required (or provide via config file)")
     
+    # Special handling for use_scheduler (can be set with --use-scheduler or --no-scheduler)
+    use_scheduler_value = True  # Default
+    if 'no_scheduler' in cli_provided:
+        use_scheduler_value = False
+    elif 'use_scheduler' in cli_provided:
+        use_scheduler_value = True
+    elif 'use_scheduler' in config_dict:
+        use_scheduler_value = config_dict['use_scheduler']
+    
     # Create config with proper priority: CLI > config file > defaults
     config = WorldModelConfig(
         dataset_path=get_value('dataset_path'),
@@ -2211,7 +2220,7 @@ def main():
         action_key=get_value('action_key', 'sa_incremental_actions'),
         loss_function=get_value('loss_function', 'mse'),
         optimizer=get_value('optimizer', 'adam'),
-        use_scheduler=get_value('use_scheduler', True),
+        use_scheduler=use_scheduler_value,
         scheduler_patience=get_value('scheduler_patience', 50),
         scheduler_factor=get_value('scheduler_factor', 0.5),
         scheduler_min_lr=get_value('scheduler_min_lr', 1e-7),
