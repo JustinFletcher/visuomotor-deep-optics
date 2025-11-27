@@ -24,7 +24,7 @@
   "scheduler_factor": 0.5,
   "scheduler_min_lr": 1e-7,
   "model_save_path": "saved_models/world_model.pth",
-  "no_save": true,
+  "no_save": false,
   "max_examples": null,
   "seed": 42,
   "num_workers": 12,
