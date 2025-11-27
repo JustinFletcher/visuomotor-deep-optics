@@ -1403,6 +1403,7 @@ def validate_world_model_epoch(model, val_loader, criterion, device):
 def visualize_world_model_predictions(model, val_loader, device, writer, epoch, num_timesteps=4, prefix='Validation'):
     """
     Visualize world model predictions for debugging.
+    Handles both episode-based and sequence-based data loaders.
     
     Shows 4 timesteps from a sequence, each column containing:
     - Residual (error magnitude)
@@ -1428,11 +1429,35 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
     model.eval()
     
     with torch.no_grad():
-        # Get first batch from validation set
-        obs, actions, next_obs = next(iter(val_loader))
-        obs = obs.to(device)
-        actions = actions.to(device)
-        next_obs = next_obs.to(device)
+        try:
+            # Get first batch from validation set - handle both episode and sequence formats
+            first_batch = next(iter(val_loader))
+            
+            # Check if this is episode-based or sequence-based data
+            if isinstance(first_batch, list) and len(first_batch) > 0:
+                # Episode-based format: list of episodes
+                obs, actions, next_obs, episode_length = first_batch[0]
+                # Take first num_timesteps from the episode
+                max_timesteps = min(num_timesteps, episode_length)
+                obs = obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+                actions = actions[:max_timesteps].unsqueeze(0)  # [1, timesteps, action_dim]
+                next_obs = next_obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+            else:
+                # Sequence-based format: tuple of tensors
+                obs, actions, next_obs = first_batch
+                # Take first num_timesteps from the sequence
+                max_timesteps = min(num_timesteps, obs.shape[1])
+                obs = obs[:, :max_timesteps]  # [batch, timesteps, C, H, W]
+                actions = actions[:, :max_timesteps]  # [batch, timesteps, action_dim]
+                next_obs = next_obs[:, :max_timesteps]  # [batch, timesteps, C, H, W]
+            
+            obs = obs.to(device)
+            actions = actions.to(device)
+            next_obs = next_obs.to(device)
+            
+        except Exception as e:
+            print(f"⚠️  Failed to load visualization data: {e}")
+            return
         
         # Get predictions - we need to manually call forward to get lstm_out
         batch_size, seq_len = obs.shape[0], obs.shape[1]
