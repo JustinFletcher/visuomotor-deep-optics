@@ -1445,23 +1445,49 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
             # Get first batch from validation set - handle both episode and sequence formats
             first_batch = next(iter(val_loader))
             
-            # Check if this is episode-based or sequence-based data
+            # Robustly determine batch format by inspecting structure
             if isinstance(first_batch, list) and len(first_batch) > 0:
-                # Episode-based format: list of episodes
-                obs, actions, next_obs, episode_length = first_batch[0]
-                # Take first num_timesteps from the episode
-                max_timesteps = min(num_timesteps, episode_length)
-                obs = obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
-                actions = actions[:max_timesteps].unsqueeze(0)  # [1, timesteps, action_dim]
-                next_obs = next_obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
-            else:
-                # Sequence-based format: tuple of tensors
+                first_item = first_batch[0]
+                if isinstance(first_item, tuple):
+                    if len(first_item) == 4:
+                        # Episode-based format: list of (obs, actions, next_obs, length) tuples
+                        obs, actions, next_obs, episode_length = first_item
+                        # Take first num_timesteps from the episode
+                        max_timesteps = min(num_timesteps, episode_length)
+                        obs = obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+                        actions = actions[:max_timesteps].unsqueeze(0)  # [1, timesteps, action_dim]
+                        next_obs = next_obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+                    elif len(first_item) == 3:
+                        # Sequence-based format as list: list of (obs, actions, next_obs) tuples
+                        obs, actions, next_obs = first_item
+                        # Take first num_timesteps from the sequence
+                        max_timesteps = min(num_timesteps, obs.shape[0])
+                        obs = obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+                        actions = actions[:max_timesteps].unsqueeze(0)  # [1, timesteps, action_dim]
+                        next_obs = next_obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+                    else:
+                        raise ValueError(f"Unexpected tuple length: {len(first_item)}")
+                else:
+                    raise ValueError(f"Expected tuple in list, got {type(first_item)}")
+            elif isinstance(first_batch, tuple) and len(first_batch) == 3:
+                # Direct tuple format (obs, actions, next_obs) with batch dimension
                 obs, actions, next_obs = first_batch
                 # Take first num_timesteps from the sequence
                 max_timesteps = min(num_timesteps, obs.shape[1])
                 obs = obs[:, :max_timesteps]  # [batch, timesteps, C, H, W]
                 actions = actions[:, :max_timesteps]  # [batch, timesteps, action_dim]
                 next_obs = next_obs[:, :max_timesteps]  # [batch, timesteps, C, H, W]
+            elif isinstance(first_batch, dict):
+                # Dictionary format
+                obs = first_batch['observations']
+                actions = first_batch['actions']
+                next_obs = first_batch['next_observations']
+                max_timesteps = min(num_timesteps, obs.shape[1])
+                obs = obs[:, :max_timesteps]
+                actions = actions[:, :max_timesteps]
+                next_obs = next_obs[:, :max_timesteps]
+            else:
+                raise ValueError(f"Unexpected batch format: {type(first_batch)}")
             
             obs = obs.to(device)
             actions = actions.to(device)
