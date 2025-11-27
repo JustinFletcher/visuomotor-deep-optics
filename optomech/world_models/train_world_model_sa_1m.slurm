@@ -4,11 +4,11 @@
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks=1              # <-- ONE task
 #SBATCH --cpus-per-task=28      # <-- 28 CPUs for that one task
-#SBATCH --account=MHPCC96650DAS       # Account/project name
+#SBATCH --account=MHPCC96650DAS       # Account/project namesd
 #SBATCH --output=./wm_training.out
 #SBATCH --error=./wm_training.err
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=5-00:00:00             # Maximum runtime (5 days)
+#SBATCH --time=5-00:00:00             # Maximum runtime (5 days) 
 
 
 
@@ -16,7 +16,8 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name world_model_experiment_100k --seed 2"
+    "--run-name world_model_experiment_sa_1m_mse --loss-function mse --seed 2 --device cuda:0",
+    "--run-name world_model_experiment_sa_1m_mae --loss-function mae --seed 2 --device cuda:1",
 )
 
 # Run all variants in parallel
