@@ -1518,6 +1518,12 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
             else:
                 raise ValueError(f"Unexpected batch format: {type(first_batch)}")
             
+            # Ensure we only have one batch item for visualization
+            if obs.shape[0] > 1:
+                obs = obs[0:1]  # Take only first item, keep batch dimension
+                actions = actions[0:1]
+                next_obs = next_obs[0:1]
+            
             obs = obs.to(device)
             actions = actions.to(device)
             next_obs = next_obs.to(device)
@@ -2329,6 +2335,10 @@ def train_world_model(config: WorldModelConfig):
         # Data settings
         config_text += f"\nDATA SETTINGS:\n"
         config_text += f"  Dataset path:          {config.dataset_path}\n"
+        config_text += f"  Dataset absolute path: {dataset_abs_path}\n"
+        config_text += f"  Dataset type:          {dataset_type}\n"
+        config_text += f"  Total files:           {len(file_paths)}\n"
+        config_text += f"  Total examples:        {len(dataset)}\n"
         config_text += f"  Observation key:       {config.obs_key}\n"
         config_text += f"  Action key:            {config.action_key}\n"
         config_text += f"  Load in memory:        {config.load_in_memory}\n"
