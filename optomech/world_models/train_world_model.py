@@ -63,6 +63,7 @@ from utils.transforms import center_crop_transform, get_autoencoder_transforms
 
 # Import world model dataset
 from optomech.world_models.world_model_dataset import WorldModelSequenceDataset, WorldModelLazyDataset, collate_sequences
+from optomech.world_models.episode_dataset import WorldModelEpisodeDataset, collate_episodes
 
 # Optional HDF5 support
 try:
@@ -704,6 +705,11 @@ class WorldModelConfig:
     # Sequence settings for BPTT
     sequence_length: int = 10  # Length of sequences for BPTT
     
+    # Episode-based training (NEW)
+    use_episodes: bool = False  # Use episode-based training instead of sequence-based
+    episode_batch_size: int = 4  # Number of episodes per batch (for episode-based training)
+    min_episode_length: int = 20  # Minimum episode length for episode-based training
+    
     # Dataset keys
     obs_key: str = "observations"  # HDF5/NPZ key for observations
     action_key: str = "sa_incremental_actions"  # HDF5/NPZ key for actions
@@ -946,6 +952,142 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
     return avg_loss
 
 
+def train_world_model_epoch_episodes(
+    model, 
+    episode_loader, 
+    criterion, 
+    optimizer, 
+    device, 
+    sequence_length: int = 10,
+    scaler=None
+):
+    """
+    Train world model for one epoch using episode-based BPTT.
+    
+    Processes full episodes while maintaining hidden state continuity.
+    Episodes are chunked into sequences of sequence_length for memory efficiency,
+    but hidden state is carried across chunks within the same episode.
+    
+    Args:
+        model: World model
+        episode_loader: DataLoader yielding full episodes
+        criterion: Loss function
+        optimizer: Optimizer
+        device: Device to train on
+        sequence_length: Length of sequences for chunked processing
+        scaler: GradScaler for mixed precision training (None to disable AMP)
+    """
+    model.train()
+    running_loss = 0.0
+    total_episodes = 0
+    total_sequences = 0
+    use_amp = scaler is not None
+    
+    # Progress tracking
+    last_print_time = time.time()
+    print_interval = 1.0
+    
+    for batch_idx, episode_batch in enumerate(episode_loader):
+        # episode_batch is a list of episodes: [(obs, actions, next_obs, length), ...]
+        
+        for episode_idx, (obs, actions, next_obs, episode_length) in enumerate(episode_batch):
+            if episode_length == 0:
+                continue
+                
+            # Move episode data to device
+            obs = obs.to(device)
+            actions = actions.to(device)
+            next_obs = next_obs.to(device)
+            
+            # Initialize hidden state for this episode
+            hidden = model.get_zero_hidden(1, device)  # batch_size=1 for single episode
+            
+            # Process episode in chunks to maintain memory efficiency
+            episode_loss = 0.0
+            num_sequences_in_episode = 0
+            
+            for start_idx in range(0, episode_length, sequence_length):
+                end_idx = min(start_idx + sequence_length, episode_length)
+                
+                # Extract sequence chunk
+                obs_chunk = obs[start_idx:end_idx].unsqueeze(0)  # [1, seq_len, C, H, W]
+                actions_chunk = actions[start_idx:end_idx].unsqueeze(0)  # [1, seq_len, action_dim]
+                next_obs_chunk = next_obs[start_idx:end_idx].unsqueeze(0)  # [1, seq_len, C, H, W]
+                
+                # Zero gradients for this sequence
+                optimizer.zero_grad()
+                
+                # Forward pass with carried hidden state
+                if use_amp:
+                    with torch.cuda.amp.autocast():
+                        next_obs_pred, latent, new_hidden = model(obs_chunk, actions_chunk, hidden)
+                else:
+                    next_obs_pred, latent, new_hidden = model(obs_chunk, actions_chunk, hidden)
+                
+                # Match target size to prediction size (in case encoder crops)
+                if next_obs_pred.shape != next_obs_chunk.shape:
+                    from models.models import center_crop_transform
+                    batch_size, seq_len = next_obs_chunk.shape[0], next_obs_chunk.shape[1]
+                    next_obs_flat = next_obs_chunk.reshape(batch_size * seq_len, *next_obs_chunk.shape[2:])
+                    target_size = next_obs_pred.shape[-1]
+                    next_obs_cropped = center_crop_transform(next_obs_flat, target_size)
+                    next_obs_chunk = next_obs_cropped.reshape(batch_size, seq_len, *next_obs_cropped.shape[1:])
+                
+                # Compute loss
+                if use_amp:
+                    with torch.cuda.amp.autocast():
+                        loss = criterion(next_obs_pred, next_obs_chunk)
+                else:
+                    loss = criterion(next_obs_pred, next_obs_chunk)
+                
+                # Backward pass
+                if use_amp:
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
+                
+                # Update hidden state for next sequence (detach to prevent gradient explosion)
+                hidden = (new_hidden[0].detach(), new_hidden[1].detach())
+                
+                episode_loss += loss.item()
+                num_sequences_in_episode += 1
+                total_sequences += 1
+                
+                # Clean up tensors
+                del obs_chunk, actions_chunk, next_obs_chunk, next_obs_pred, latent, new_hidden, loss
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+            
+            # Average loss for this episode
+            if num_sequences_in_episode > 0:
+                episode_avg_loss = episode_loss / num_sequences_in_episode
+                running_loss += episode_avg_loss
+            
+            total_episodes += 1
+            
+            # Clean up episode tensors
+            del obs, actions, next_obs, hidden
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+        
+        # Progress reporting
+        current_time = time.time()
+        if (current_time - last_print_time) >= print_interval or batch_idx == 0:
+            avg_loss = running_loss / max(1, total_episodes)
+            print(f'\r🚂 Train Episodes: Batch {batch_idx+1} | '
+                  f'Episodes: {total_episodes} | Sequences: {total_sequences} | '
+                  f'Avg Loss: {avg_loss:.6f}', end='', flush=True)
+            last_print_time = current_time
+    
+    print()  # New line
+    avg_loss = running_loss / max(1, total_episodes)
+    print(f"📊 Epoch complete: {total_episodes} episodes, {total_sequences} sequences processed")
+    return avg_loss
+
+
 def train_world_model_epoch(model, train_loader, criterion, optimizer, device, scaler=None):
     """Train world model for one epoch with BPTT
     
@@ -956,6 +1098,11 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device, s
         optimizer: Optimizer
         device: Device to train on
         scaler: GradScaler for mixed precision training (None to disable AMP)
+    
+    NOTE: Since dataloader shuffles sequences from different episodes, we cannot
+    carry hidden state between batches (they come from different episodes).
+    Each batch is treated as an independent sequence with zero initial hidden state.
+    This is correct behavior given the shuffled data.
     """
     model.train()
     running_loss = 0.0
@@ -976,6 +1123,8 @@ def train_world_model_epoch(model, train_loader, criterion, optimizer, device, s
         next_obs = next_obs.to(device)
         
         # Forward pass with BPTT (with optional AMP)
+        # Note: hidden state starts at zero for each batch since sequences are shuffled
+        # and come from different episodes. This is correct behavior.
         if use_amp:
             with torch.cuda.amp.autocast():
                 next_obs_pred, latent, hidden = model(obs, actions)
@@ -1088,6 +1237,107 @@ def validate_epoch(model, val_loader, criterion, device):
     val_time = time.time() - val_start
     print(f"🏁 Validation complete in {val_time/60:.2f} minutes")
     print(f"   Average loss: {avg_loss:.6f}")
+    return avg_loss
+
+
+def validate_world_model_epoch_episodes(
+    model, 
+    episode_loader, 
+    criterion, 
+    device,
+    sequence_length: int = 10
+):
+    """
+    Validate world model for one epoch using episode-based processing.
+    """
+    model.eval()
+    running_loss = 0.0
+    total_episodes = 0
+    total_sequences = 0
+    
+    # Progress tracking
+    last_print_time = time.time()
+    print_interval = 1.0
+    
+    with torch.no_grad():
+        for batch_idx, episode_batch in enumerate(episode_loader):
+            # episode_batch is a list of episodes: [(obs, actions, next_obs, length), ...]
+            
+            for episode_idx, (obs, actions, next_obs, episode_length) in enumerate(episode_batch):
+                if episode_length == 0:
+                    continue
+                    
+                # Move episode data to device
+                obs = obs.to(device)
+                actions = actions.to(device)
+                next_obs = next_obs.to(device)
+                
+                # Initialize hidden state for this episode
+                hidden = model.get_zero_hidden(1, device)  # batch_size=1 for single episode
+                
+                # Process episode in chunks
+                episode_loss = 0.0
+                num_sequences_in_episode = 0
+                
+                for start_idx in range(0, episode_length, sequence_length):
+                    end_idx = min(start_idx + sequence_length, episode_length)
+                    
+                    # Extract sequence chunk
+                    obs_chunk = obs[start_idx:end_idx].unsqueeze(0)  # [1, seq_len, C, H, W]
+                    actions_chunk = actions[start_idx:end_idx].unsqueeze(0)  # [1, seq_len, action_dim]
+                    next_obs_chunk = next_obs[start_idx:end_idx].unsqueeze(0)  # [1, seq_len, C, H, W]
+                    
+                    # Forward pass with carried hidden state
+                    next_obs_pred, latent, new_hidden = model(obs_chunk, actions_chunk, hidden)
+                    
+                    # Match target size to prediction size (in case encoder crops)
+                    if next_obs_pred.shape != next_obs_chunk.shape:
+                        from models.models import center_crop_transform
+                        batch_size, seq_len = next_obs_chunk.shape[0], next_obs_chunk.shape[1]
+                        next_obs_flat = next_obs_chunk.reshape(batch_size * seq_len, *next_obs_chunk.shape[2:])
+                        target_size = next_obs_pred.shape[-1]
+                        next_obs_cropped = center_crop_transform(next_obs_flat, target_size)
+                        next_obs_chunk = next_obs_cropped.reshape(batch_size, seq_len, *next_obs_cropped.shape[1:])
+                    
+                    # Compute loss
+                    loss = criterion(next_obs_pred, next_obs_chunk)
+                    
+                    # Update hidden state for next sequence
+                    hidden = (new_hidden[0].detach(), new_hidden[1].detach())
+                    
+                    episode_loss += loss.item()
+                    num_sequences_in_episode += 1
+                    total_sequences += 1
+                    
+                    # Clean up tensors
+                    del obs_chunk, actions_chunk, next_obs_chunk, next_obs_pred, latent, new_hidden
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
+                
+                # Average loss for this episode
+                if num_sequences_in_episode > 0:
+                    episode_avg_loss = episode_loss / num_sequences_in_episode
+                    running_loss += episode_avg_loss
+                
+                total_episodes += 1
+                
+                # Clean up episode tensors
+                del obs, actions, next_obs, hidden
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+            
+            # Progress reporting
+            current_time = time.time()
+            if (current_time - last_print_time) >= print_interval or batch_idx == 0:
+                avg_loss = running_loss / max(1, total_episodes)
+                print(f'\r🔍 Valid Episodes: Batch {batch_idx+1} | '
+                      f'Episodes: {total_episodes} | Sequences: {total_sequences} | '
+                      f'Avg Loss: {avg_loss:.6f}', end='', flush=True)
+                last_print_time = current_time
+    
+    print()  # New line
+    avg_loss = running_loss / max(1, total_episodes)
+    print(f"📊 Validation complete: {total_episodes} episodes, {total_sequences} sequences processed")
     return avg_loss
 
 
@@ -1549,38 +1799,66 @@ def train_world_model(config: WorldModelConfig):
     print(f"   Log scale: {config.log_scale}")
     
     # Create world model dataset
-    print(f"\n📂 Creating sequence dataset...")
-    print(f"   Observation key: {config.obs_key}")
-    print(f"   Action key: {config.action_key}")
-    print(f"   Load in memory: {config.load_in_memory}")
-    
-    if config.load_in_memory:
-        # Load all data into memory for faster training
-        print(f"💾 Loading dataset into memory...")
-        if config.use_multiprocessing:
-            print(f"   Multiprocessing enabled for parallel data loading")
-        dataset = WorldModelSequenceDataset(
+    if config.use_episodes:
+        print(f"\n📂 Creating EPISODE-BASED dataset...")
+        print(f"   Observation key: {config.obs_key}")
+        print(f"   Action key: {config.action_key}")
+        print(f"   Min episode length: {config.min_episode_length}")
+        print(f"   Episode batch size: {config.episode_batch_size}")
+        
+        dataset = WorldModelEpisodeDataset(
             file_paths=file_paths,
             dataset_type=dataset_type,
-            sequence_length=config.sequence_length,
             transforms=transforms,
             obs_key=config.obs_key,
             action_key=config.action_key,
-            load_in_memory=True,
-            max_examples=config.max_examples,
-            use_multiprocessing=config.use_multiprocessing
+            min_episode_length=config.min_episode_length
         )
-        print(f"✅ Dataset loaded into memory")
+        
+        # Filter by max_examples if specified (take first N episodes)
+        if config.max_examples:
+            dataset.valid_episodes = dataset.valid_episodes[:config.max_examples]
+            print(f"   Limited to {len(dataset.valid_episodes)} episodes (max_examples={config.max_examples})")
+        
+        collate_fn = collate_episodes
+        batch_size = config.episode_batch_size
+        
     else:
-        # Lazy loading with caching
-        dataset = WorldModelLazyDataset(
-            file_paths=file_paths,
-            dataset_type=dataset_type,
-            sequence_length=config.sequence_length,
-            transforms=transforms,
-            obs_key=config.obs_key,
-            action_key=config.action_key
-        )
+        print(f"\n📂 Creating SEQUENCE-BASED dataset...")
+        print(f"   Observation key: {config.obs_key}")
+        print(f"   Action key: {config.action_key}")
+        print(f"   Load in memory: {config.load_in_memory}")
+        
+        if config.load_in_memory:
+            # Load all data into memory for faster training
+            print(f"💾 Loading dataset into memory...")
+            if config.use_multiprocessing:
+                print(f"   Multiprocessing enabled for parallel data loading")
+            dataset = WorldModelSequenceDataset(
+                file_paths=file_paths,
+                dataset_type=dataset_type,
+                sequence_length=config.sequence_length,
+                transforms=transforms,
+                obs_key=config.obs_key,
+                action_key=config.action_key,
+                load_in_memory=True,
+                max_examples=config.max_examples,
+                use_multiprocessing=config.use_multiprocessing
+            )
+            print(f"✅ Dataset loaded into memory")
+        else:
+            # Lazy loading with caching
+            dataset = WorldModelLazyDataset(
+                file_paths=file_paths,
+                dataset_type=dataset_type,
+                sequence_length=config.sequence_length,
+                transforms=transforms,
+                obs_key=config.obs_key,
+                action_key=config.action_key
+            )
+        
+        collate_fn = collate_sequences
+        batch_size = config.batch_size
     
     # Split dataset
     total_size = len(dataset)
@@ -1595,36 +1873,36 @@ def train_world_model(config: WorldModelConfig):
     
     print(f"📊 Dataset splits: Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
     
-    # Create data loaders with custom collate function and optimized settings
+    # Create data loaders with appropriate collate function and batch size
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config.batch_size,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory and device.type == 'cuda',
-        collate_fn=collate_sequences,
+        collate_fn=collate_fn,
         prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
         persistent_workers=config.persistent_workers if config.num_workers > 0 else False
     )
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config.batch_size,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory and device.type == 'cuda',
-        collate_fn=collate_sequences,
+        collate_fn=collate_fn,
         prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
         persistent_workers=config.persistent_workers if config.num_workers > 0 else False
     )
     
     test_loader = DataLoader(
         test_dataset,
-        batch_size=config.batch_size,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory and device.type == 'cuda',
-        collate_fn=collate_sequences,
+        collate_fn=collate_fn,
         prefetch_factor=config.prefetch_factor if config.num_workers > 0 else None,
         persistent_workers=config.persistent_workers if config.num_workers > 0 else False
     )
@@ -1912,11 +2190,23 @@ def train_world_model(config: WorldModelConfig):
         print(f"{'='*60}")
         
         # Training
-        train_loss = train_world_model_epoch(model, train_loader, criterion, optimizer, device, scaler)
+        if config.use_episodes:
+            train_loss = train_world_model_epoch_episodes(
+                model, train_loader, criterion, optimizer, device, 
+                sequence_length=config.sequence_length, scaler=scaler
+            )
+        else:
+            train_loss = train_world_model_epoch(model, train_loader, criterion, optimizer, device, scaler)
         train_losses.append(train_loss)
         
         # Validation
-        val_loss = validate_world_model_epoch(model, val_loader, criterion, device)
+        if config.use_episodes:
+            val_loss = validate_world_model_epoch_episodes(
+                model, val_loader, criterion, device, 
+                sequence_length=config.sequence_length
+            )
+        else:
+            val_loss = validate_world_model_epoch(model, val_loader, criterion, device)
         val_losses.append(val_loss)
         
         # Visualize world model predictions (only on certain epochs to save memory)
@@ -2099,6 +2389,14 @@ def main():
     # Sequence settings for BPTT
     parser.add_argument("--sequence-length", type=int, help="Sequence length for BPTT")
     
+    # Episode-based training (NEW)
+    parser.add_argument("--use-episodes", action="store_true",
+                       help="Use episode-based training instead of sequence-based (enables proper long-term learning)")
+    parser.add_argument("--episode-batch-size", type=int, default=4,
+                       help="Number of episodes per batch (for episode-based training)")
+    parser.add_argument("--min-episode-length", type=int, default=20,
+                       help="Minimum episode length for episode-based training")
+    
     # Loss and optimization
     parser.add_argument("--loss-function", type=str,
                        choices=["mse", "mae", "smooth_l1", "huber"],
@@ -2216,6 +2514,9 @@ def main():
         latent_dim=get_value('latent_dim', 256),
         input_crop_size=get_value('input_crop_size'),
         sequence_length=get_value('sequence_length', 10),
+        use_episodes=get_value('use_episodes', False),
+        episode_batch_size=get_value('episode_batch_size', 4),
+        min_episode_length=get_value('min_episode_length', 20),
         obs_key=get_value('obs_key', 'observations'),
         action_key=get_value('action_key', 'sa_incremental_actions'),
         loss_function=get_value('loss_function', 'mse'),
