@@ -56,34 +56,133 @@ class WorldModelEpisodeDataset(Dataset):
               f"(min_length={min_episode_length})")
     
     def _filter_episodes(self):
-        """Filter episodes by minimum length."""
-        print(f"📋 Filtering episodes by minimum length ({self.min_episode_length})...")
+        """Filter episodes by minimum length. For SA datasets, reconstruct episodes from transitions."""
+        print(f"📋 Reconstructing episodes from SA dataset format (min_length={self.min_episode_length})...")
         
-        for file_path in self.file_paths:
+        # Dictionary to group transitions by episode_id
+        episode_groups = {}
+        
+        for file_idx, file_path in enumerate(self.file_paths):
             try:
-                # Get episode length
+                # Load episode metadata from file
                 if self.dataset_type == 'hdf5':
                     with h5py.File(file_path, 'r') as f:
-                        episode_length = f[self.obs_key].shape[0]
-                elif self.dataset_type == 'npz':
-                    data = np.load(file_path, mmap_mode='r')
-                    episode_length = data[self.obs_key].shape[0]
-                else:
-                    continue
+                        if 'episode_ids' in f and 'episode_steps' in f:
+                            # SA dataset format: multiple episodes per file
+                            episode_ids = f['episode_ids'][:]
+                            episode_steps = f['episode_steps'][:]
+                            
+                            # Convert episode IDs to strings if they're bytes
+                            if len(episode_ids) > 0:
+                                if isinstance(episode_ids[0], bytes):
+                                    episode_ids = [eid.decode('utf-8') for eid in episode_ids]
+                            
+                            # Group by episode_id
+                            for i, (episode_id, step) in enumerate(zip(episode_ids, episode_steps)):
+                                if episode_id not in episode_groups:
+                                    episode_groups[episode_id] = []
+                                episode_groups[episode_id].append({
+                                    'file_path': file_path,
+                                    'file_idx': file_idx,
+                                    'transition_idx': i,
+                                    'step': step
+                                })
+                        else:
+                            # Regular dataset format: assume entire file is one episode
+                            episode_length = f[self.obs_key].shape[0]
+                            if episode_length >= self.min_episode_length:
+                                # Use file path as episode ID for regular datasets
+                                episode_id = str(file_path)
+                                episode_groups[episode_id] = [{
+                                    'file_path': file_path,
+                                    'file_idx': file_idx,
+                                    'transition_idx': None,  # Load entire file
+                                    'step': None,
+                                    'episode_length': episode_length
+                                }]
                 
-                # Only include episodes with sufficient length
-                if episode_length >= self.min_episode_length:
-                    self.valid_episodes.append((file_path, episode_length))
-                    
+                elif self.dataset_type == 'npz':
+                    data = np.load(file_path)
+                    if 'episode_ids' in data and 'episode_steps' in data:
+                        # SA dataset format: multiple episodes per file
+                        episode_ids = data['episode_ids']
+                        episode_steps = data['episode_steps']
+                        
+                        # Convert to strings if needed
+                        if len(episode_ids) > 0:
+                            if isinstance(episode_ids[0], bytes):
+                                episode_ids = [eid.decode('utf-8') for eid in episode_ids]
+                        
+                        # Group by episode_id
+                        for i, (episode_id, step) in enumerate(zip(episode_ids, episode_steps)):
+                            if episode_id not in episode_groups:
+                                episode_groups[episode_id] = []
+                            episode_groups[episode_id].append({
+                                'file_path': file_path,
+                                'file_idx': file_idx,
+                                'transition_idx': i,
+                                'step': step
+                            })
+                    else:
+                        # Regular dataset format: assume entire file is one episode
+                        episode_length = data[self.obs_key].shape[0]
+                        if episode_length >= self.min_episode_length:
+                            episode_id = str(file_path)
+                            episode_groups[episode_id] = [{
+                                'file_path': file_path,
+                                'file_idx': file_idx,
+                                'transition_idx': None,
+                                'step': None,
+                                'episode_length': episode_length
+                            }]
+                
             except Exception as e:
                 print(f"  ⚠️  Error processing {file_path}: {e}")
+        
+        # Sort transitions within each episode by step number and filter by length
+        valid_episode_count = 0
+        for episode_id, transitions in episode_groups.items():
+            if transitions[0]['step'] is not None:
+                # SA dataset: sort by step number
+                transitions.sort(key=lambda x: x['step'])
+                episode_length = len(transitions)
+            else:
+                # Regular dataset: length already computed
+                episode_length = transitions[0]['episode_length']
+            
+            # Only include episodes that meet minimum length requirement
+            if episode_length >= self.min_episode_length:
+                self.valid_episodes.append((episode_id, transitions, episode_length))
+                valid_episode_count += 1
+        
+        print(f"  📊 Reconstructed {len(episode_groups)} episodes from {len(self.file_paths)} files")
+        print(f"  ✅ {valid_episode_count} episodes meet min_length requirement ({self.min_episode_length})")
+        
+        if len(episode_groups) > 0 and valid_episode_count == 0:
+            # Show episode length distribution for debugging
+            lengths = []
+            for episode_id, transitions in episode_groups.items():
+                if transitions[0]['step'] is not None:
+                    lengths.append(len(transitions))
+                else:
+                    lengths.append(transitions[0]['episode_length'])
+            
+            if lengths:
+                print(f"  📊 Episode length stats: min={min(lengths)}, max={max(lengths)}, "
+                      f"median={np.median(lengths):.0f}, mean={np.mean(lengths):.1f}")
+                print(f"  💡 Consider lowering min_episode_length (currently {self.min_episode_length})")
+        
+        # Store valid episodes for __getitem__
+        self.episode_data = []
+        for episode_id, transitions, episode_length in self.valid_episodes:
+            self.episode_data.append((episode_id, transitions, episode_length))
     
     def __len__(self) -> int:
-        return len(self.valid_episodes)
+        return len(self.episode_data)
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """
-        Load a complete episode.
+        Load a complete episode (reconstructed from SA transitions or regular file).
         
         Returns:
             Tuple of (obs, actions, next_obs, episode_length):
@@ -92,37 +191,79 @@ class WorldModelEpisodeDataset(Dataset):
                 - next_obs: [episode_length, C, H, W]
                 - episode_length: int
         """
-        file_path, episode_length = self.valid_episodes[idx]
+        episode_id, transitions, episode_length = self.episode_data[idx]
         
         try:
-            if self.dataset_type == 'hdf5':
-                with h5py.File(file_path, 'r') as f:
-                    if 'next_observations' in f:
-                        # New format: use explicit next_observations
-                        obs = f[self.obs_key][:]
-                        actions = f[self.action_key][:]
-                        next_obs = f['next_observations'][:]
-                    else:
-                        # Old format: compute next_obs from shifted observations
-                        obs = f[self.obs_key][:-1]  # Remove last observation
-                        next_obs = f[self.obs_key][1:]  # Shifted observations
-                        actions = f[self.action_key][:-1]  # Remove last action
-            
-            elif self.dataset_type == 'npz':
-                data = np.load(file_path)
-                if 'next_observations' in data:
-                    # New format: use explicit next_observations
-                    obs = data[self.obs_key]
-                    actions = data[self.action_key]
-                    next_obs = data['next_observations']
-                else:
-                    # Old format: compute next_obs from shifted observations
-                    obs = data[self.obs_key][:-1]  # Remove last observation
-                    next_obs = data[self.obs_key][1:]  # Shifted observations
-                    actions = data[self.action_key][:-1]  # Remove last action
-            
+            if transitions[0]['transition_idx'] is not None:
+                # SA dataset format: reconstruct episode from transitions
+                obs_list = []
+                actions_list = []
+                next_obs_list = []
+                
+                for transition_info in transitions:
+                    file_path = transition_info['file_path']
+                    trans_idx = transition_info['transition_idx']
+                    
+                    # Load this transition
+                    if self.dataset_type == 'hdf5':
+                        with h5py.File(file_path, 'r') as f:
+                            obs_list.append(f[self.obs_key][trans_idx])
+                            actions_list.append(f[self.action_key][trans_idx])
+                            
+                            if 'next_observations' in f:
+                                next_obs_list.append(f['next_observations'][trans_idx])
+                            else:
+                                # For SA datasets, the next_obs is the obs of the next transition
+                                # For the last transition, we'll use the same obs (episode ends)
+                                if len(next_obs_list) < len(obs_list) - 1:
+                                    next_obs_list.append(f[self.obs_key][trans_idx])
+                    
+                    elif self.dataset_type == 'npz':
+                        data = np.load(file_path)
+                        obs_list.append(data[self.obs_key][trans_idx])
+                        actions_list.append(data[self.action_key][trans_idx])
+                        
+                        if 'next_observations' in data:
+                            next_obs_list.append(data['next_observations'][trans_idx])
+                        else:
+                            if len(next_obs_list) < len(obs_list) - 1:
+                                next_obs_list.append(data[self.obs_key][trans_idx])
+                
+                # Handle last next_obs for SA datasets without explicit next_observations
+                if len(next_obs_list) < len(obs_list):
+                    # Use the last obs as the final next_obs (episode termination)
+                    next_obs_list.append(obs_list[-1])
+                
+                # Convert to numpy arrays
+                obs = np.array(obs_list)
+                actions = np.array(actions_list)
+                next_obs = np.array(next_obs_list)
+                
             else:
-                raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
+                # Regular dataset format: load entire file
+                file_path = transitions[0]['file_path']
+                
+                if self.dataset_type == 'hdf5':
+                    with h5py.File(file_path, 'r') as f:
+                        if 'next_observations' in f:
+                            obs = f[self.obs_key][:]
+                            actions = f[self.action_key][:]
+                            next_obs = f['next_observations'][:]
+                        else:
+                            obs = f[self.obs_key][:-1]
+                            next_obs = f[self.obs_key][1:]
+                            actions = f[self.action_key][:-1]
+                
+                elif self.dataset_type == 'npz':
+                    data = np.load(file_path)
+                    if 'next_observations' in data:
+                        obs = data[self.obs_key]
+                        actions = data[self.action_key]
+                        next_obs = data['next_observations']
+                    else:
+                        obs = data[self.obs_key][:-1]
+                        next_obs = data[self.obs_key][1:]
+                        actions = data[self.action_key][:-1]
             
             # Apply transforms if provided
             if self.transforms is not None:
@@ -142,13 +283,13 @@ class WorldModelEpisodeDataset(Dataset):
                 next_obs = torch.from_numpy(next_obs).float()
                 actions = torch.from_numpy(actions).float()
             
-            # Update episode length after potential truncation in old format
+            # Update episode length after potential truncation
             actual_length = obs.shape[0]
             
             return obs, actions, next_obs, actual_length
             
         except Exception as e:
-            print(f"⚠️  Error loading episode {file_path}: {e}")
+            print(f"⚠️  Error loading episode {episode_id}: {e}")
             # Return empty episode on error
             return (torch.empty(0, 3, 64, 64), torch.empty(0, 1), 
                    torch.empty(0, 3, 64, 64), 0)
