@@ -692,10 +692,10 @@ class WorldModelConfig:
     
     # Model architecture settings
     pretrained_autoencoder_path: str = None  # Path to pretrained autoencoder
-    state_dim: int = 256  # Dimension of LSTM state representation
     hidden_dim: int = 512  # LSTM hidden dimension
     num_lstm_layers: int = 1  # Number of LSTM layers
     action_hidden_dim: int = 128  # Hidden dimension for action MLP
+    fusion_hidden_dim: int = 512  # Hidden dimension for fusion MLP
     freeze_encoder: bool = True  # Whether to freeze encoder weights
     freeze_decoder: bool = False  # Whether to freeze decoder weights
     input_channels: int = 2  # Number of input channels (2 for complex image data)
@@ -789,6 +789,11 @@ class AutoencoderConfig:
 
 def get_device(device_str: str) -> torch.device:
     """Get the appropriate device for training"""
+    # Clean up device string (remove trailing commas, whitespace)
+    device_str = device_str.strip().rstrip(',').strip()
+    
+    print(f"🔧 Device string (cleaned): '{device_str}'")
+    
     if device_str == "auto":
         if torch.cuda.is_available():
             device = torch.device("cuda")
@@ -797,7 +802,14 @@ def get_device(device_str: str) -> torch.device:
         else:
             device = torch.device("cpu")
     else:
-        device = torch.device(device_str)
+        # Validate that it's a proper device string
+        if device_str.startswith('cuda:') and device_str[5:].isdigit():
+            device = torch.device(device_str)
+        elif device_str in ['cuda', 'mps', 'cpu']:
+            device = torch.device(device_str)
+        else:
+            print(f"⚠️  Invalid device string '{device_str}', falling back to auto-detection")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     print(f"🔧 Using device: {device}")
     return device
@@ -1472,11 +1484,17 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
         hidden = model.get_zero_hidden(batch_size, device)
         lstm_out, hidden = model.lstm(latent, hidden)  # lstm_out: [batch, seq_len, hidden_dim]
         
-        # Rest of forward pass
-        state = model.state_projection(lstm_out)
-        action_encoded = model.action_encoder(actions)
-        fused = state + action_encoded
-        fused_flat = fused.reshape(batch_size * seq_len, -1)
+        # Rest of forward pass with new architecture
+        action_encoded = model.action_encoder(actions)  # [batch, seq_len, latent_dim]
+        
+        # Concatenate [latent, lstm_out, action_encoded]
+        concat_features = torch.cat([latent, lstm_out, action_encoded], dim=-1)
+        concat_flat = concat_features.reshape(batch_size * seq_len, -1)
+        
+        # Fusion MLP
+        fused_flat = model.fusion_mlp(concat_flat)
+        
+        # Decoder
         next_obs_pred_flat = model.decoder(fused_flat)
         decoder_output_shape = next_obs_pred_flat.shape[1:]
         next_obs_pred = next_obs_pred_flat.reshape(batch_size, seq_len, *decoder_output_shape)
@@ -1505,7 +1523,7 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
         
         # Delete large GPU tensors immediately
         del obs, actions, next_obs, obs_flat, latent_flat, latent, hidden, lstm_out
-        del state, action_encoded, fused, fused_flat, next_obs_pred_flat, next_obs_pred
+        del action_encoded, concat_features, concat_flat, fused_flat, next_obs_pred_flat, next_obs_pred
         if 'obs_cropped' in locals():
             del obs_cropped
         if 'next_obs_cropped' in locals():
@@ -1595,18 +1613,44 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
         
         # Convert plot to image and log to TensorBoard
         fig.canvas.draw()
-        # Use buffer_rgba() for compatibility with Mac backend
-        img_array = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
-        img_array = img_array.reshape(fig.canvas.get_width_height()[::-1] + (4,))
-        # Remove alpha channel to get RGB
-        img_array = img_array[:, :, :3]
         
-        # Convert to tensor [C, H, W] format for TensorBoard
-        img_tensor = torch.from_numpy(img_array).permute(2, 0, 1)
-        writer.add_image(f'{prefix}/WorldModelPredictions', img_tensor, epoch)
+        try:
+            # Get the actual canvas size after tight_layout
+            width, height = fig.canvas.get_width_height()
+            
+            # Get buffer and calculate actual size
+            buffer = fig.canvas.buffer_rgba()
+            img_array = np.frombuffer(buffer, dtype=np.uint8)
+            
+            # Calculate expected size (width * height * 4 channels)
+            expected_size = width * height * 4
+            actual_size = img_array.size
+            
+            if actual_size != expected_size:
+                # Buffer size mismatch - likely due to DPI scaling
+                # Calculate actual dimensions from buffer size
+                pixels = actual_size // 4
+                actual_height = int(np.sqrt(pixels * height / width))
+                actual_width = pixels // actual_height
+                img_array = img_array.reshape(actual_height, actual_width, 4)
+            else:
+                img_array = img_array.reshape(height, width, 4)
+            
+            # Remove alpha channel to get RGB
+            img_array = img_array[:, :, :3]
+            
+            # Convert to tensor [C, H, W] format for TensorBoard
+            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1)
+            writer.add_image(f'{prefix}/WorldModelPredictions', img_tensor, epoch)
+            
+            print(f"📊 Saved {prefix.lower()} world model prediction visualization to TensorBoard (step {epoch})")
+            
+        except Exception as e:
+            print(f"⚠️  Failed to save visualization to TensorBoard: {e}")
+            import traceback
+            traceback.print_exc()
         
         plt.close(fig)
-        print(f"📊 Saved {prefix.lower()} world model prediction visualization to TensorBoard")
 
 
 def save_reconstruction_samples(model, test_loader, device, save_path, num_samples=4, use_log_scale=False, sample_randomly=True):
@@ -1958,19 +2002,20 @@ def train_world_model(config: WorldModelConfig):
     # Create world model
     print(f"\n🌍 Creating world model...")
     print(f"   Action dim: {action_dim}")
-    print(f"   State dim: {config.state_dim}")
     print(f"   LSTM hidden dim: {config.hidden_dim}")
     print(f"   LSTM layers: {config.num_lstm_layers}")
+    print(f"   Action hidden dim: {config.action_hidden_dim}")
+    print(f"   Fusion hidden dim: {config.fusion_hidden_dim}")
     print(f"   Freeze encoder: {config.freeze_encoder}")
     print(f"   Freeze decoder: {config.freeze_decoder}")
     
     model = create_world_model_from_autoencoder(
         autoencoder=autoencoder,
         action_dim=action_dim,
-        state_dim=config.state_dim,
         hidden_dim=config.hidden_dim,
         num_layers=config.num_lstm_layers,
         action_hidden_dim=config.action_hidden_dim,
+        fusion_hidden_dim=config.fusion_hidden_dim,
         freeze_encoder=config.freeze_encoder,
         freeze_decoder=config.freeze_decoder
     )
@@ -2076,9 +2121,21 @@ def train_world_model(config: WorldModelConfig):
     config_text = ""
     
     try:
+        # Get observation shape from a sample batch
+        sample_batch = next(iter(train_loader))
+        if config.use_episodes:
+            # Episode format: list of (obs, actions, next_obs, length) tuples
+            sample_obs, sample_actions, _, _ = sample_batch[0]
+            obs_shape = sample_obs.shape  # [seq_len, C, H, W]
+            seq_len, C, H, W = obs_shape
+        else:
+            # Sequence format: dict with 'observations' and 'actions' keys
+            sample_obs = sample_batch['observations']  # [B, seq_len, C, H, W]
+            obs_shape = sample_obs.shape
+            B, seq_len, C, H, W = obs_shape
+        
         # Create dummy input to get model summary
-        dummy_obs = torch.randn(config.batch_size, config.sequence_length, config.input_channels, 
-                                config.input_crop_size, config.input_crop_size).to(device)
+        dummy_obs = torch.randn(config.batch_size, config.sequence_length, C, H, W).to(device)
         dummy_action = torch.randn(config.batch_size, config.sequence_length, action_dim).to(device)
         
         # Get summary as string
@@ -2152,10 +2209,10 @@ def train_world_model(config: WorldModelConfig):
         
         # Model architecture
         config_text += f"\nMODEL ARCHITECTURE:\n"
-        config_text += f"  State dim:             {config.state_dim}\n"
-        config_text += f"  Hidden dim:            {config.hidden_dim}\n"
+        config_text += f"  Hidden dim (LSTM):     {config.hidden_dim}\n"
         config_text += f"  Num LSTM layers:       {config.num_lstm_layers}\n"
         config_text += f"  Action hidden dim:     {config.action_hidden_dim}\n"
+        config_text += f"  Fusion hidden dim:     {config.fusion_hidden_dim}\n"
         config_text += f"  Latent dim:            {config.latent_dim}\n"
         config_text += f"  Input channels:        {config.input_channels}\n"
         config_text += f"  Input crop size:       {config.input_crop_size}\n"
@@ -2343,7 +2400,12 @@ def train_world_model(config: WorldModelConfig):
     
     # Test set evaluation
     print(f"\n🧪 Evaluating on test set...")
-    test_loss = validate_world_model_epoch(model, test_loader, criterion, device)
+    if config.use_episodes:
+        test_loss = validate_world_model_epoch_episodes(
+            model, test_loader, criterion, device, sequence_length=config.sequence_length
+        )
+    else:
+        test_loss = validate_world_model_epoch(model, test_loader, criterion, device)
     print(f"📊 Test Loss: {test_loss:.6f}")
     
     writer.add_scalar('Loss/Test', test_loss, config.num_epochs)
@@ -2422,10 +2484,10 @@ def main():
     parser.add_argument("--input-crop-size", type=int, default=None, help="Input crop size")
     
     # World model architecture
-    parser.add_argument("--state-dim", type=int, default=256, help="LSTM state representation dimension")
     parser.add_argument("--hidden-dim", type=int, default=512, help="LSTM hidden dimension")
     parser.add_argument("--num-lstm-layers", type=int, default=1, help="Number of LSTM layers")
     parser.add_argument("--action-hidden-dim", type=int, default=128, help="Action MLP hidden dimension")
+    parser.add_argument("--fusion-hidden-dim", type=int, default=512, help="Fusion MLP hidden dimension")
     
     # Sequence settings for BPTT
     parser.add_argument("--sequence-length", type=int, help="Sequence length for BPTT")
@@ -2546,10 +2608,10 @@ def main():
         num_epochs=get_value('num_epochs', 100),
         device=get_value('device', 'auto'),
         pretrained_autoencoder_path=get_value('pretrained_autoencoder_path'),
-        state_dim=get_value('state_dim', 256),
         hidden_dim=get_value('hidden_dim', 512),
         num_lstm_layers=get_value('num_lstm_layers', 1),
         action_hidden_dim=get_value('action_hidden_dim', 128),
+        fusion_hidden_dim=get_value('fusion_hidden_dim', 512),
         freeze_encoder=get_value('freeze_encoder', False),
         freeze_decoder=get_value('freeze_decoder', False),
         latent_dim=get_value('latent_dim', 256),

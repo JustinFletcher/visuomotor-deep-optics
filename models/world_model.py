@@ -6,10 +6,15 @@ A recurrent world model that predicts next observations given current observatio
 
 Architecture:
 1. Encoder: Maps observations to latent representation (from pretrained autoencoder)
-2. LSTM: Processes latent representation to produce state estimate
-3. Action MLP: Encodes actions to same dimensionality as state estimate
-4. Fusion: Adds encoded action to state estimate
-5. Decoder: Reconstructs next observation from fused representation (from pretrained autoencoder)
+2. LSTM Branch: Processes latent representation to produce temporal state estimate
+3. Action MLP: Encodes actions (2-layer MLP)
+4. Fusion MLP: Concatenates [encoder output, LSTM output, action encoding] and processes with 2-layer MLP
+5. Decoder: Reconstructs next observation from fusion output (from pretrained autoencoder)
+
+This architecture allows:
+- Non-linear fusion of current state (encoder), temporal state (LSTM), and action
+- Gradual incorporation of sequence information during training
+- The LSTM branch can be optionally disabled for single-step training
 
 Supports BPTT (Backpropagation Through Time) for sequence-based training.
 """
@@ -25,9 +30,13 @@ class WorldModel(nn.Module):
     Recurrent World Model for next observation prediction.
     
     Architecture:
-        obs_t -> Encoder -> z_t -> LSTM -> s_t
-        action_t -> ActionMLP -> a_encoded
-        s_t + a_encoded -> Decoder -> obs_t+1 (predicted)
+        obs_t -> Encoder -> z_t ─┬─> LSTM -> lstm_t
+                                  │
+                                  └─> [z_t, lstm_t, action_encoded] -> FusionMLP -> f_t -> Decoder -> obs_t+1
+        action_t -> ActionMLP -> action_encoded
+    
+    The LSTM branch provides temporal context, while direct encoder output provides current state.
+    The fusion MLP combines all three sources non-linearly.
     """
     
     def __init__(
@@ -36,10 +45,10 @@ class WorldModel(nn.Module):
         decoder: nn.Module,
         latent_dim: int,
         action_dim: int,
-        state_dim: int = 256,
         hidden_dim: int = 512,
         num_layers: int = 1,
         action_hidden_dim: int = 128,
+        fusion_hidden_dim: int = 512,
         freeze_encoder: bool = True,
         freeze_decoder: bool = False
     ):
@@ -49,10 +58,10 @@ class WorldModel(nn.Module):
             decoder: Pretrained decoder module (e.g., from autoencoder)
             latent_dim: Dimension of encoder output
             action_dim: Dimension of action space
-            state_dim: Dimension of LSTM state representation
             hidden_dim: Hidden dimension of LSTM
             num_layers: Number of LSTM layers
-            action_hidden_dim: Hidden dimension for action MLP
+            action_hidden_dim: Hidden dimension for action MLP (output will match latent_dim)
+            fusion_hidden_dim: Hidden dimension for fusion MLP
             freeze_encoder: Whether to freeze encoder weights
             freeze_decoder: Whether to freeze decoder weights
         """
@@ -60,7 +69,6 @@ class WorldModel(nn.Module):
         
         self.latent_dim = latent_dim
         self.action_dim = action_dim
-        self.state_dim = state_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         
@@ -70,7 +78,7 @@ class WorldModel(nn.Module):
             for param in self.encoder.parameters():
                 param.requires_grad = False
         
-        # LSTM: processes latent representations to produce state estimates
+        # LSTM Branch: processes latent representations to produce temporal state estimates
         self.lstm = nn.LSTM(
             input_size=latent_dim,
             hidden_size=hidden_dim,
@@ -78,18 +86,21 @@ class WorldModel(nn.Module):
             batch_first=True
         )
         
-        # Project LSTM hidden state to state representation
-        self.state_projection = nn.Sequential(
-            nn.Linear(hidden_dim, state_dim),
-            nn.ReLU()
-        )
-        
-        # Action encoder: maps actions to same dimensionality as state
+        # Action encoder: 2-layer MLP that encodes actions
+        # Output dimension matches latent_dim for balanced concatenation
         self.action_encoder = nn.Sequential(
             nn.Linear(action_dim, action_hidden_dim),
             nn.ReLU(),
-            nn.Linear(action_hidden_dim, state_dim),
-            nn.ReLU()
+            nn.Linear(action_hidden_dim, latent_dim)
+        )
+        
+        # Fusion MLP: 2-layer MLP that combines [encoder_out, lstm_out, action_encoded]
+        # Input dimension: latent_dim + hidden_dim + latent_dim
+        fusion_input_dim = latent_dim + hidden_dim + latent_dim
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(fusion_input_dim, fusion_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(fusion_hidden_dim, latent_dim)  # Output matches decoder input
         )
         
         # Decoder: maps fused representation to next observation
@@ -142,7 +153,7 @@ class WorldModel(nn.Module):
         
         # Encode observations to latent space
         # Note: Even if encoder is frozen, we still need gradients to flow through
-        # for training downstream components (LSTM, action encoder)
+        # for training downstream components (LSTM, action encoder, fusion MLP)
         latent_flat = self.encoder(obs_flat)
         
         # Reshape back to [batch, seq_len, latent_dim]
@@ -152,24 +163,25 @@ class WorldModel(nn.Module):
         if hidden is None:
             hidden = self.get_zero_hidden(batch_size, device)
         
-        # Process through LSTM to get state representations
+        # LSTM Branch: Process through LSTM to get temporal state representations
         lstm_out, hidden = self.lstm(latent, hidden)  # lstm_out: [batch, seq_len, hidden_dim]
         
-        # Project to state representation
-        state = self.state_projection(lstm_out)  # [batch, seq_len, state_dim]
+        # Encode actions with 2-layer MLP
+        action_encoded = self.action_encoder(actions)  # [batch, seq_len, latent_dim]
         
-        # Encode actions
-        action_encoded = self.action_encoder(actions)  # [batch, seq_len, state_dim]
+        # Concatenate all three sources: [encoder_output, lstm_output, action_encoded]
+        # Shape: [batch, seq_len, latent_dim + hidden_dim + latent_dim]
+        concat_features = torch.cat([latent, lstm_out, action_encoded], dim=-1)
         
-        # Fuse state and action representations
-        fused = state + action_encoded  # [batch, seq_len, state_dim]
+        # Flatten for fusion MLP
+        concat_flat = concat_features.reshape(batch_size * seq_len, -1)
         
-        # Flatten for decoder
-        fused_flat = fused.reshape(batch_size * seq_len, -1)
+        # Fuse with 2-layer MLP
+        fused_flat = self.fusion_mlp(concat_flat)  # [batch*seq_len, latent_dim]
         
         # Decode to predict next observations
         # Note: Even if decoder is frozen, we still need gradients to flow through
-        # for training upstream components (LSTM, action encoder)
+        # for training upstream components (LSTM, action encoder, fusion MLP)
         next_obs_pred_flat = self.decoder(fused_flat)
         
         # Get the actual output shape from decoder (may differ from input due to cropping)
@@ -215,10 +227,10 @@ class WorldModel(nn.Module):
 def create_world_model_from_autoencoder(
     autoencoder: nn.Module,
     action_dim: int,
-    state_dim: int = 256,
     hidden_dim: int = 512,
     num_layers: int = 1,
     action_hidden_dim: int = 128,
+    fusion_hidden_dim: int = 512,
     freeze_encoder: bool = True,
     freeze_decoder: bool = False
 ) -> WorldModel:
@@ -228,15 +240,18 @@ def create_world_model_from_autoencoder(
     Args:
         autoencoder: Pretrained autoencoder with encoder and decoder attributes
         action_dim: Dimension of action space
-        state_dim: Dimension of LSTM state representation
         hidden_dim: Hidden dimension of LSTM
         num_layers: Number of LSTM layers
         action_hidden_dim: Hidden dimension for action MLP
+        fusion_hidden_dim: Hidden dimension for fusion MLP
         freeze_encoder: Whether to freeze encoder weights
         freeze_decoder: Whether to freeze decoder weights
     
     Returns:
         WorldModel instance
+    
+    Note: state_dim parameter has been removed from the new architecture.
+    The fusion MLP directly outputs latent_dim dimensions for the decoder.
     """
     # Extract encoder and decoder
     # Check if this is a ResNet-style autoencoder with separate bottleneck layers
@@ -309,10 +324,10 @@ def create_world_model_from_autoencoder(
         decoder=decoder,
         latent_dim=latent_dim,
         action_dim=action_dim,
-        state_dim=state_dim,
         hidden_dim=hidden_dim,
         num_layers=num_layers,
         action_hidden_dim=action_hidden_dim,
+        fusion_hidden_dim=fusion_hidden_dim,
         freeze_encoder=freeze_encoder,
         freeze_decoder=freeze_decoder
     )
