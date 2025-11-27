@@ -1842,8 +1842,9 @@ def train_world_model(config: WorldModelConfig):
         
         # Filter by max_examples if specified (take first N episodes)
         if config.max_examples:
-            dataset.valid_episodes = dataset.valid_episodes[:config.max_examples]
-            print(f"   Limited to {len(dataset.valid_episodes)} episodes (max_examples={config.max_examples})")
+            original_count = len(dataset.episode_data)
+            dataset.episode_data = dataset.episode_data[:config.max_examples]
+            print(f"   Limited to {len(dataset.episode_data)} episodes (max_examples={config.max_examples}, was {original_count})")
         
         collate_fn = collate_episodes
         batch_size = config.episode_batch_size
@@ -1887,6 +1888,10 @@ def train_world_model(config: WorldModelConfig):
     
     # Split dataset
     total_size = len(dataset)
+    if config.max_examples and total_size > config.max_examples:
+        print(f"⚠️  Dataset size ({total_size}) exceeds max_examples ({config.max_examples})")
+        print(f"   This shouldn't happen - check dataset limiting logic")
+    
     train_size = int(config.train_split * total_size)
     val_size = int(config.val_split * total_size)
     test_size = total_size - train_size - val_size
@@ -2074,7 +2079,7 @@ def train_world_model(config: WorldModelConfig):
         # Create dummy input to get model summary
         dummy_obs = torch.randn(config.batch_size, config.sequence_length, config.input_channels, 
                                 config.input_crop_size, config.input_crop_size).to(device)
-        dummy_action = torch.randn(config.batch_size, config.sequence_length, 4).to(device)
+        dummy_action = torch.randn(config.batch_size, config.sequence_length, action_dim).to(device)
         
         # Get summary as string
         model_summary = summary(
