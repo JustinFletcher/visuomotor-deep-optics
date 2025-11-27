@@ -1910,8 +1910,19 @@ def train_world_model(config: WorldModelConfig):
     # Infer action_dim from the first batch
     print(f"\n🔍 Inferring action dimension from dataset...")
     first_batch = next(iter(train_loader))
-    _, actions, _ = first_batch
-    action_dim = actions.shape[-1]
+    
+    if config.use_episodes:
+        # Episode-based: first_batch is a list of episodes
+        if first_batch and len(first_batch[0]) >= 2:
+            _, actions, _, _ = first_batch[0]  # Get actions from first episode
+            action_dim = actions.shape[-1]
+        else:
+            raise ValueError("No valid episodes found in first batch")
+    else:
+        # Sequence-based: first_batch is a tuple of tensors
+        _, actions, _ = first_batch
+        action_dim = actions.shape[-1]
+    
     print(f"   Detected action_dim: {action_dim}")
     
     # Create world model
