@@ -1851,6 +1851,8 @@ def train_world_model(config: WorldModelConfig):
     
     # Discover dataset files
     print(f"\n📂 Discovering dataset files in: {config.dataset_path}")
+    dataset_abs_path = Path(config.dataset_path).resolve()
+    print(f"   Absolute path: {dataset_abs_path}")
     file_paths, dataset_type, metadata = DatasetDiscovery.discover_files(config.dataset_path)
     
     print(f"📊 Found {len(file_paths)} files of type '{dataset_type}'")
@@ -1929,6 +1931,40 @@ def train_world_model(config: WorldModelConfig):
         
         collate_fn = collate_sequences
         batch_size = config.batch_size
+    
+    # Dataset instrumentation - show structure of first example
+    print(f"\n📋 Dataset Information:")
+    print(f"   Total examples: {len(dataset)}")
+    print(f"   Dataset type: {type(dataset).__name__}")
+    
+    # Safely inspect first example without breaking on structure changes
+    try:
+        first_example = dataset[0]
+        print(f"   Example structure: {type(first_example).__name__}")
+        
+        # Handle different return types gracefully
+        if isinstance(first_example, (tuple, list)):
+            print(f"   - Length: {len(first_example)}")
+            for i, item in enumerate(first_example):
+                if isinstance(item, torch.Tensor):
+                    print(f"   - Item {i}: Tensor with shape {tuple(item.shape)}, dtype={item.dtype}")
+                elif isinstance(item, np.ndarray):
+                    print(f"   - Item {i}: Array with shape {tuple(item.shape)}, dtype={item.dtype}")
+                else:
+                    print(f"   - Item {i}: {type(item).__name__} = {item if not hasattr(item, '__len__') or len(str(item)) < 50 else '...'}")
+        elif isinstance(first_example, dict):
+            print(f"   - Keys: {list(first_example.keys())}")
+            for key, value in first_example.items():
+                if isinstance(value, torch.Tensor):
+                    print(f"   - {key}: Tensor with shape {tuple(value.shape)}, dtype={value.dtype}")
+                elif isinstance(value, np.ndarray):
+                    print(f"   - {key}: Array with shape {tuple(value.shape)}, dtype={value.dtype}")
+                else:
+                    print(f"   - {key}: {type(value).__name__}")
+        else:
+            print(f"   - Type: {type(first_example).__name__}")
+    except Exception as e:
+        print(f"   ⚠️  Could not inspect example structure: {e}")
     
     # Split dataset
     total_size = len(dataset)
@@ -2123,16 +2159,31 @@ def train_world_model(config: WorldModelConfig):
     try:
         # Get observation shape from a sample batch
         sample_batch = next(iter(train_loader))
-        if config.use_episodes:
-            # Episode format: list of (obs, actions, next_obs, length) tuples
-            sample_obs, sample_actions, _, _ = sample_batch[0]
-            obs_shape = sample_obs.shape  # [seq_len, C, H, W]
-            seq_len, C, H, W = obs_shape
-        else:
-            # Sequence format: dict with 'observations' and 'actions' keys
-            sample_obs = sample_batch['observations']  # [B, seq_len, C, H, W]
+        
+        # Determine batch format by inspecting the actual structure
+        if isinstance(sample_batch, list):
+            # Both episode and sequence formats can return lists
+            # Check first element structure
+            first_item = sample_batch[0]
+            if isinstance(first_item, tuple) and len(first_item) == 4:
+                # Episode format: list of (obs, actions, next_obs, length) tuples
+                sample_obs, sample_actions, _, _ = first_item
+                obs_shape = sample_obs.shape  # [seq_len, C, H, W]
+                seq_len, C, H, W = obs_shape
+            elif isinstance(first_item, tuple) and len(first_item) == 3:
+                # Sequence format returned as list: list of (obs, actions, next_obs) tuples
+                sample_obs, sample_actions, _ = first_item
+                obs_shape = sample_obs.shape  # [seq_len, C, H, W]
+                seq_len, C, H, W = obs_shape
+            else:
+                raise ValueError(f"Unexpected batch format: list with items of type {type(first_item)}")
+        elif isinstance(sample_batch, dict):
+            # Dictionary format (less common)
+            sample_obs = sample_batch['observations']
             obs_shape = sample_obs.shape
             B, seq_len, C, H, W = obs_shape
+        else:
+            raise ValueError(f"Unexpected batch format: {type(sample_batch)}")
         
         # Create dummy input to get model summary
         dummy_obs = torch.randn(config.batch_size, config.sequence_length, C, H, W).to(device)
