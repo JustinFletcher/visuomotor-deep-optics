@@ -1467,8 +1467,37 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
                         next_obs = next_obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
                     else:
                         raise ValueError(f"Unexpected tuple length: {len(first_item)}")
+                elif torch.is_tensor(first_item):
+                    # List of tensors - likely [obs, actions, next_obs] or [obs, actions, next_obs, lengths]
+                    if len(first_batch) == 4:
+                        # Episode format with lengths
+                        obs, actions, next_obs, episode_lengths = first_batch
+                        # episode_lengths might be a tensor, get first value
+                        max_timesteps = min(num_timesteps, obs.shape[1] if obs.ndim > 2 else obs.shape[0])
+                        if obs.ndim == 4:  # [batch, seq, C, H, W]
+                            obs = obs[:, :max_timesteps]
+                            actions = actions[:, :max_timesteps]
+                            next_obs = next_obs[:, :max_timesteps]
+                        else:  # [seq, C, H, W]
+                            obs = obs[:max_timesteps].unsqueeze(0)
+                            actions = actions[:max_timesteps].unsqueeze(0)
+                            next_obs = next_obs[:max_timesteps].unsqueeze(0)
+                    elif len(first_batch) == 3:
+                        # Standard format [obs, actions, next_obs]
+                        obs, actions, next_obs = first_batch
+                        max_timesteps = min(num_timesteps, obs.shape[1] if obs.ndim > 2 else obs.shape[0])
+                        if obs.ndim == 4:  # [batch, seq, C, H, W]
+                            obs = obs[:, :max_timesteps]
+                            actions = actions[:, :max_timesteps]
+                            next_obs = next_obs[:, :max_timesteps]
+                        else:  # [seq, C, H, W]
+                            obs = obs[:max_timesteps].unsqueeze(0)
+                            actions = actions[:max_timesteps].unsqueeze(0)
+                            next_obs = next_obs[:max_timesteps].unsqueeze(0)
+                    else:
+                        raise ValueError(f"Unexpected number of tensors in list: {len(first_batch)}")
                 else:
-                    raise ValueError(f"Expected tuple in list, got {type(first_item)}")
+                    raise ValueError(f"Expected tuple or tensor in list, got {type(first_item)}")
             elif isinstance(first_batch, tuple) and len(first_batch) == 3:
                 # Direct tuple format (obs, actions, next_obs) with batch dimension
                 obs, actions, next_obs = first_batch
