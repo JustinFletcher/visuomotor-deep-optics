@@ -16,8 +16,8 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name world_model_experiment_sa_1m_mse --loss-function mse --seed 2 --device cuda:0",
-    "--run-name world_model_experiment_sa_1m_mae --loss-function mae --seed 2 --device cuda:1",
+    "--run-name world_model_experiment_sa_1m_mse --loss-function mse --seed 2 --device cuda:0"
+    "--run-name world_model_experiment_sa_1m_mae --loss-function mae --seed 2 --device cuda:1"
 )
 
 # Run all variants in parallel
