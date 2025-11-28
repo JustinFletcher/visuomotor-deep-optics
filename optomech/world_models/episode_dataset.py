@@ -141,6 +141,7 @@ class WorldModelEpisodeDataset(Dataset):
         
         # Sort transitions within each episode by step number and filter by length
         valid_episode_count = 0
+        rejected_episode_count = 0
         for episode_id, transitions in episode_groups.items():
             if transitions[0]['step'] is not None:
                 # SA dataset: sort by step number
@@ -154,28 +155,42 @@ class WorldModelEpisodeDataset(Dataset):
             if episode_length >= self.min_episode_length:
                 self.valid_episodes.append((episode_id, transitions, episode_length))
                 valid_episode_count += 1
+            else:
+                rejected_episode_count += 1
         
         print(f"  📊 Reconstructed {len(episode_groups)} episodes from {len(self.file_paths)} files")
-        print(f"  ✅ {valid_episode_count} episodes meet min_length requirement ({self.min_episode_length})")
+        
+        # Always show episode length distribution for debugging
+        lengths = []
+        for episode_id, transitions in episode_groups.items():
+            if transitions[0]['step'] is not None:
+                lengths.append(len(transitions))
+            else:
+                lengths.append(transitions[0]['episode_length'])
+        
+        if lengths:
+            print(f"  📊 Episode length stats: min={min(lengths)}, max={max(lengths)}, "
+                  f"median={np.median(lengths):.0f}, mean={np.mean(lengths):.1f}")
+            print(f"  📊 Filtering with min_episode_length={self.min_episode_length}")
+            print(f"  ✅ {valid_episode_count} episodes accepted, {rejected_episode_count} rejected")
+            
+            # Show some example episode lengths for debugging
+            if rejected_episode_count > 0:
+                sorted_lengths = sorted(lengths)
+                print(f"  📊 First 10 episode lengths: {sorted_lengths[:10]}")
+                print(f"  📊 Last 10 episode lengths: {sorted_lengths[-10:]}")
+        else:
+            print(f"  ✅ {valid_episode_count} episodes meet min_length requirement ({self.min_episode_length})")
         
         if len(episode_groups) > 0 and valid_episode_count == 0:
-            # Show episode length distribution for debugging
-            lengths = []
-            for episode_id, transitions in episode_groups.items():
-                if transitions[0]['step'] is not None:
-                    lengths.append(len(transitions))
-                else:
-                    lengths.append(transitions[0]['episode_length'])
-            
-            if lengths:
-                print(f"  📊 Episode length stats: min={min(lengths)}, max={max(lengths)}, "
-                      f"median={np.median(lengths):.0f}, mean={np.mean(lengths):.1f}")
-                print(f"  💡 Consider lowering min_episode_length (currently {self.min_episode_length})")
+            print(f"  💡 Consider lowering min_episode_length (currently {self.min_episode_length})")
         
         # Store valid episodes for __getitem__
         self.episode_data = []
         for episode_id, transitions, episode_length in self.valid_episodes:
             self.episode_data.append((episode_id, transitions, episode_length))
+        
+        print(f"✅ Episode dataset: {len(self.episode_data)} episodes ready")
     
     def __len__(self) -> int:
         return len(self.episode_data)
