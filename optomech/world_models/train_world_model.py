@@ -1472,28 +1472,27 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
                     if len(first_batch) == 4:
                         # Episode format with lengths
                         obs, actions, next_obs, episode_lengths = first_batch
-                        # episode_lengths might be a tensor, get first value
-                        max_timesteps = min(num_timesteps, obs.shape[1] if obs.ndim > 2 else obs.shape[0])
-                        if obs.ndim == 4:  # [batch, seq, C, H, W]
-                            obs = obs[:, :max_timesteps]
-                            actions = actions[:, :max_timesteps]
-                            next_obs = next_obs[:, :max_timesteps]
-                        else:  # [seq, C, H, W]
-                            obs = obs[:max_timesteps].unsqueeze(0)
-                            actions = actions[:max_timesteps].unsqueeze(0)
-                            next_obs = next_obs[:max_timesteps].unsqueeze(0)
+                        # Select first item in batch
+                        if obs.ndim == 5:  # [batch, seq, C, H, W]
+                            obs = obs[0]  # [seq, C, H, W]
+                            actions = actions[0]  # [seq, action_dim]
+                            next_obs = next_obs[0]  # [seq, C, H, W]
+                        max_timesteps = min(num_timesteps, obs.shape[0])
+                        obs = obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+                        actions = actions[:max_timesteps].unsqueeze(0)  # [1, timesteps, action_dim]
+                        next_obs = next_obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
                     elif len(first_batch) == 3:
                         # Standard format [obs, actions, next_obs]
                         obs, actions, next_obs = first_batch
-                        max_timesteps = min(num_timesteps, obs.shape[1] if obs.ndim > 2 else obs.shape[0])
-                        if obs.ndim == 4:  # [batch, seq, C, H, W]
-                            obs = obs[:, :max_timesteps]
-                            actions = actions[:, :max_timesteps]
-                            next_obs = next_obs[:, :max_timesteps]
-                        else:  # [seq, C, H, W]
-                            obs = obs[:max_timesteps].unsqueeze(0)
-                            actions = actions[:max_timesteps].unsqueeze(0)
-                            next_obs = next_obs[:max_timesteps].unsqueeze(0)
+                        # Select first item in batch
+                        if obs.ndim == 5:  # [batch, seq, C, H, W]
+                            obs = obs[0]  # [seq, C, H, W]
+                            actions = actions[0]  # [seq, action_dim]
+                            next_obs = next_obs[0]  # [seq, C, H, W]
+                        max_timesteps = min(num_timesteps, obs.shape[0])
+                        obs = obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+                        actions = actions[:max_timesteps].unsqueeze(0)  # [1, timesteps, action_dim]
+                        next_obs = next_obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
                     else:
                         raise ValueError(f"Unexpected number of tensors in list: {len(first_batch)}")
                 else:
@@ -1501,20 +1500,21 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
             elif isinstance(first_batch, tuple) and len(first_batch) == 3:
                 # Direct tuple format (obs, actions, next_obs) with batch dimension
                 obs, actions, next_obs = first_batch
-                # Take first num_timesteps from the sequence
+                # Select first item only and take first num_timesteps
                 max_timesteps = min(num_timesteps, obs.shape[1])
-                obs = obs[:, :max_timesteps]  # [batch, timesteps, C, H, W]
-                actions = actions[:, :max_timesteps]  # [batch, timesteps, action_dim]
-                next_obs = next_obs[:, :max_timesteps]  # [batch, timesteps, C, H, W]
+                obs = obs[0:1, :max_timesteps]  # [1, timesteps, C, H, W]
+                actions = actions[0:1, :max_timesteps]  # [1, timesteps, action_dim]
+                next_obs = next_obs[0:1, :max_timesteps]  # [1, timesteps, C, H, W]
             elif isinstance(first_batch, dict):
                 # Dictionary format
                 obs = first_batch['observations']
                 actions = first_batch['actions']
                 next_obs = first_batch['next_observations']
+                # Select first item only and take first num_timesteps
                 max_timesteps = min(num_timesteps, obs.shape[1])
-                obs = obs[:, :max_timesteps]
-                actions = actions[:, :max_timesteps]
-                next_obs = next_obs[:, :max_timesteps]
+                obs = obs[0:1, :max_timesteps]
+                actions = actions[0:1, :max_timesteps]
+                next_obs = next_obs[0:1, :max_timesteps]
             else:
                 raise ValueError(f"Unexpected batch format: {type(first_batch)}")
             
