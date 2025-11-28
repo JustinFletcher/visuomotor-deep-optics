@@ -1448,6 +1448,13 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
             # Robustly determine batch format by inspecting structure
             if isinstance(first_batch, list) and len(first_batch) > 0:
                 first_item = first_batch[0]
+                
+                # Handle nested list structure (DataLoader may wrap collate output in extra list)
+                if isinstance(first_item, list) and len(first_item) > 0:
+                    # Unwrap one level
+                    first_batch = first_item
+                    first_item = first_batch[0]
+                
                 if isinstance(first_item, tuple):
                     if len(first_item) == 4:
                         # Episode-based format: list of (obs, actions, next_obs, length) tuples
