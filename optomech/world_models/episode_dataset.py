@@ -217,15 +217,23 @@ class WorldModelEpisodeDataset(Dataset):
             # Load episode data using existing logic
             obs, actions, next_obs = self._load_episode_from_disk(episode_id, transitions, episode_length)
             
-            # Convert to tensors
-            obs = torch.from_numpy(obs).float() / 65535.0
-            actions = torch.from_numpy(actions).float()
-            next_obs = torch.from_numpy(next_obs).float() / 65535.0
-            
-            # Apply transforms if provided
+            # Apply transforms if provided (before converting to tensors, as transforms expect numpy)
             if self.transforms is not None:
-                obs = self.transforms(obs)
-                next_obs = self.transforms(next_obs)
+                obs_list = []
+                next_obs_list = []
+                for i in range(len(obs)):
+                    obs_i = self.transforms(obs[i])
+                    next_obs_i = self.transforms(next_obs[i])
+                    obs_list.append(obs_i)
+                    next_obs_list.append(next_obs_i)
+                obs = torch.stack(obs_list)
+                next_obs = torch.stack(next_obs_list)
+                actions = torch.from_numpy(actions).float()
+            else:
+                # Convert to tensors and normalize
+                obs = torch.from_numpy(obs).float() / 65535.0
+                actions = torch.from_numpy(actions).float()
+                next_obs = torch.from_numpy(next_obs).float() / 65535.0
             
             self.preloaded_episodes.append((obs, actions, next_obs, episode_length))
             
@@ -339,15 +347,23 @@ class WorldModelEpisodeDataset(Dataset):
         try:
             obs, actions, next_obs = self._load_episode_from_disk(episode_id, transitions, episode_length)
             
-            # Convert to tensors and normalize
-            obs = torch.from_numpy(obs).float() / 65535.0
-            actions = torch.from_numpy(actions).float()
-            next_obs = torch.from_numpy(next_obs).float() / 65535.0
-            
-            # Apply transforms if provided
+            # Apply transforms if provided (before converting to tensors, as transforms expect numpy)
             if self.transforms is not None:
-                obs = self.transforms(obs)
-                next_obs = self.transforms(next_obs)
+                obs_list = []
+                next_obs_list = []
+                for i in range(len(obs)):
+                    obs_i = self.transforms(obs[i])
+                    next_obs_i = self.transforms(next_obs[i])
+                    obs_list.append(obs_i)
+                    next_obs_list.append(next_obs_i)
+                obs = torch.stack(obs_list)
+                next_obs = torch.stack(next_obs_list)
+                actions = torch.from_numpy(actions).float()
+            else:
+                # Convert to tensors and normalize
+                obs = torch.from_numpy(obs).float() / 65535.0
+                actions = torch.from_numpy(actions).float()
+                next_obs = torch.from_numpy(next_obs).float() / 65535.0
             
             # Update episode length after potential truncation
             actual_length = obs.shape[0]
