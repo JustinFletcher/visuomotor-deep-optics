@@ -1093,10 +1093,8 @@ def train_world_model_epoch_episodes(
                 num_sequences_in_episode += 1
                 total_sequences += 1
                 
-                # Clean up tensors
+                # Clean up tensors (but don't clear cache every iteration - expensive)
                 del obs_chunk, actions_chunk, next_obs_chunk, next_obs_pred, latent, new_hidden, loss
-                if device.type == 'cuda':
-                    torch.cuda.empty_cache()
             
             # Average loss for this episode
             if num_sequences_in_episode > 0:
@@ -1107,8 +1105,10 @@ def train_world_model_epoch_episodes(
             
             # Clean up episode tensors
             del obs, actions, next_obs, hidden
-            if device.type == 'cuda':
-                torch.cuda.empty_cache()
+        
+        # Clear cache only once per batch (not per sequence/episode)
+        if device.type == 'cuda' and batch_idx % 10 == 0:
+            torch.cuda.empty_cache()
         
         # Prepare for next batch fetch timing
         batch_fetch_start = time.time()
@@ -1370,10 +1370,8 @@ def validate_world_model_epoch_episodes(
                     num_sequences_in_episode += 1
                     total_sequences += 1
                     
-                    # Clean up tensors
+                    # Clean up tensors (but don't clear cache every iteration)
                     del obs_chunk, actions_chunk, next_obs_chunk, next_obs_pred, latent, new_hidden
-                    if device.type == 'cuda':
-                        torch.cuda.empty_cache()
                 
                 # Average loss for this episode
                 if num_sequences_in_episode > 0:
@@ -1384,8 +1382,10 @@ def validate_world_model_epoch_episodes(
                 
                 # Clean up episode tensors
                 del obs, actions, next_obs, hidden
-                if device.type == 'cuda':
-                    torch.cuda.empty_cache()
+            
+            # Clear cache only once per batch (not per sequence/episode)
+            if device.type == 'cuda' and batch_idx % 10 == 0:
+                torch.cuda.empty_cache()
             
             # Prepare for next batch fetch timing
             batch_fetch_start = time.time()

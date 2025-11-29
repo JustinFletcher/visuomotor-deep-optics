@@ -15,7 +15,7 @@
   "freeze_decoder": false,
   "latent_dim": 256,
   "input_crop_size": 256,
-  "sequence_length": 9,
+  "sequence_length": 32,
   "use_episodes": true,
   "episode_batch_size": 8,
   "min_episode_length": 9,
