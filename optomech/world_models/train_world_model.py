@@ -999,8 +999,15 @@ def train_world_model_epoch_episodes(
     last_print_time = time.time()
     print_interval = 1.0
     
+    batch_fetch_start = time.time()
+    first_batch = True
+    
     for batch_idx, episode_batch in enumerate(episode_loader):
         # episode_batch is a list of episodes: [(obs, actions, next_obs, length), ...]
+        
+        if first_batch:
+            print(f"  ⏱️  First batch fetched in {time.time() - batch_fetch_start:.2f}s")
+            first_batch = False
         
         for episode_idx, (obs, actions, next_obs, episode_length) in enumerate(episode_batch):
             if episode_length == 0:
@@ -1271,9 +1278,16 @@ def validate_world_model_epoch_episodes(
     last_print_time = time.time()
     print_interval = 1.0
     
+    batch_fetch_start = time.time()
+    first_batch = True
+    
     with torch.no_grad():
         for batch_idx, episode_batch in enumerate(episode_loader):
             # episode_batch is a list of episodes: [(obs, actions, next_obs, length), ...]
+            
+            if first_batch:
+                print(f"  ⏱️  First batch fetched in {time.time() - batch_fetch_start:.2f}s")
+                first_batch = False
             
             for episode_idx, (obs, actions, next_obs, episode_length) in enumerate(episode_batch):
                 if episode_length == 0:
@@ -2233,6 +2247,13 @@ def train_world_model(config: WorldModelConfig):
             # Both episode and sequence formats can return lists
             # Check first element structure
             first_item = sample_batch[0]
+            
+            # Handle nested list structure (DataLoader may wrap collate output in extra list)
+            if isinstance(first_item, list) and len(first_item) > 0:
+                # Unwrap one level
+                sample_batch = first_item
+                first_item = sample_batch[0]
+            
             if isinstance(first_item, tuple) and len(first_item) == 4:
                 # Episode format: list of (obs, actions, next_obs, length) tuples
                 sample_obs, sample_actions, _, _ = first_item
@@ -2411,6 +2432,8 @@ def train_world_model(config: WorldModelConfig):
         print(f"{'='*60}")
         
         # Training
+        train_start = time.time()
+        print(f"\n⏱️  Starting training phase...")
         if config.use_episodes:
             train_loss = train_world_model_epoch_episodes(
                 model, train_loader, criterion, optimizer, device, 
@@ -2419,8 +2442,11 @@ def train_world_model(config: WorldModelConfig):
         else:
             train_loss = train_world_model_epoch(model, train_loader, criterion, optimizer, device, scaler)
         train_losses.append(train_loss)
+        print(f"⏱️  Training completed in {time.time() - train_start:.2f}s")
         
         # Validation
+        val_start = time.time()
+        print(f"⏱️  Starting validation phase...")
         if config.use_episodes:
             val_loss = validate_world_model_epoch_episodes(
                 model, val_loader, criterion, device, 
@@ -2429,6 +2455,7 @@ def train_world_model(config: WorldModelConfig):
         else:
             val_loss = validate_world_model_epoch(model, val_loader, criterion, device)
         val_losses.append(val_loss)
+        print(f"⏱️  Validation completed in {time.time() - val_start:.2f}s")
         
         # Visualize world model predictions (only on certain epochs to save memory)
         if (epoch + 1) % config.reconstruction_interval == 0:
