@@ -1966,7 +1966,7 @@ def train_world_model(config: WorldModelConfig):
             obs_key=config.obs_key,
             action_key=config.action_key,
             min_episode_length=config.min_episode_length,
-            load_in_memory=config.load_in_memory
+            load_in_memory=False  # Don't preload yet, we need to filter first
         )
         
         # Filter by max_examples if specified (take first N episodes)
@@ -1974,6 +1974,10 @@ def train_world_model(config: WorldModelConfig):
             original_count = len(dataset.episode_data)
             dataset.episode_data = dataset.episode_data[:config.max_examples]
             print(f"   Limited to {len(dataset.episode_data)} episodes (max_examples={config.max_examples}, was {original_count})")
+        
+        # Now preload if requested (after filtering)
+        if config.load_in_memory:
+            dataset._preload_episodes()
         
         collate_fn = collate_episodes
         batch_size = config.episode_batch_size
