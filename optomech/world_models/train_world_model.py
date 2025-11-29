@@ -1002,11 +1002,23 @@ def train_world_model_epoch_episodes(
     batch_fetch_start = time.time()
     first_batch = True
     
+    # Timing breakdown accumulators
+    total_fetch_time = 0.0
+    total_forward_time = 0.0
+    total_backward_time = 0.0
+    total_data_move_time = 0.0
+    batch_count = 0
+    
     for batch_idx, episode_batch in enumerate(episode_loader):
         # episode_batch is a list of episodes: [(obs, actions, next_obs, length), ...]
         
+        batch_fetch_time = time.time() - batch_fetch_start
+        total_fetch_time += batch_fetch_time
+        batch_count += 1
+        
         if first_batch:
-            print(f"  ⏱️  First batch fetched in {time.time() - batch_fetch_start:.2f}s")
+            estimated_total = batch_fetch_time * len(episode_loader)
+            print(f"  ⏱️  First batch fetched in {batch_fetch_time:.2f}s (estimated total: {estimated_total:.1f}s)")
             first_batch = False
         
         for episode_idx, (obs, actions, next_obs, episode_length) in enumerate(episode_batch):
@@ -1014,9 +1026,11 @@ def train_world_model_epoch_episodes(
                 continue
                 
             # Move episode data to device
+            data_move_start = time.time()
             obs = obs.to(device)
             actions = actions.to(device)
             next_obs = next_obs.to(device)
+            total_data_move_time += time.time() - data_move_start
             
             # Initialize hidden state for this episode
             hidden = model.get_zero_hidden(1, device)  # batch_size=1 for single episode
@@ -1037,6 +1051,7 @@ def train_world_model_epoch_episodes(
                 optimizer.zero_grad()
                 
                 # Forward pass with carried hidden state
+                forward_start = time.time()
                 if use_amp:
                     with torch.cuda.amp.autocast():
                         next_obs_pred, latent, new_hidden = model(obs_chunk, actions_chunk, hidden)
@@ -1058,8 +1073,10 @@ def train_world_model_epoch_episodes(
                         loss = criterion(next_obs_pred, next_obs_chunk)
                 else:
                     loss = criterion(next_obs_pred, next_obs_chunk)
+                total_forward_time += time.time() - forward_start
                 
                 # Backward pass
+                backward_start = time.time()
                 if use_amp:
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
@@ -1067,6 +1084,7 @@ def train_world_model_epoch_episodes(
                 else:
                     loss.backward()
                     optimizer.step()
+                total_backward_time += time.time() - backward_start
                 
                 # Update hidden state for next sequence (detach to prevent gradient explosion)
                 hidden = (new_hidden[0].detach(), new_hidden[1].detach())
@@ -1092,6 +1110,9 @@ def train_world_model_epoch_episodes(
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
         
+        # Prepare for next batch fetch timing
+        batch_fetch_start = time.time()
+        
         # Progress reporting
         current_time = time.time()
         if (current_time - last_print_time) >= print_interval or batch_idx == 0:
@@ -1104,6 +1125,15 @@ def train_world_model_epoch_episodes(
     print()  # New line
     avg_loss = running_loss / max(1, total_episodes)
     print(f"📊 Epoch complete: {total_episodes} episodes, {total_sequences} sequences processed")
+    
+    # Print timing breakdown
+    if batch_count > 0:
+        print(f"⏱️  Timing breakdown:")
+        print(f"   Batch fetch:  {total_fetch_time:.2f}s ({total_fetch_time/batch_count:.3f}s/batch)")
+        print(f"   Data->GPU:    {total_data_move_time:.2f}s")
+        print(f"   Forward pass: {total_forward_time:.2f}s")
+        print(f"   Backward pass: {total_backward_time:.2f}s")
+    
     return avg_loss
 
 
@@ -1280,13 +1310,18 @@ def validate_world_model_epoch_episodes(
     
     batch_fetch_start = time.time()
     first_batch = True
+    batch_count = 0
     
     with torch.no_grad():
         for batch_idx, episode_batch in enumerate(episode_loader):
             # episode_batch is a list of episodes: [(obs, actions, next_obs, length), ...]
             
+            batch_fetch_time = time.time() - batch_fetch_start
+            batch_count += 1
+            
             if first_batch:
-                print(f"  ⏱️  First batch fetched in {time.time() - batch_fetch_start:.2f}s")
+                estimated_total = batch_fetch_time * len(episode_loader)
+                print(f"  ⏱️  First batch fetched in {batch_fetch_time:.2f}s (estimated total: {estimated_total:.1f}s)")
                 first_batch = False
             
             for episode_idx, (obs, actions, next_obs, episode_length) in enumerate(episode_batch):
@@ -1351,6 +1386,9 @@ def validate_world_model_epoch_episodes(
                 del obs, actions, next_obs, hidden
                 if device.type == 'cuda':
                     torch.cuda.empty_cache()
+            
+            # Prepare for next batch fetch timing
+            batch_fetch_start = time.time()
             
             # Progress reporting
             current_time = time.time()
