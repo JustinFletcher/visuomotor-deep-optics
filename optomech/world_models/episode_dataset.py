@@ -30,7 +30,8 @@ class WorldModelEpisodeDataset(Dataset):
         transforms=None,
         obs_key: str = 'observations',
         action_key: str = 'actions',
-        min_episode_length: int = 10
+        min_episode_length: int = 10,
+        load_in_memory: bool = False
     ):
         """
         Args:
@@ -40,6 +41,7 @@ class WorldModelEpisodeDataset(Dataset):
             obs_key: Key for observations in files
             action_key: Key for actions in files
             min_episode_length: Minimum episode length to include
+            load_in_memory: If True, preload all episodes into memory for faster access
         """
         self.file_paths = file_paths
         self.dataset_type = dataset_type
@@ -47,13 +49,20 @@ class WorldModelEpisodeDataset(Dataset):
         self.obs_key = obs_key
         self.action_key = action_key
         self.min_episode_length = min_episode_length
+        self.load_in_memory = load_in_memory
         
         # Filter episodes by minimum length
         self.valid_episodes = []
+        self.total_episodes = 0  # Will be set in _filter_episodes
+        self.preloaded_episodes = None  # Will store preloaded data if load_in_memory=True
         self._filter_episodes()
         
-        print(f"✅ Episode dataset: {len(self.valid_episodes)}/{len(file_paths)} episodes "
-              f"(min_length={min_episode_length})")
+        # Preload episodes into memory if requested
+        if self.load_in_memory:
+            self._preload_episodes()
+        
+        print(f"✅ Episode dataset: {len(self.valid_episodes)}/{self.total_episodes} episodes "
+              f"(min_length={min_episode_length}) from {len(file_paths)} files")
     
     def _filter_episodes(self):
         """Filter episodes by minimum length. For SA datasets, reconstruct episodes from transitions."""
@@ -158,6 +167,9 @@ class WorldModelEpisodeDataset(Dataset):
             else:
                 rejected_episode_count += 1
         
+        # Store total episodes count for summary message
+        self.total_episodes = len(episode_groups)
+        
         print(f"  📊 Reconstructed {len(episode_groups)} episodes from {len(self.file_paths)} files")
         
         # Always show episode length distribution for debugging
@@ -192,6 +204,117 @@ class WorldModelEpisodeDataset(Dataset):
         
         print(f"✅ Episode dataset: {len(self.episode_data)} episodes ready")
     
+    def _preload_episodes(self):
+        """Preload all episodes into memory for faster access."""
+        import time
+        print(f"\n💾 Preloading {len(self.episode_data)} episodes into memory...")
+        start_time = time.time()
+        
+        self.preloaded_episodes = []
+        for idx in range(len(self.episode_data)):
+            episode_id, transitions, episode_length = self.episode_data[idx]
+            
+            # Load episode data using existing logic
+            obs, actions, next_obs = self._load_episode_from_disk(episode_id, transitions, episode_length)
+            
+            # Convert to tensors
+            obs = torch.from_numpy(obs).float() / 65535.0
+            actions = torch.from_numpy(actions).float()
+            next_obs = torch.from_numpy(next_obs).float() / 65535.0
+            
+            # Apply transforms if provided
+            if self.transforms is not None:
+                obs = self.transforms(obs)
+                next_obs = self.transforms(next_obs)
+            
+            self.preloaded_episodes.append((obs, actions, next_obs, episode_length))
+            
+            # Progress indicator
+            if (idx + 1) % 100 == 0 or idx == len(self.episode_data) - 1:
+                elapsed = time.time() - start_time
+                rate = (idx + 1) / elapsed
+                eta = (len(self.episode_data) - idx - 1) / rate if rate > 0 else 0
+                print(f"  💾 Loaded {idx + 1}/{len(self.episode_data)} episodes "
+                      f"({rate:.1f} eps/s, ETA: {eta:.1f}s)")
+        
+        total_time = time.time() - start_time
+        print(f"✅ Preloading complete in {total_time:.1f}s ({len(self.episode_data)/total_time:.1f} eps/s)")
+    
+    def _load_episode_from_disk(self, episode_id, transitions, episode_length):
+        """Load episode data from disk (used by both __getitem__ and preloading)."""
+        if transitions[0]['transition_idx'] is not None:
+            # SA dataset format: reconstruct episode from transitions
+            obs_list = []
+            actions_list = []
+            next_obs_list = []
+            
+            for transition_info in transitions:
+                file_path = transition_info['file_path']
+                trans_idx = transition_info['transition_idx']
+                
+                # Load this transition
+                if self.dataset_type == 'hdf5':
+                    with h5py.File(file_path, 'r') as f:
+                        obs_list.append(f[self.obs_key][trans_idx])
+                        actions_list.append(f[self.action_key][trans_idx])
+                        
+                        if 'next_observations' in f:
+                            next_obs_list.append(f['next_observations'][trans_idx])
+                        else:
+                            # For SA datasets, the next_obs is the obs of the next transition
+                            # For the last transition, we'll use the same obs (episode ends)
+                            if len(next_obs_list) < len(obs_list) - 1:
+                                next_obs_list.append(f[self.obs_key][trans_idx])
+                
+                elif self.dataset_type == 'npz':
+                    data = np.load(file_path)
+                    obs_list.append(data[self.obs_key][trans_idx])
+                    actions_list.append(data[self.action_key][trans_idx])
+                    
+                    if 'next_observations' in data:
+                        next_obs_list.append(data['next_observations'][trans_idx])
+                    else:
+                        if len(next_obs_list) < len(obs_list) - 1:
+                            next_obs_list.append(data[self.obs_key][trans_idx])
+            
+            # Handle last next_obs for SA datasets without explicit next_observations
+            if len(next_obs_list) < len(obs_list):
+                # Use the last obs as the final next_obs (episode termination)
+                next_obs_list.append(obs_list[-1])
+            
+            # Convert to numpy arrays
+            obs = np.array(obs_list)
+            actions = np.array(actions_list)
+            next_obs = np.array(next_obs_list)
+            
+        else:
+            # Regular dataset format: load entire file
+            file_path = transitions[0]['file_path']
+            
+            if self.dataset_type == 'hdf5':
+                with h5py.File(file_path, 'r') as f:
+                    if 'next_observations' in f:
+                        obs = f[self.obs_key][:]
+                        actions = f[self.action_key][:]
+                        next_obs = f['next_observations'][:]
+                    else:
+                        obs = f[self.obs_key][:-1]
+                        next_obs = f[self.obs_key][1:]
+                        actions = f[self.action_key][:-1]
+            
+            elif self.dataset_type == 'npz':
+                data = np.load(file_path)
+                if 'next_observations' in data:
+                    obs = data[self.obs_key]
+                    actions = data[self.action_key]
+                    next_obs = data['next_observations']
+                else:
+                    obs = data[self.obs_key][:-1]
+                    next_obs = data[self.obs_key][1:]
+                    actions = data[self.action_key][:-1]
+        
+        return obs, actions, next_obs
+    
     def __len__(self) -> int:
         return len(self.episode_data)
     
@@ -206,97 +329,25 @@ class WorldModelEpisodeDataset(Dataset):
                 - next_obs: [episode_length, C, H, W]
                 - episode_length: int
         """
+        # If data is preloaded, return directly from memory
+        if self.preloaded_episodes is not None:
+            return self.preloaded_episodes[idx]
+        
+        # Otherwise load from disk
         episode_id, transitions, episode_length = self.episode_data[idx]
         
         try:
-            if transitions[0]['transition_idx'] is not None:
-                # SA dataset format: reconstruct episode from transitions
-                obs_list = []
-                actions_list = []
-                next_obs_list = []
-                
-                for transition_info in transitions:
-                    file_path = transition_info['file_path']
-                    trans_idx = transition_info['transition_idx']
-                    
-                    # Load this transition
-                    if self.dataset_type == 'hdf5':
-                        with h5py.File(file_path, 'r') as f:
-                            obs_list.append(f[self.obs_key][trans_idx])
-                            actions_list.append(f[self.action_key][trans_idx])
-                            
-                            if 'next_observations' in f:
-                                next_obs_list.append(f['next_observations'][trans_idx])
-                            else:
-                                # For SA datasets, the next_obs is the obs of the next transition
-                                # For the last transition, we'll use the same obs (episode ends)
-                                if len(next_obs_list) < len(obs_list) - 1:
-                                    next_obs_list.append(f[self.obs_key][trans_idx])
-                    
-                    elif self.dataset_type == 'npz':
-                        data = np.load(file_path)
-                        obs_list.append(data[self.obs_key][trans_idx])
-                        actions_list.append(data[self.action_key][trans_idx])
-                        
-                        if 'next_observations' in data:
-                            next_obs_list.append(data['next_observations'][trans_idx])
-                        else:
-                            if len(next_obs_list) < len(obs_list) - 1:
-                                next_obs_list.append(data[self.obs_key][trans_idx])
-                
-                # Handle last next_obs for SA datasets without explicit next_observations
-                if len(next_obs_list) < len(obs_list):
-                    # Use the last obs as the final next_obs (episode termination)
-                    next_obs_list.append(obs_list[-1])
-                
-                # Convert to numpy arrays
-                obs = np.array(obs_list)
-                actions = np.array(actions_list)
-                next_obs = np.array(next_obs_list)
-                
-            else:
-                # Regular dataset format: load entire file
-                file_path = transitions[0]['file_path']
-                
-                if self.dataset_type == 'hdf5':
-                    with h5py.File(file_path, 'r') as f:
-                        if 'next_observations' in f:
-                            obs = f[self.obs_key][:]
-                            actions = f[self.action_key][:]
-                            next_obs = f['next_observations'][:]
-                        else:
-                            obs = f[self.obs_key][:-1]
-                            next_obs = f[self.obs_key][1:]
-                            actions = f[self.action_key][:-1]
-                
-                elif self.dataset_type == 'npz':
-                    data = np.load(file_path)
-                    if 'next_observations' in data:
-                        obs = data[self.obs_key]
-                        actions = data[self.action_key]
-                        next_obs = data['next_observations']
-                    else:
-                        obs = data[self.obs_key][:-1]
-                        next_obs = data[self.obs_key][1:]
-                        actions = data[self.action_key][:-1]
+            obs, actions, next_obs = self._load_episode_from_disk(episode_id, transitions, episode_length)
+            
+            # Convert to tensors and normalize
+            obs = torch.from_numpy(obs).float() / 65535.0
+            actions = torch.from_numpy(actions).float()
+            next_obs = torch.from_numpy(next_obs).float() / 65535.0
             
             # Apply transforms if provided
             if self.transforms is not None:
-                obs_list = []
-                next_obs_list = []
-                for i in range(len(obs)):
-                    obs_i = self.transforms(obs[i])
-                    next_obs_i = self.transforms(next_obs[i])
-                    obs_list.append(obs_i)
-                    next_obs_list.append(next_obs_i)
-                obs = torch.stack(obs_list)
-                next_obs = torch.stack(next_obs_list)
-                actions = torch.from_numpy(actions).float()
-            else:
-                # Convert to tensors
-                obs = torch.from_numpy(obs).float()
-                next_obs = torch.from_numpy(next_obs).float()
-                actions = torch.from_numpy(actions).float()
+                obs = self.transforms(obs)
+                next_obs = self.transforms(next_obs)
             
             # Update episode length after potential truncation
             actual_length = obs.shape[0]

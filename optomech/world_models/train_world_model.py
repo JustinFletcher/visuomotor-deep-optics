@@ -1965,7 +1965,8 @@ def train_world_model(config: WorldModelConfig):
             transforms=transforms,
             obs_key=config.obs_key,
             action_key=config.action_key,
-            min_episode_length=config.min_episode_length
+            min_episode_length=config.min_episode_length,
+            load_in_memory=config.load_in_memory
         )
         
         # Filter by max_examples if specified (take first N episodes)
