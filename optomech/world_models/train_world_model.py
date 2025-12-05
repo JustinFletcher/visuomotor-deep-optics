@@ -708,6 +708,7 @@ class WorldModelConfig:
     # Episode-based training (NEW)
     use_episodes: bool = False  # Use episode-based training instead of sequence-based
     min_episode_length: int = 20  # Minimum episode length for episode-based training
+    max_episode_length: int = None  # Maximum episode length (truncate if longer, None for no limit)
     
     # Dataset keys
     obs_key: str = "observations"  # HDF5/NPZ key for observations
@@ -2371,6 +2372,7 @@ def train_world_model(config: WorldModelConfig):
         print(f"   Observation key: {config.obs_key}")
         print(f"   Action key: {config.action_key}")
         print(f"   Min episode length: {config.min_episode_length}")
+        print(f"   Max episode length: {config.max_episode_length if hasattr(config, 'max_episode_length') else 'None (unlimited)'}")
         print(f"   Batch size: {config.batch_size}")
         
         dataset = WorldModelEpisodeDataset(
