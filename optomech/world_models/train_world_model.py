@@ -1133,7 +1133,7 @@ def train_world_model_epoch_episodes(
         print(f"   Forward pass: {total_forward_time:.2f}s")
         print(f"   Backward pass: {total_backward_time:.2f}s")
     
-    return avg_loss
+    return avg_loss, total_sequences
 
 
 def train_world_model_epoch(model, train_loader, criterion, optimizer, device, scaler=None):
@@ -1401,7 +1401,7 @@ def validate_world_model_epoch_episodes(
     print()  # New line
     avg_loss = running_loss / max(1, total_episodes)
     print(f"📊 Validation complete: {total_episodes} episodes, {total_sequences} sequences processed")
-    return avg_loss
+    return avg_loss, total_sequences
 
 
 def validate_world_model_epoch(model, val_loader, criterion, device):
@@ -2477,27 +2477,37 @@ def train_world_model(config: WorldModelConfig):
         train_start = time.time()
         print(f"\n⏱️  Starting training phase...")
         if config.use_episodes:
-            train_loss = train_world_model_epoch_episodes(
+            train_loss, train_sequences = train_world_model_epoch_episodes(
                 model, train_loader, criterion, optimizer, device, 
                 sequence_length=config.sequence_length, scaler=scaler
             )
         else:
             train_loss = train_world_model_epoch(model, train_loader, criterion, optimizer, device, scaler)
+            train_sequences = len(train_loader) * config.batch_size  # Approximate
         train_losses.append(train_loss)
-        print(f"⏱️  Training completed in {time.time() - train_start:.2f}s")
+        train_time = time.time() - train_start
+        print(f"⏱️  Training completed in {train_time:.2f}s")
+        
+        # Calculate training throughput
+        train_sequences_per_sec = train_sequences / train_time if train_time > 0 else 0
         
         # Validation
         val_start = time.time()
         print(f"⏱️  Starting validation phase...")
         if config.use_episodes:
-            val_loss = validate_world_model_epoch_episodes(
+            val_loss, val_sequences = validate_world_model_epoch_episodes(
                 model, val_loader, criterion, device, 
                 sequence_length=config.sequence_length
             )
         else:
             val_loss = validate_world_model_epoch(model, val_loader, criterion, device)
+            val_sequences = len(val_loader) * config.batch_size  # Approximate
         val_losses.append(val_loss)
-        print(f"⏱️  Validation completed in {time.time() - val_start:.2f}s")
+        val_time = time.time() - val_start
+        print(f"⏱️  Validation completed in {val_time:.2f}s")
+        
+        # Calculate validation throughput
+        val_sequences_per_sec = val_sequences / val_time if val_time > 0 else 0
         
         # Visualize world model predictions (only on certain epochs to save memory)
         if (epoch + 1) % config.reconstruction_interval == 0:
@@ -2521,6 +2531,8 @@ def train_world_model(config: WorldModelConfig):
         writer.add_scalar('Loss/Train', train_loss, epoch)
         writer.add_scalar('Loss/Val', val_loss, epoch)
         writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch)
+        writer.add_scalar('Throughput/Train_Sequences_Per_Second', train_sequences_per_sec, epoch)
+        writer.add_scalar('Throughput/Val_Sequences_Per_Second', val_sequences_per_sec, epoch)
         
         # Update learning rate based on validation loss
         if scheduler is not None:
