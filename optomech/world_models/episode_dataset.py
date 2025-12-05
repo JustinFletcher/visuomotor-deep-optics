@@ -394,3 +394,55 @@ def collate_episodes(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
                      if length > 0]
     
     return valid_episodes
+
+
+def collate_episodes_padded(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]]):
+    """
+    Collate function that pads variable-length episodes to the max length in the batch.
+    This enables proper batched processing for TBPTT (Truncated Backpropagation Through Time).
+    
+    Args:
+        batch: List of (obs, actions, next_obs, episode_length) tuples
+    
+    Returns:
+        Tuple of:
+            - obs_padded: Padded observations [batch_size, max_len, C, H, W]
+            - actions_padded: Padded actions [batch_size, max_len, action_dim]
+            - next_obs_padded: Padded next observations [batch_size, max_len, C, H, W]
+            - lengths: Actual episode lengths [batch_size]
+            - mask: Binary mask [batch_size, max_len] where 1=valid, 0=padding
+    """
+    # Filter out empty episodes
+    valid_episodes = [(obs, actions, next_obs, length) 
+                     for obs, actions, next_obs, length in batch 
+                     if length > 0]
+    
+    if len(valid_episodes) == 0:
+        # Return empty batch
+        return (torch.empty(0, 0, 3, 64, 64), torch.empty(0, 0, 1), 
+                torch.empty(0, 0, 3, 64, 64), torch.tensor([]), torch.empty(0, 0))
+    
+    # Find max episode length in this batch
+    max_length = max(length for _, _, _, length in valid_episodes)
+    batch_size = len(valid_episodes)
+    
+    # Get tensor shapes from first episode
+    obs_shape = valid_episodes[0][0].shape[1:]  # (C, H, W)
+    action_dim = valid_episodes[0][1].shape[1]
+    
+    # Initialize padded tensors with zeros
+    obs_padded = torch.zeros(batch_size, max_length, *obs_shape)
+    actions_padded = torch.zeros(batch_size, max_length, action_dim)
+    next_obs_padded = torch.zeros(batch_size, max_length, *obs_shape)
+    lengths = torch.zeros(batch_size, dtype=torch.long)
+    mask = torch.zeros(batch_size, max_length, dtype=torch.bool)
+    
+    # Fill in actual episode data
+    for i, (obs, actions, next_obs, length) in enumerate(valid_episodes):
+        obs_padded[i, :length] = obs
+        actions_padded[i, :length] = actions
+        next_obs_padded[i, :length] = next_obs
+        lengths[i] = length
+        mask[i, :length] = True  # Mark valid timesteps
+    
+    return obs_padded, actions_padded, next_obs_padded, lengths, mask

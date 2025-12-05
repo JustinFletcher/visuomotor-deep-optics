@@ -63,7 +63,7 @@ from utils.transforms import center_crop_transform, get_autoencoder_transforms
 
 # Import world model dataset
 from optomech.world_models.world_model_dataset import WorldModelSequenceDataset, WorldModelLazyDataset, collate_sequences
-from optomech.world_models.episode_dataset import WorldModelEpisodeDataset, collate_episodes
+from optomech.world_models.episode_dataset import WorldModelEpisodeDataset, collate_episodes, collate_episodes_padded
 
 # Optional HDF5 support
 try:
@@ -848,6 +848,89 @@ def normalize_for_display(tensor):
             return tensor
 
 
+class MaskedLoss(nn.Module):
+    """
+    Wrapper for loss functions that handles padding masks.
+    Only computes loss on non-padded timesteps in batched episodes.
+    
+    This is essential for TBPTT (Truncated Backpropagation Through Time) with
+    variable-length episodes that are padded to enable batching.
+    """
+    
+    def __init__(self, base_criterion: nn.Module):
+        """
+        Args:
+            base_criterion: Base loss function (e.g., nn.MSELoss(), nn.L1Loss())
+        """
+        super().__init__()
+        # Store the original criterion type and create a version with reduction='none'
+        self.criterion_type = type(base_criterion)
+        
+        # Create element-wise version
+        if isinstance(base_criterion, nn.MSELoss):
+            self.base_criterion = nn.MSELoss(reduction='none')
+        elif isinstance(base_criterion, nn.L1Loss):
+            self.base_criterion = nn.L1Loss(reduction='none')
+        elif isinstance(base_criterion, nn.SmoothL1Loss):
+            self.base_criterion = nn.SmoothL1Loss(reduction='none')
+        elif isinstance(base_criterion, nn.HuberLoss):
+            delta = base_criterion.delta if hasattr(base_criterion, 'delta') else 1.0
+            self.base_criterion = nn.HuberLoss(delta=delta, reduction='none')
+        else:
+            self.base_criterion = base_criterion
+            if hasattr(self.base_criterion, 'reduction'):
+                self.base_criterion.reduction = 'none'
+    
+    def forward(
+        self, 
+        pred: torch.Tensor, 
+        target: torch.Tensor, 
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Compute masked loss.
+        
+        Args:
+            pred: Predictions [batch, seq_len, ...] 
+            target: Targets [batch, seq_len, ...]
+            mask: Binary mask [batch, seq_len] where 1=valid, 0=padding
+                  If None, compute loss on all timesteps (no masking)
+        
+        Returns:
+            Scalar loss value (mean over valid timesteps only)
+        """
+        # Compute element-wise loss
+        loss = self.base_criterion(pred, target)
+        
+        # If no mask provided, return mean loss over all elements
+        if mask is None:
+            return loss.mean()
+        
+        # Reshape mask to match loss dimensions
+        # loss shape: [batch, seq_len, C, H, W]
+        # mask shape: [batch, seq_len]
+        # Expand mask to: [batch, seq_len, 1, 1, 1]
+        mask_expanded = mask
+        while mask_expanded.dim() < loss.dim():
+            mask_expanded = mask_expanded.unsqueeze(-1)
+        
+        # Apply mask: zero out loss for padded timesteps
+        masked_loss = loss * mask_expanded.float()
+        
+        # Compute mean over valid (non-padded) elements only
+        # We need to count the total number of valid ELEMENTS (pixels), not just timesteps
+        # Each valid timestep contributes (C * H * W) elements
+        num_valid_timesteps = mask.float().sum()
+        if num_valid_timesteps > 0:
+            # Get number of elements per timestep
+            elements_per_timestep = loss[0, 0].numel()  # C * H * W
+            num_valid_elements = num_valid_timesteps * elements_per_timestep
+            return masked_loss.sum() / num_valid_elements
+        else:
+            # All timesteps are padded (shouldn't happen in practice)
+            return loss.mean()
+
+
 def train_epoch(model, train_loader, criterion, optimizer, device):
     """Train for one epoch"""
     print("🚂 Starting training epoch...")
@@ -963,7 +1046,185 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
     return avg_loss
 
 
-def train_world_model_epoch_episodes(
+def train_world_model_epoch_episodes_batched(
+    model, 
+    episode_loader, 
+    criterion, 
+    optimizer, 
+    device, 
+    sequence_length: int = 10,
+    scaler=None
+):
+    """
+    Train world model for one epoch using episode-based TBPTT with proper batching.
+    
+    Implements Truncated Backpropagation Through Time (TBPTT) where:
+    - Multiple variable-length episodes are batched together with padding
+    - Hidden states are maintained within episodes
+    - Hidden states are detached every sequence_length steps (TBPTT truncation)
+    - Masked loss ignores padded timesteps
+    
+    This enables full GPU utilization by processing multiple episodes in parallel.
+    
+    Args:
+        model: World model
+        episode_loader: DataLoader yielding batched, padded episodes
+        criterion: Masked loss function (MaskedLoss instance)
+        optimizer: Optimizer
+        device: Device to train on
+        sequence_length: TBPTT truncation length (detach hidden every k steps)
+        scaler: GradScaler for mixed precision training (None to disable AMP)
+    
+    Returns:
+        Tuple of (average_loss, total_sequences_processed)
+    """
+    model.train()
+    running_loss = 0.0
+    total_sequences = 0
+    total_valid_timesteps = 0
+    use_amp = scaler is not None
+    
+    # Progress tracking
+    last_print_time = time.time()
+    print_interval = 1.0
+    
+    batch_fetch_start = time.time()
+    first_batch = True
+    
+    # Timing breakdown accumulators
+    total_fetch_time = 0.0
+    total_forward_time = 0.0
+    total_backward_time = 0.0
+    total_data_move_time = 0.0
+    batch_count = 0
+    
+    for batch_idx, batch_data in enumerate(episode_loader):
+        # Unpack batched, padded episodes
+        obs_padded, actions_padded, next_obs_padded, lengths, mask = batch_data
+        
+        batch_fetch_time = time.time() - batch_fetch_start
+        total_fetch_time += batch_fetch_time
+        batch_count += 1
+        
+        if first_batch:
+            batch_size, max_ep_len = obs_padded.shape[0], obs_padded.shape[1]
+            print(f"📦 Batched episode processing with TBPTT:")
+            print(f"   Batch size: {batch_size} episodes")
+            print(f"   Max episode length in batch: {max_ep_len} timesteps")
+            print(f"   Sequence length (TBPTT truncation): {sequence_length}")
+            print(f"  ⏱️  First batch fetched in {batch_fetch_time:.2f}s")
+            first_batch = False
+        
+        # Move batch to device
+        data_move_start = time.time()
+        obs_padded = obs_padded.to(device)
+        actions_padded = actions_padded.to(device)
+        next_obs_padded = next_obs_padded.to(device)
+        mask = mask.to(device)
+        total_data_move_time += time.time() - data_move_start
+        
+        batch_size, max_ep_len = obs_padded.shape[0], obs_padded.shape[1]
+        
+        # Initialize hidden states for all episodes in batch
+        hidden = model.get_zero_hidden(batch_size, device)
+        
+        # Process episodes in sequence_length chunks (TBPTT)
+        # This implements "k1 = k2 = sequence_length" style TBPTT
+        for start_idx in range(0, max_ep_len, sequence_length):
+            end_idx = min(start_idx + sequence_length, max_ep_len)
+            
+            # Extract sequence chunk for this TBPTT step
+            obs_chunk = obs_padded[:, start_idx:end_idx]  # [batch, seq_len, C, H, W]
+            actions_chunk = actions_padded[:, start_idx:end_idx]  # [batch, seq_len, action_dim]
+            next_obs_chunk = next_obs_padded[:, start_idx:end_idx]  # [batch, seq_len, C, H, W]
+            mask_chunk = mask[:, start_idx:end_idx]  # [batch, seq_len]
+            
+            # Skip if this chunk has no valid timesteps
+            if not mask_chunk.any():
+                continue
+            
+            # Zero gradients
+            optimizer.zero_grad()
+            
+            # Forward pass
+            forward_start = time.time()
+            if use_amp:
+                with torch.cuda.amp.autocast():
+                    next_obs_pred, latent, new_hidden = model(obs_chunk, actions_chunk, hidden)
+            else:
+                next_obs_pred, latent, new_hidden = model(obs_chunk, actions_chunk, hidden)
+            
+            # Match target size to prediction size (in case encoder crops)
+            if next_obs_pred.shape != next_obs_chunk.shape:
+                from models.models import center_crop_transform
+                batch_size_chunk, seq_len_chunk = next_obs_chunk.shape[0], next_obs_chunk.shape[1]
+                next_obs_flat = next_obs_chunk.reshape(batch_size_chunk * seq_len_chunk, *next_obs_chunk.shape[2:])
+                target_size = next_obs_pred.shape[-1]
+                next_obs_cropped = center_crop_transform(next_obs_flat, target_size)
+                next_obs_chunk = next_obs_cropped.reshape(batch_size_chunk, seq_len_chunk, *next_obs_cropped.shape[1:])
+            
+            # Compute masked loss (only on valid timesteps)
+            if use_amp:
+                with torch.cuda.amp.autocast():
+                    loss = criterion(next_obs_pred, next_obs_chunk, mask_chunk)
+            else:
+                loss = criterion(next_obs_pred, next_obs_chunk, mask_chunk)
+            total_forward_time += time.time() - forward_start
+            
+            # Backward pass
+            backward_start = time.time()
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+            total_backward_time += time.time() - backward_start
+            
+            # TBPTT: Detach hidden state to truncate gradient flow
+            # This is the key to TBPTT - we carry forward the hidden state values
+            # but prevent gradients from flowing back beyond sequence_length steps
+            hidden = (new_hidden[0].detach(), new_hidden[1].detach())
+            
+            # Accumulate loss weighted by number of valid timesteps
+            num_valid = mask_chunk.float().sum().item()
+            running_loss += loss.item() * num_valid
+            total_valid_timesteps += num_valid
+            total_sequences += 1
+        
+        # Periodic cache clearing (every 10 batches)
+        if (batch_idx + 1) % 10 == 0:
+            torch.cuda.empty_cache()
+        
+        # Prepare for next batch fetch timing
+        batch_fetch_start = time.time()
+        
+        # Progress reporting
+        current_time = time.time()
+        if (current_time - last_print_time) >= print_interval or batch_idx == 0:
+            avg_loss = running_loss / max(1, total_valid_timesteps)
+            print(f'\r🚂 Train Batches: {batch_idx+1} | '
+                  f'Sequences: {total_sequences} | '
+                  f'Avg Loss: {avg_loss:.6f}', end='', flush=True)
+            last_print_time = current_time
+    
+    print()  # New line
+    avg_loss = running_loss / max(1, total_valid_timesteps)
+    print(f"📊 Epoch complete: {total_sequences} TBPTT sequences processed")
+    
+    # Print timing breakdown
+    if batch_count > 0:
+        print(f"⏱️  Timing breakdown:")
+        print(f"   Batch fetch:  {total_fetch_time:.2f}s ({total_fetch_time/batch_count:.3f}s/batch)")
+        print(f"   Data->GPU:    {total_data_move_time:.2f}s")
+        print(f"   Forward pass: {total_forward_time:.2f}s")
+        print(f"   Backward pass: {total_backward_time:.2f}s")
+    
+    return avg_loss, total_sequences
+
+
+def train_world_model_epoch_episodes_old(
     model, 
     episode_loader, 
     criterion, 
@@ -997,6 +1258,11 @@ def train_world_model_epoch_episodes(
     # Progress tracking
     last_print_time = time.time()
     print_interval = 1.0
+    
+    print(f"⚠️  Note: Episode-based training processes episodes sequentially (batch_size=1 per episode)")
+    print(f"   For maximum GPU utilization, consider:")
+    print(f"   1. Increasing sequence_length (currently {sequence_length})")
+    print(f"   2. Using sequence-based training with larger batch_size")
     
     batch_fetch_start = time.time()
     first_batch = True
@@ -1288,7 +1554,118 @@ def validate_epoch(model, val_loader, criterion, device):
     return avg_loss
 
 
-def validate_world_model_epoch_episodes(
+def validate_world_model_epoch_episodes_batched(
+    model, 
+    episode_loader, 
+    criterion, 
+    device,
+    sequence_length: int = 10
+):
+    """
+    Validate world model for one epoch using batched episode-based processing with TBPTT.
+    """
+    model.eval()
+    running_loss = 0.0
+    total_sequences = 0
+    total_valid_timesteps = 0
+    
+    # Progress tracking
+    last_print_time = time.time()
+    print_interval = 1.0
+    
+    batch_fetch_start = time.time()
+    first_batch = True
+    batch_count = 0
+    
+    with torch.no_grad():
+        for batch_idx, batch_data in enumerate(episode_loader):
+            # Unpack batched, padded episodes
+            obs_padded, actions_padded, next_obs_padded, lengths, mask = batch_data
+            
+            batch_fetch_time = time.time() - batch_fetch_start
+            batch_count += 1
+            
+            if first_batch:
+                batch_size, max_ep_len = obs_padded.shape[0], obs_padded.shape[1]
+                print(f"📦 Batched validation:")
+                print(f"   Batch size: {batch_size} episodes")
+                print(f"   Max episode length: {max_ep_len} timesteps")
+                print(f"  ⏱️  First batch fetched in {batch_fetch_time:.2f}s")
+                first_batch = False
+            
+            # Move batch to device
+            obs_padded = obs_padded.to(device)
+            actions_padded = actions_padded.to(device)
+            next_obs_padded = next_obs_padded.to(device)
+            mask = mask.to(device)
+            
+            batch_size, max_ep_len = obs_padded.shape[0], obs_padded.shape[1]
+            
+            # Initialize hidden states for all episodes in batch
+            hidden = model.get_zero_hidden(batch_size, device)
+            
+            # Process episodes in sequence_length chunks
+            for start_idx in range(0, max_ep_len, sequence_length):
+                end_idx = min(start_idx + sequence_length, max_ep_len)
+                
+                # Extract sequence chunk
+                obs_chunk = obs_padded[:, start_idx:end_idx]
+                actions_chunk = actions_padded[:, start_idx:end_idx]
+                next_obs_chunk = next_obs_padded[:, start_idx:end_idx]
+                mask_chunk = mask[:, start_idx:end_idx]
+                
+                # Skip if this chunk has no valid timesteps
+                if not mask_chunk.any():
+                    continue
+                
+                # Forward pass
+                next_obs_pred, latent, new_hidden = model(obs_chunk, actions_chunk, hidden)
+                
+                # Match target size to prediction size (in case encoder crops)
+                if next_obs_pred.shape != next_obs_chunk.shape:
+                    from models.models import center_crop_transform
+                    batch_size_chunk, seq_len_chunk = next_obs_chunk.shape[0], next_obs_chunk.shape[1]
+                    next_obs_flat = next_obs_chunk.reshape(batch_size_chunk * seq_len_chunk, *next_obs_chunk.shape[2:])
+                    target_size = next_obs_pred.shape[-1]
+                    next_obs_cropped = center_crop_transform(next_obs_flat, target_size)
+                    next_obs_chunk = next_obs_cropped.reshape(batch_size_chunk, seq_len_chunk, *next_obs_cropped.shape[1:])
+                
+                # Compute masked loss
+                loss = criterion(next_obs_pred, next_obs_chunk, mask_chunk)
+                
+                # Update hidden state for next sequence
+                hidden = (new_hidden[0].detach(), new_hidden[1].detach())
+                
+                # Accumulate loss weighted by number of valid timesteps
+                num_valid = mask_chunk.float().sum().item()
+                running_loss += loss.item() * num_valid
+                total_valid_timesteps += num_valid
+                total_sequences += 1
+            
+            # Clear cache periodically
+            if device.type == 'cuda' and batch_idx % 10 == 0:
+                torch.cuda.empty_cache()
+            
+            # Prepare for next batch fetch timing
+            batch_fetch_start = time.time()
+            
+            # Progress reporting
+            current_time = time.time()
+            if (current_time - last_print_time) >= print_interval or batch_idx == 0:
+                avg_loss = running_loss / max(1, total_valid_timesteps)
+                print(f'\r🔍 Valid Batches: {batch_idx+1} | '
+                      f'Sequences: {total_sequences} | '
+                      f'Avg Loss: {avg_loss:.6f}', end='', flush=True)
+                last_print_time = current_time
+    
+    print()  # New line
+    avg_loss = running_loss / max(1, total_valid_timesteps)
+    print(f"📊 Validation complete: {total_sequences} sequences processed")
+    
+    return avg_loss, total_sequences
+
+
+def validate_world_model_epoch_episodes_old(
     model, 
     episode_loader, 
     criterion, 
@@ -2016,7 +2393,8 @@ def train_world_model(config: WorldModelConfig):
         if config.load_in_memory:
             dataset._preload_episodes()
         
-        collate_fn = collate_episodes
+        # Use padded collate function for proper batching with TBPTT
+        collate_fn = collate_episodes_padded
         batch_size = config.batch_size
         
     else:
@@ -2146,12 +2524,9 @@ def train_world_model(config: WorldModelConfig):
     first_batch = next(iter(train_loader))
     
     if config.use_episodes:
-        # Episode-based: first_batch is a list of episodes
-        if first_batch and len(first_batch[0]) >= 2:
-            _, actions, _, _ = first_batch[0]  # Get actions from first episode
-            action_dim = actions.shape[-1]
-        else:
-            raise ValueError("No valid episodes found in first batch")
+        # Episode-based with padded batching: first_batch is (obs_padded, actions_padded, next_obs_padded, lengths, mask)
+        _, actions_padded, _, _, _ = first_batch
+        action_dim = actions_padded.shape[-1]
     else:
         # Sequence-based: first_batch is a tuple of tensors
         _, actions, _ = first_batch
@@ -2208,17 +2583,23 @@ def train_world_model(config: WorldModelConfig):
     
     # Setup loss function
     if config.loss_function == "mse":
-        criterion = nn.MSELoss()
+        base_criterion = nn.MSELoss()
     elif config.loss_function == "mae":
-        criterion = nn.L1Loss()
+        base_criterion = nn.L1Loss()
     elif config.loss_function == "smooth_l1":
-        criterion = nn.SmoothL1Loss()
+        base_criterion = nn.SmoothL1Loss()
     elif config.loss_function == "huber":
-        criterion = nn.HuberLoss(delta=config.huber_delta)
+        base_criterion = nn.HuberLoss(delta=config.huber_delta)
     else:
         raise ValueError(f"Unknown loss function: {config.loss_function}")
     
-    print(f"📉 Loss function: {config.loss_function}")
+    # Wrap with MaskedLoss for episode-based training with padding
+    if config.use_episodes:
+        criterion = MaskedLoss(base_criterion)
+        print(f"📉 Loss function: {config.loss_function} (wrapped with MaskedLoss for episode batching)")
+    else:
+        criterion = base_criterion
+        print(f"📉 Loss function: {config.loss_function}")
     
     # Setup optimizer
     if config.optimizer == "adam":
@@ -2477,7 +2858,7 @@ def train_world_model(config: WorldModelConfig):
         train_start = time.time()
         print(f"\n⏱️  Starting training phase...")
         if config.use_episodes:
-            train_loss, train_sequences = train_world_model_epoch_episodes(
+            train_loss, train_sequences = train_world_model_epoch_episodes_batched(
                 model, train_loader, criterion, optimizer, device, 
                 sequence_length=config.sequence_length, scaler=scaler
             )
@@ -2495,7 +2876,7 @@ def train_world_model(config: WorldModelConfig):
         val_start = time.time()
         print(f"⏱️  Starting validation phase...")
         if config.use_episodes:
-            val_loss, val_sequences = validate_world_model_epoch_episodes(
+            val_loss, val_sequences = validate_world_model_epoch_episodes_batched(
                 model, val_loader, criterion, device, 
                 sequence_length=config.sequence_length
             )
