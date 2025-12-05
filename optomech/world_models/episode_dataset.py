@@ -163,6 +163,10 @@ class WorldModelEpisodeDataset(Dataset):
                 # Regular dataset: length already computed
                 episode_length = transitions[0]['episode_length']
             
+            # Apply max_episode_length cap if specified
+            if self.max_episode_length is not None:
+                episode_length = min(episode_length, self.max_episode_length)
+            
             # Only include episodes that meet minimum length requirement
             if episode_length >= self.min_episode_length:
                 self.valid_episodes.append((episode_id, transitions, episode_length))
@@ -179,9 +183,13 @@ class WorldModelEpisodeDataset(Dataset):
         lengths = []
         for episode_id, transitions in episode_groups.items():
             if transitions[0]['step'] is not None:
-                lengths.append(len(transitions))
+                length = len(transitions)
             else:
-                lengths.append(transitions[0]['episode_length'])
+                length = transitions[0]['episode_length']
+            # Apply max_episode_length cap for stats display
+            if self.max_episode_length is not None:
+                length = min(length, self.max_episode_length)
+            lengths.append(length)
         
         if lengths:
             print(f"  📊 Episode length stats: min={min(lengths)}, max={max(lengths)}, "
@@ -210,7 +218,10 @@ class WorldModelEpisodeDataset(Dataset):
     def _preload_episodes(self):
         """Preload all episodes into memory for faster access."""
         import time
-        print(f"\n💾 Preloading {len(self.episode_data)} episodes into memory...")
+        if self.max_episode_length is not None:
+            print(f"\n💾 Preloading {len(self.episode_data)} episodes into memory (max_episode_length={self.max_episode_length})...")
+        else:
+            print(f"\n💾 Preloading {len(self.episode_data)} episodes into memory...")
         start_time = time.time()
         
         self.preloaded_episodes = []
