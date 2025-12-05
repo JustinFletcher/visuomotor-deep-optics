@@ -29,7 +29,7 @@
   "scheduler_min_lr": 1e-7,
   "model_save_path": "saved_models/world_model.pth",
   "no_save": true,
-  "max_examples": 64,
+  "max_examples": null,
   "seed": 42,
   "num_workers": 0,
   "prefetch_factor": null,
