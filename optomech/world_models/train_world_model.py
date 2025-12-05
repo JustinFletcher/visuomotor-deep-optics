@@ -1904,8 +1904,25 @@ def visualize_world_model_predictions(model, val_loader, device, writer, epoch, 
                     else:
                         raise ValueError(f"Unexpected tuple length: {len(first_item)}")
                 elif torch.is_tensor(first_item):
-                    # List of tensors - likely [obs, actions, next_obs] or [obs, actions, next_obs, lengths]
-                    if len(first_batch) == 4:
+                    # List of tensors - likely [obs, actions, next_obs] or [obs, actions, next_obs, lengths] or pre-collated batch
+                    if len(first_batch) == 5:
+                        # Pre-collated batch format with mask: [obs_padded, actions_padded, next_obs_padded, lengths, mask]
+                        obs, actions, next_obs, lengths, mask = first_batch
+                        # Select first item in batch
+                        if obs.ndim == 5:  # [batch, seq, C, H, W]
+                            obs = obs[0]  # [seq, C, H, W]
+                            actions = actions[0]  # [seq, action_dim]
+                            next_obs = next_obs[0]  # [seq, C, H, W]
+                            actual_length = lengths[0].item() if torch.is_tensor(lengths) else lengths[0]
+                            # Trim to actual length (remove padding)
+                            obs = obs[:actual_length]
+                            actions = actions[:actual_length]
+                            next_obs = next_obs[:actual_length]
+                        max_timesteps = min(num_timesteps, obs.shape[0])
+                        obs = obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+                        actions = actions[:max_timesteps].unsqueeze(0)  # [1, timesteps, action_dim]
+                        next_obs = next_obs[:max_timesteps].unsqueeze(0)  # [1, timesteps, C, H, W]
+                    elif len(first_batch) == 4:
                         # Episode format with lengths
                         obs, actions, next_obs, episode_lengths = first_batch
                         # Select first item in batch
