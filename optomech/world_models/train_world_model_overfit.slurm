@@ -15,7 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name world_model_experiment_2 --seed 2"
+    "--run-name world_model_experiment_overfit --seed 2"
 )
 
 # Run all variants in parallel
@@ -25,10 +25,8 @@ for VARIANT in "${VARIANTS[@]}"; do
     poetry run python optomech/world_models/train_world_model.py \
         --config optomech/world_models/world_model_config_overfit.json \
         --runs-dir /wdata/scratch/fletch/runs \
-        --max-examples 100 \
+        --max-examples 128 \
         --no-save \
-        --freeze-encoder \
-        --freeze-decoder \
         $VARIANT &  # Run in background
 done
 

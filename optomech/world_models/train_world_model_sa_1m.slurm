@@ -16,8 +16,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name world_model_experiment_sa_1m_mse --loss-function mse --seed 2 --device cuda:0"
-    "--run-name world_model_experiment_sa_1m_mae --loss-function mae --seed 2 --device cuda:1"
+    "--run-name world_model_experiment_sa_1m_frozen --loss-function mse --seed 123"
 )
 
 # Run all variants in parallel
@@ -25,10 +24,8 @@ for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
     poetry run python optomech/world_models/train_world_model.py \
-        --runs-dir /wdata/scratch/fletch/runs \
+        --runs-dir /wdata/home/fletch/visuomotor-deep-optics/runs \
         --config optomech/world_models/world_model_config_sa_1m.json \
         $VARIANT &  # Run in background
 done
 
-
-wait
