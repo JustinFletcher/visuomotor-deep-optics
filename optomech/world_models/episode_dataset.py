@@ -31,6 +31,7 @@ class WorldModelEpisodeDataset(Dataset):
         obs_key: str = 'observations',
         action_key: str = 'actions',
         min_episode_length: int = 10,
+        max_episode_length: int = None,
         load_in_memory: bool = False
     ):
         """
@@ -41,6 +42,7 @@ class WorldModelEpisodeDataset(Dataset):
             obs_key: Key for observations in files
             action_key: Key for actions in files
             min_episode_length: Minimum episode length to include
+            max_episode_length: Maximum episode length (truncate if longer, None for no limit)
             load_in_memory: If True, preload all episodes into memory for faster access
         """
         self.file_paths = file_paths
@@ -49,6 +51,7 @@ class WorldModelEpisodeDataset(Dataset):
         self.obs_key = obs_key
         self.action_key = action_key
         self.min_episode_length = min_episode_length
+        self.max_episode_length = max_episode_length
         self.load_in_memory = load_in_memory
         
         # Filter episodes by minimum length
@@ -365,6 +368,12 @@ class WorldModelEpisodeDataset(Dataset):
                 actions = torch.from_numpy(actions).float()
                 next_obs = torch.from_numpy(next_obs).float() / 65535.0
             
+            # Truncate to max_episode_length if specified
+            if self.max_episode_length is not None and obs.shape[0] > self.max_episode_length:
+                obs = obs[:self.max_episode_length]
+                actions = actions[:self.max_episode_length]
+                next_obs = next_obs[:self.max_episode_length]
+            
             # Update episode length after potential truncation
             actual_length = obs.shape[0]
             
@@ -401,6 +410,8 @@ def collate_episodes_padded(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.
     Collate function that pads variable-length episodes to the max length in the batch.
     This enables proper batched processing for TBPTT (Truncated Backpropagation Through Time).
     
+    Optimized for large image tensors by minimizing allocations and using efficient indexing.
+    
     Args:
         batch: List of (obs, actions, next_obs, episode_length) tuples
     
@@ -422,27 +433,34 @@ def collate_episodes_padded(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.
         return (torch.empty(0, 0, 3, 64, 64), torch.empty(0, 0, 1), 
                 torch.empty(0, 0, 3, 64, 64), torch.tensor([]), torch.empty(0, 0))
     
-    # Find max episode length in this batch
+    # Pre-compute all lengths
     lengths = torch.tensor([length for _, _, _, length in valid_episodes], dtype=torch.long)
     max_length = lengths.max().item()
     batch_size = len(valid_episodes)
     
-    # Use pad_sequence for efficient padding (much faster than manual loop)
-    obs_list = [obs for obs, _, _, _ in valid_episodes]
-    actions_list = [actions for _, actions, _, _ in valid_episodes]
-    next_obs_list = [next_obs for _, _, next_obs, _ in valid_episodes]
+    # Get tensor shapes from first episode
+    obs_shape = valid_episodes[0][0].shape[1:]  # (C, H, W)
+    action_dim = valid_episodes[0][1].shape[1]
     
-    # Pad sequences - pad_sequence expects (seq_len, ...) so we transpose
-    from torch.nn.utils.rnn import pad_sequence
+    # Pre-allocate output tensors with correct dtype and device
+    # Use the same dtype/device as input to avoid copies
+    first_obs = valid_episodes[0][0]
+    obs_padded = torch.zeros(batch_size, max_length, *obs_shape, 
+                             dtype=first_obs.dtype, device=first_obs.device)
+    actions_padded = torch.zeros(batch_size, max_length, action_dim,
+                                 dtype=valid_episodes[0][1].dtype, 
+                                 device=valid_episodes[0][1].device)
+    next_obs_padded = torch.zeros(batch_size, max_length, *obs_shape,
+                                  dtype=first_obs.dtype, device=first_obs.device)
     
-    # Pad observations: [batch, max_len, C, H, W]
-    obs_padded = pad_sequence(obs_list, batch_first=True, padding_value=0.0)
-    actions_padded = pad_sequence(actions_list, batch_first=True, padding_value=0.0)
-    next_obs_padded = pad_sequence(next_obs_list, batch_first=True, padding_value=0.0)
+    # Fill in actual episode data using narrow (no copying, just indexing)
+    for i, (obs, actions, next_obs, length) in enumerate(valid_episodes):
+        obs_padded[i, :length].copy_(obs)
+        actions_padded[i, :length].copy_(actions)
+        next_obs_padded[i, :length].copy_(next_obs)
     
     # Create mask efficiently using broadcasting
-    # mask[i, j] = True if j < lengths[i]
-    indices = torch.arange(max_length, device='cpu')  # Keep on CPU during collate
+    indices = torch.arange(max_length, device='cpu')
     mask = indices.unsqueeze(0) < lengths.unsqueeze(1)  # [batch_size, max_len]
     
     return obs_padded, actions_padded, next_obs_padded, lengths, mask
