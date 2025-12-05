@@ -2383,7 +2383,8 @@ def train_world_model(config: WorldModelConfig):
             action_key=config.action_key,
             min_episode_length=config.min_episode_length,
             max_episode_length=config.max_episode_length if hasattr(config, 'max_episode_length') else None,
-            load_in_memory=False  # Don't preload yet, we need to filter first
+            load_in_memory=False,  # Don't preload yet, we need to filter first
+            batch_size=None  # Will be set after filtering if preloading
         )
         
         # Filter by max_examples if specified (take first N episodes)
@@ -2393,12 +2394,26 @@ def train_world_model(config: WorldModelConfig):
             print(f"   Limited to {len(dataset.episode_data)} episodes (max_examples={config.max_examples}, was {original_count})")
         
         # Now preload if requested (after filtering)
+        # Enable batch-level preloading to eliminate per-batch padding overhead
         if config.load_in_memory:
-            dataset._preload_episodes()
+            dataset.load_in_memory = True
+            dataset.batch_size = config.batch_size  # Enable batch preloading
+            if dataset.batch_size is not None:
+                dataset._preload_batches()  # Pre-collate batches
+            else:
+                dataset._preload_episodes()  # Just preload episodes
         
-        # Use padded collate function for proper batching with TBPTT
-        collate_fn = collate_episodes_padded
-        batch_size = config.batch_size
+        # Collate function and batch_size depend on whether batches are pre-collated
+        if dataset.preloaded_batches is not None:
+            # Batches are pre-collated, use identity collate and batch_size=1
+            collate_fn = lambda x: x[0]  # Just return the pre-collated batch
+            batch_size = 1  # DataLoader fetches one pre-collated batch at a time
+            print(f"   ✅ Using pre-collated batches (batch_size={config.batch_size} episodes per batch)")
+        else:
+            # Normal mode: collate episodes per-batch
+            collate_fn = collate_episodes_padded
+            batch_size = config.batch_size
+            print(f"   Using dynamic collation (batch_size={config.batch_size})")
         
     else:
         print(f"\n📂 Creating SEQUENCE-BASED dataset...")

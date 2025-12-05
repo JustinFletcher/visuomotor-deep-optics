@@ -32,7 +32,8 @@ class WorldModelEpisodeDataset(Dataset):
         action_key: str = 'actions',
         min_episode_length: int = 10,
         max_episode_length: int = None,
-        load_in_memory: bool = False
+        load_in_memory: bool = False,
+        batch_size: int = None
     ):
         """
         Args:
@@ -44,6 +45,7 @@ class WorldModelEpisodeDataset(Dataset):
             min_episode_length: Minimum episode length to include
             max_episode_length: Maximum episode length (truncate if longer, None for no limit)
             load_in_memory: If True, preload all episodes into memory for faster access
+            batch_size: If specified with load_in_memory, pre-collate batches (eliminates per-batch padding overhead)
         """
         self.file_paths = file_paths
         self.dataset_type = dataset_type
@@ -53,16 +55,23 @@ class WorldModelEpisodeDataset(Dataset):
         self.min_episode_length = min_episode_length
         self.max_episode_length = max_episode_length
         self.load_in_memory = load_in_memory
+        self.batch_size = batch_size
         
         # Filter episodes by minimum length
         self.valid_episodes = []
         self.total_episodes = 0  # Will be set in _filter_episodes
-        self.preloaded_episodes = None  # Will store preloaded data if load_in_memory=True
+        self.preloaded_episodes = None  # Will store preloaded episodes if load_in_memory=True
+        self.preloaded_batches = None  # Will store pre-collated batches if batch_size specified
         self._filter_episodes()
         
         # Preload episodes into memory if requested
         if self.load_in_memory:
-            self._preload_episodes()
+            if self.batch_size is not None:
+                # Pre-collate batches to eliminate per-batch padding overhead
+                self._preload_batches()
+            else:
+                # Just preload individual episodes (collation happens per-batch)
+                self._preload_episodes()
         
         print(f"✅ Episode dataset: {len(self.valid_episodes)}/{self.total_episodes} episodes "
               f"(min_length={min_episode_length}) from {len(file_paths)} files")
@@ -269,6 +278,46 @@ class WorldModelEpisodeDataset(Dataset):
         total_time = time.time() - start_time
         print(f"✅ Preloading complete in {total_time:.1f}s ({len(self.episode_data)/total_time:.1f} eps/s)")
     
+    def _preload_batches(self):
+        """Preload AND pre-collate batches to eliminate per-batch padding overhead."""
+        import time
+        print(f"\n💾 Preloading and pre-collating batches (batch_size={self.batch_size})...")
+        print(f"   This eliminates padding overhead during training!")
+        start_time = time.time()
+        
+        # First, preload individual episodes
+        self._preload_episodes()
+        
+        # Now pre-collate them into batches
+        print(f"\n📦 Pre-collating {len(self.preloaded_episodes)} episodes into batches...")
+        self.preloaded_batches = []
+        
+        num_batches = (len(self.preloaded_episodes) + self.batch_size - 1) // self.batch_size
+        
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * self.batch_size
+            end_idx = min(start_idx + self.batch_size, len(self.preloaded_episodes))
+            
+            # Get episodes for this batch
+            batch_episodes = self.preloaded_episodes[start_idx:end_idx]
+            
+            # Collate them using the existing collate function
+            collated_batch = collate_episodes_padded(batch_episodes)
+            
+            # Store the pre-collated batch
+            self.preloaded_batches.append(collated_batch)
+            
+            if (batch_idx + 1) % 10 == 0 or batch_idx == num_batches - 1:
+                elapsed = time.time() - start_time
+                print(f"  📦 Pre-collated {batch_idx + 1}/{num_batches} batches ({elapsed:.1f}s)")
+        
+        total_time = time.time() - start_time
+        print(f"✅ Pre-collation complete: {len(self.preloaded_batches)} batches ready in {total_time:.1f}s")
+        print(f"   Batch fetch during training will now be instant (no padding overhead!)")
+        
+        # Clear individual episodes to save memory (we only need batches now)
+        self.preloaded_episodes = None
+    
     def _load_episode_from_disk(self, episode_id, transitions, episode_length):
         """Load episode data from disk (used by both __getitem__ and preloading)."""
         if transitions[0]['transition_idx'] is not None:
@@ -345,20 +394,29 @@ class WorldModelEpisodeDataset(Dataset):
         return obs, actions, next_obs
     
     def __len__(self) -> int:
-        return len(self.episode_data)
+        """Return number of episodes or batches depending on mode"""
+        if self.preloaded_batches is not None:
+            # In batch-preload mode, return number of batches
+            return len(self.preloaded_batches)
+        else:
+            # In episode mode, return number of episodes
+            return len(self.episode_data)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    def __getitem__(self, idx: int):
         """
-        Load a complete episode (reconstructed from SA transitions or regular file).
+        Load a complete episode OR pre-collated batch depending on mode.
         
         Returns:
-            Tuple of (obs, actions, next_obs, episode_length):
-                - obs: [episode_length, C, H, W]
-                - actions: [episode_length, action_dim]
-                - next_obs: [episode_length, C, H, W]
-                - episode_length: int
+            If preloaded_batches mode:
+                Tuple of (obs_padded, actions_padded, next_obs_padded, lengths, mask)
+            Otherwise:
+                Tuple of (obs, actions, next_obs, episode_length)
         """
-        # If data is preloaded, return directly from memory
+        # If batches are pre-collated, return directly from memory
+        if self.preloaded_batches is not None:
+            return self.preloaded_batches[idx]
+        
+        # If individual episodes are preloaded, return from memory
         if self.preloaded_episodes is not None:
             return self.preloaded_episodes[idx]
         
