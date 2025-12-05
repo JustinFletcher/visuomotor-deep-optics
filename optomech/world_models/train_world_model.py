@@ -2380,6 +2380,7 @@ def train_world_model(config: WorldModelConfig):
             obs_key=config.obs_key,
             action_key=config.action_key,
             min_episode_length=config.min_episode_length,
+            max_episode_length=config.max_episode_length if hasattr(config, 'max_episode_length') else None,
             load_in_memory=False  # Don't preload yet, we need to filter first
         )
         
