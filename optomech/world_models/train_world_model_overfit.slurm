@@ -23,7 +23,7 @@ for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
     poetry run python optomech/world_models/train_world_model.py \
-        --config optomech/world_models/world_model_config_overfit.json \
+        --config optomech/world_models/world_model_config_sa_1m.json \
         --runs-dir /wdata/home/fletch/visuomotor-deep-optics/runs \
         --max-examples 128 \
         --no-save \
