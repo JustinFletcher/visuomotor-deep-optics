@@ -3206,8 +3206,8 @@ def main():
         input_crop_size=get_value('input_crop_size'),
         sequence_length=get_value('sequence_length', 10),
         use_episodes=get_value('use_episodes', False),
-
         min_episode_length=get_value('min_episode_length', 20),
+        max_episode_length=get_value('max_episode_length'),
         obs_key=get_value('obs_key', 'observations'),
         action_key=get_value('action_key', 'sa_incremental_actions'),
         loss_function=get_value('loss_function', 'mse'),
