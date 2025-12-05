@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=wm           # Job name
+#SBATCH --job-name=wm-over           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks-per-node=28          # Number of tasks per node
@@ -26,6 +26,7 @@ for VARIANT in "${VARIANTS[@]}"; do
         --config optomech/world_models/world_model_config_sa_1m.json \
         --runs-dir /wdata/home/fletch/visuomotor-deep-optics/runs \
         --max-examples 128 \
+        --batch-size 16 \
         --no-save \
         $VARIANT &  # Run in background
 done
