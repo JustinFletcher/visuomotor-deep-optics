@@ -18,7 +18,7 @@
   "sequence_length": 32,
   "use_episodes": true,
   "min_episode_length": 1,
-  "max_episode_length": 64,
+  "max_episode_length": null,
   "obs_key": "observations",
   "action_key": "sa_incremental_actions",
   "loss_function": "mse",
