@@ -238,6 +238,13 @@ class WorldModelEpisodeDataset(Dataset):
                 actions = torch.from_numpy(actions).float()
                 next_obs = torch.from_numpy(next_obs).float() / 65535.0
             
+            # Truncate to max_episode_length if specified
+            if self.max_episode_length is not None and obs.shape[0] > self.max_episode_length:
+                obs = obs[:self.max_episode_length]
+                actions = actions[:self.max_episode_length]
+                next_obs = next_obs[:self.max_episode_length]
+                episode_length = obs.shape[0]  # Update length after truncation
+            
             self.preloaded_episodes.append((obs, actions, next_obs, episode_length))
             
             # Progress indicator
