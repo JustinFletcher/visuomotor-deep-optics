@@ -17,7 +17,6 @@
   "input_crop_size": 256,
   "sequence_length": 32,
   "use_episodes": true,
-  "episode_batch_size": 8,
   "min_episode_length": 1,
   "obs_key": "observations",
   "action_key": "sa_incremental_actions",

@@ -707,7 +707,6 @@ class WorldModelConfig:
     
     # Episode-based training (NEW)
     use_episodes: bool = False  # Use episode-based training instead of sequence-based
-    episode_batch_size: int = 4  # Number of episodes per batch (for episode-based training)
     min_episode_length: int = 20  # Minimum episode length for episode-based training
     
     # Dataset keys
@@ -1995,7 +1994,7 @@ def train_world_model(config: WorldModelConfig):
         print(f"   Observation key: {config.obs_key}")
         print(f"   Action key: {config.action_key}")
         print(f"   Min episode length: {config.min_episode_length}")
-        print(f"   Episode batch size: {config.episode_batch_size}")
+        print(f"   Batch size: {config.batch_size}")
         
         dataset = WorldModelEpisodeDataset(
             file_paths=file_paths,
@@ -2018,7 +2017,7 @@ def train_world_model(config: WorldModelConfig):
             dataset._preload_episodes()
         
         collate_fn = collate_episodes
-        batch_size = config.episode_batch_size
+        batch_size = config.batch_size
         
     else:
         print(f"\n📂 Creating SEQUENCE-BASED dataset...")
@@ -2811,7 +2810,7 @@ def main():
         input_crop_size=get_value('input_crop_size'),
         sequence_length=get_value('sequence_length', 10),
         use_episodes=get_value('use_episodes', False),
-        episode_batch_size=get_value('episode_batch_size', 4),
+
         min_episode_length=get_value('min_episode_length', 20),
         obs_key=get_value('obs_key', 'observations'),
         action_key=get_value('action_key', 'sa_incremental_actions'),
