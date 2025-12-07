@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=wm-nf          # Job name
+#SBATCH --job-name=wm-vars          # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks=1              # <-- ONE task
@@ -16,7 +16,8 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name world_model_experiment_sa_1m --seed 123"
+    "--run-name world_model_experiment_sa_1m --max-examples 1024 --seed 123"
+    "--run-name world_model_experiment_sa_1m --max-examples 2048 --seed 123"
 )
 
 # Run all variants in parallel
