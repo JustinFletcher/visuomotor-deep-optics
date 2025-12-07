@@ -16,7 +16,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--run-name world_model_experiment_sa_1m_frozen --seed 123"
+    "--run-name world_model_experiment_sa_1m --seed 123"
 )
 
 # Run all variants in parallel
