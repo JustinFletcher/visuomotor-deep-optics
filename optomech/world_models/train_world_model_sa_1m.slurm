@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=wm           # Job name
+#SBATCH --job-name=wm-nf          # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks=1              # <-- ONE task
