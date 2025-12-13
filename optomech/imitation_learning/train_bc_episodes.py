@@ -46,13 +46,7 @@ from utils.data_loading import DatasetDiscovery
 
 # Import model
 from models.bc_model import BCModel
-
-# Import autoencoder architecture utilities
-from models.autoencoders import (
-    create_autoencoder_model,
-    detect_autoencoder_architecture,
-    load_autoencoder_weights
-)
+from models import create_model, AutoEncoderCNN, AutoEncoderResNet
 
 
 @dataclass
@@ -382,11 +376,12 @@ def train_bc(config: BCConfig):
     print(f"\n🎨 Setting up data transforms...")
     print(f"   Log scale: {config.log_scale}")
     
-    transforms = None
-    if config.log_scale:
-        from optomech.world_models.transforms import create_log_scale_transform
-        transforms = create_log_scale_transform(normalize=True)
-        print(f"   ✅ Log-scale transform created")
+    from utils.transforms import get_autoencoder_transforms
+    transforms = get_autoencoder_transforms(
+        crop_size=None,  # Cropping handled by encoder
+        normalize=True,
+        log_scale=config.log_scale
+    )
     
     # Create episode dataset with batch preloading
     print(f"\n📂 Creating EPISODE-BASED dataset...")
@@ -497,18 +492,66 @@ def train_bc(config: BCConfig):
     
     # Load pretrained autoencoder
     print(f"\n📦 Loading pretrained autoencoder from: {config.pretrained_autoencoder_path}")
-    arch_type = detect_autoencoder_architecture(config.pretrained_autoencoder_path)
-    print(f"  🔍 Detected architecture: {arch_type}")
     
-    autoencoder, input_channels, detected_latent_dim = create_autoencoder_model(
-        arch_type,
-        input_channels=1,
+    # Load checkpoint
+    try:
+        autoencoder_checkpoint = torch.load(config.pretrained_autoencoder_path, map_location=device, weights_only=False)
+    except (AttributeError, Exception) as e:
+        print(f"  ⚠️  Warning: Could not unpickle config from checkpoint: {e}")
+        print(f"  Trying to load just the state dict...")
+        autoencoder_checkpoint = torch.load(config.pretrained_autoencoder_path, map_location=device, weights_only=True)
+    
+    # Extract autoencoder model state dict
+    if isinstance(autoencoder_checkpoint, dict):
+        if 'model_state_dict' in autoencoder_checkpoint:
+            autoencoder_state = autoencoder_checkpoint['model_state_dict']
+            model_config = autoencoder_checkpoint.get('model_config', {})
+            arch = autoencoder_checkpoint.get('architecture', None)
+        elif 'state_dict' in autoencoder_checkpoint:
+            autoencoder_state = autoencoder_checkpoint['state_dict']
+            model_config = {}
+            arch = None
+        else:
+            autoencoder_state = autoencoder_checkpoint
+            arch = None
+            model_config = {}
+    else:
+        raise ValueError(f"Unexpected checkpoint format: {type(autoencoder_checkpoint)}")
+    
+    # Infer architecture from state dict if not in checkpoint
+    if arch is None:
+        if 'encoder.4.0.conv1.weight' in autoencoder_state or 'encoder.1.weight' in autoencoder_state:
+            print(f"  🔍 Detected ResNet-based autoencoder architecture from state dict")
+            arch = 'autoencoder_resnet'
+        else:
+            arch = 'autoencoder_cnn'
+    
+    print(f"🔧 Creating autoencoder architecture: {arch}")
+    
+    # Determine input channels from state dict
+    first_conv_key = 'encoder.0.weight' if 'encoder.0.weight' in autoencoder_state else 'encoder.1.weight'
+    if first_conv_key in autoencoder_state:
+        detected_input_channels = autoencoder_state[first_conv_key].shape[1]
+        print(f"  🔍 Detected input channels: {detected_input_channels}")
+    
+    # Determine latent dim from bottleneck
+    if 'bottleneck_encode.0.weight' in autoencoder_state:
+        detected_latent_dim = autoencoder_state['bottleneck_encode.0.weight'].shape[0]
+        print(f"  🔍 Detected latent dim: {detected_latent_dim}")
+        config.latent_dim = detected_latent_dim
+    
+    autoencoder = create_model(
+        arch=arch,
+        input_channels=detected_input_channels,
         latent_dim=config.latent_dim,
-        device=device
+        input_crop_size=config.input_crop_size,
+        **model_config
     )
+    autoencoder.load_state_dict(autoencoder_state)
+    autoencoder = autoencoder.to(device)
+    autoencoder.eval()
     
-    load_autoencoder_weights(autoencoder, config.pretrained_autoencoder_path, device)
-    print(f"✅ Loaded pretrained autoencoder (latent_dim={detected_latent_dim})")
+    print(f"✅ Loaded pretrained autoencoder (latent_dim={config.latent_dim})")
     
     # Create BC model
     print(f"\n🌍 Creating BC model...")
@@ -521,7 +564,7 @@ def train_bc(config: BCConfig):
     
     model = BCModel(
         encoder=autoencoder.encoder,
-        latent_dim=detected_latent_dim,
+        latent_dim=config.latent_dim,
         action_dim=action_dim,
         hidden_dim=config.hidden_dim,
         num_layers=config.num_lstm_layers,
