@@ -23,11 +23,18 @@ import json
 import argparse
 import time
 import uuid
+import pickle
 from pathlib import Path
 from typing import Tuple
 from dataclasses import dataclass
 
 import torch
+
+
+# Dummy class for unpickling autoencoder checkpoints
+class AutoencoderConfig:
+    """Dummy class to allow unpickling of autoencoder checkpoints"""
+    pass
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
