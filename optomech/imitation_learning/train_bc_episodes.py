@@ -493,13 +493,8 @@ def train_bc(config: BCConfig):
     # Load pretrained autoencoder
     print(f"\n📦 Loading pretrained autoencoder from: {config.pretrained_autoencoder_path}")
     
-    # Load checkpoint
-    try:
-        autoencoder_checkpoint = torch.load(config.pretrained_autoencoder_path, map_location=device, weights_only=False)
-    except (AttributeError, Exception) as e:
-        print(f"  ⚠️  Warning: Could not unpickle config from checkpoint: {e}")
-        print(f"  Trying to load just the state dict...")
-        autoencoder_checkpoint = torch.load(config.pretrained_autoencoder_path, map_location=device, weights_only=True)
+    # Load checkpoint - always use weights_only=False since checkpoint may have pickled config
+    autoencoder_checkpoint = torch.load(config.pretrained_autoencoder_path, map_location=device, weights_only=False)
     
     # Extract autoencoder model state dict
     if isinstance(autoencoder_checkpoint, dict):
