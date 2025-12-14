@@ -555,6 +555,27 @@ def train_bc(config: BCConfig):
     
     print(f"✅ Loaded pretrained autoencoder (latent_dim={config.latent_dim})")
     
+    # Create encoder wrapper that includes bottleneck (if needed)
+    if hasattr(autoencoder, 'encoder') and hasattr(autoencoder, 'bottleneck_encode'):
+        # ResNet-style autoencoder with separate bottleneck
+        class EncoderWrapper(nn.Module):
+            def __init__(self, encoder, bottleneck_encode):
+                super().__init__()
+                self.encoder = encoder
+                self.bottleneck_encode = bottleneck_encode
+            
+            def forward(self, x):
+                x = self.encoder(x)
+                if x.dim() > 2:
+                    x = x.view(x.size(0), -1)
+                x = self.bottleneck_encode(x)
+                return x
+        
+        encoder = EncoderWrapper(autoencoder.encoder, autoencoder.bottleneck_encode)
+    else:
+        # Simple encoder without bottleneck
+        encoder = autoencoder.encoder
+    
     # Create BC model
     print(f"\n🌍 Creating BC model...")
     print(f"   Action dim: {action_dim}")
@@ -565,7 +586,7 @@ def train_bc(config: BCConfig):
     print(f"   Freeze encoder: {config.freeze_encoder}")
     
     model = BCModel(
-        encoder=autoencoder.encoder,
+        encoder=encoder,
         latent_dim=config.latent_dim,
         action_dim=action_dim,
         hidden_dim=config.hidden_dim,
