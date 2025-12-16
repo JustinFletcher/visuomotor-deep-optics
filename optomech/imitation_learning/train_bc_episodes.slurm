@@ -24,7 +24,6 @@ for VARIANT in "${VARIANTS[@]}"; do
     # Launch autoencoder training
     poetry run python optomech/imitation_learning/train_bc_episodes.py \
         --config optomech/imitation_learning/bc_config_sa_1m.json \
-        --seed 42 \
        $VARIANT &  # Run in background
 done
 
