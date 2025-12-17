@@ -297,23 +297,27 @@ def validate_epoch_batched(
     model: nn.Module,
     dataloader: DataLoader,
     criterion: nn.Module,
-    device: torch.device
+    device: torch.device,
+    sequence_length: int = 32
 ) -> float:
     """
     Validate for one epoch with batched episode processing.
+    
+    Uses chunked processing (like TBPTT) to avoid OOM on long episodes.
     
     Args:
         model: BC model
         dataloader: DataLoader
         criterion: Masked loss function
         device: Device
+        sequence_length: Chunk size for processing (to avoid OOM)
     
     Returns:
         Average loss for epoch
     """
     model.eval()
     total_loss = 0.0
-    num_batches = 0
+    total_valid_timesteps = 0
     
     with torch.no_grad():
         for batch_data in tqdm(dataloader, desc="Validation", leave=False):
@@ -328,18 +332,39 @@ def validate_epoch_batched(
             mask = mask.to(device)
             
             batch_size = obs_padded.shape[0]
+            max_len = obs_padded.shape[1]
             
-            # Forward pass (full episode, no TBPTT for validation)
+            # Process in chunks to avoid OOM (like TBPTT but without gradient)
             hidden = model.get_zero_hidden(batch_size, device)
-            action_pred, _, _ = model(obs_padded, hidden)
+            batch_loss = 0.0
+            batch_valid_timesteps = 0
             
-            # Compute loss
-            loss = criterion(action_pred, actions_padded, mask)
+            for t in range(0, max_len, sequence_length):
+                # Get chunk
+                end_t = min(t + sequence_length, max_len)
+                obs_chunk = obs_padded[:, t:end_t]
+                action_chunk = actions_padded[:, t:end_t]
+                mask_chunk = mask[:, t:end_t]
+                
+                # Skip if all masked
+                if mask_chunk.sum() == 0:
+                    continue
+                
+                # Forward pass for this chunk
+                action_pred, _, hidden = model(obs_chunk, hidden)
+                
+                # Compute loss for this chunk (weighted by valid timesteps)
+                chunk_loss = criterion(action_pred, action_chunk, mask_chunk)
+                valid_timesteps = mask_chunk.sum().item()
+                
+                batch_loss += chunk_loss.item() * valid_timesteps
+                batch_valid_timesteps += valid_timesteps
             
-            total_loss += loss.item()
-            num_batches += 1
+            if batch_valid_timesteps > 0:
+                total_loss += batch_loss
+                total_valid_timesteps += batch_valid_timesteps
     
-    return total_loss / max(num_batches, 1)
+    return total_loss / max(total_valid_timesteps, 1)
 
 
 def train_bc(config: BCConfig):
@@ -645,6 +670,10 @@ def train_bc(config: BCConfig):
     for epoch in range(config.num_epochs):
         epoch_start = time.time()
         
+        # Clear CUDA cache to prevent memory fragmentation 
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         # Train
         train_loss = train_epoch_batched(
             model, train_loader, optimizer, criterion, device,
@@ -653,7 +682,7 @@ def train_bc(config: BCConfig):
         
         # Validate
         val_loss = validate_epoch_batched(
-            model, val_loader, criterion, device
+            model, val_loader, criterion, device, config.sequence_length
         )
         
         epoch_time = time.time() - epoch_start
@@ -706,7 +735,7 @@ def train_bc(config: BCConfig):
     
     # Test final model
     print(f"\n🧪 Testing final model...")
-    test_loss = validate_epoch_batched(model, test_loader, criterion, device)
+    test_loss = validate_epoch_batched(model, test_loader, criterion, device, config.sequence_length)
     print(f"Test Loss: {test_loss:.6f}")
     
     writer.add_scalar('Final/Test_Loss', test_loss, config.num_epochs)
