@@ -1,7 +1,7 @@
 {
   "dataset_path": "/wdata/scratch/fletch/datasets/sa_dataset_1m",
   "pretrained_autoencoder_path": "./models/trained_autoencoder_corrector_last_epoch.pth",
-  "run_name": "bc_short_seq",
+  "run_name": "bc_nonepisodic_short_seq",
   "batch_size": 8,
   "learning_rate": 0.0003,
   "num_epochs": 10000,
