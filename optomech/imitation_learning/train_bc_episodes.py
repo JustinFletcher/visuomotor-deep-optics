@@ -802,13 +802,31 @@ def main():
             config_dict = json.load(f)
         print(f"✅ Loaded config from {args.config}")
     
-    # Helper to get value with priority: CLI > config file > default
+    # Helper to get value with priority: CLI (if explicitly set) > config file > default
+    # We need to check if CLI arg was explicitly provided vs just using argparse default
     def get_value(arg_name, default=None):
-        cli_value = getattr(args, arg_name, None)
-        if cli_value is not None and (not isinstance(cli_value, bool) or cli_value):
-            return cli_value
+        # Convert arg_name to CLI format (e.g., 'num_epochs' -> 'num-epochs')
+        cli_arg_name = arg_name.replace('_', '-')
+        
+        # Check if this argument was explicitly provided on command line
+        # by checking if it's in sys.argv
+        cli_explicitly_set = any(
+            arg.startswith(f'--{cli_arg_name}') or arg.startswith(f'--{arg_name}')
+            for arg in sys.argv
+        )
+        
+        if cli_explicitly_set:
+            cli_value = getattr(args, arg_name.replace('-', '_'), None)
+            if cli_value is not None:
+                return cli_value
+        
+        # Then check config file
         if arg_name in config_dict:
             return config_dict[arg_name]
+        # Also check with hyphens converted to underscores
+        if arg_name.replace('-', '_') in config_dict:
+            return config_dict[arg_name.replace('-', '_')]
+            
         return default
     
     # Create config
