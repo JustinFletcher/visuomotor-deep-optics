@@ -6,7 +6,7 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./om-td3.out
 #SBATCH --error=./om-td3.err
-#SBATCH --gres=gpu:A100-SXM4:8
+#SBATCH --gres=gpu:A100-PCIe:8
 #SBATCH --time=4-00:00:00             # Maximum runtime (4 days) 
 
 # Change to the project directory
