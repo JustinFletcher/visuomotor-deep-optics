@@ -1799,9 +1799,13 @@ if __name__ == "__main__":
                     # initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
                     #                     qf2_hidden[1].detach().clone())
 
-                    actor_hidden = actor.get_zero_hidden()
-                    qf1_hidden = qf1.get_zero_hidden()
-                    qf2_hidden = qf2.get_zero_hidden()
+                    # Add unsqueeze(1) to ensure 3D shape [num_layers, 1, hidden_dim] for consistency with SA dataset
+                    h, c = actor.get_zero_hidden()
+                    actor_hidden = (h.unsqueeze(1), c.unsqueeze(1))
+                    h, c = qf1.get_zero_hidden()
+                    qf1_hidden = (h.unsqueeze(1), c.unsqueeze(1))
+                    h, c = qf2.get_zero_hidden()
+                    qf2_hidden = (h.unsqueeze(1), c.unsqueeze(1))
                     initial_actor_hidden = actor_hidden
                     initial_qf1_hidden = qf1_hidden
                     initial_qf2_hidden = qf2_hidden
@@ -1872,9 +1876,13 @@ if __name__ == "__main__":
                                 elif warmup_obs.dtype == np.uint16:
                                     warmup_obs = (warmup_obs / 65535.0).astype(np.float32)
                                 # Reset hidden states since episode ended
-                                actor_hidden = actor.get_zero_hidden()
-                                qf1_hidden = qf1.get_zero_hidden()
-                                qf2_hidden = qf2.get_zero_hidden()
+                                # Add unsqueeze(1) to ensure 3D shape [num_layers, 1, hidden_dim]
+                                h, c = actor.get_zero_hidden()
+                                actor_hidden = (h.unsqueeze(1), c.unsqueeze(1))
+                                h, c = qf1.get_zero_hidden()
+                                qf1_hidden = (h.unsqueeze(1), c.unsqueeze(1))
+                                h, c = qf2.get_zero_hidden()
+                                qf2_hidden = (h.unsqueeze(1), c.unsqueeze(1))
                                 # Reset prior actions/rewards for new episode
                                 warmup_prior_actions = np.zeros_like(warmup_prior_actions)
                                 warmup_prior_rewards = np.zeros_like(warmup_prior_rewards)
