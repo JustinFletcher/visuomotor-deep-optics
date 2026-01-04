@@ -1692,9 +1692,13 @@ if __name__ == "__main__":
                 
                 if should_add_to_buffer:
                     timer.start("replay_buffer_push")
-                    rb.push(initial_actor_hidden,
-                            initial_qf1_hidden,
-                            initial_qf2_hidden,
+                    # Add batch dim to hidden states: [num_layers, hidden_dim] -> [num_layers, 1, hidden_dim]
+                    # This ensures consistency with SA dataset hidden states
+                    def add_batch_dim(hidden):
+                        return (hidden[0].unsqueeze(1), hidden[1].unsqueeze(1))
+                    rb.push(add_batch_dim(initial_actor_hidden),
+                            add_batch_dim(initial_qf1_hidden),
+                            add_batch_dim(initial_qf2_hidden),
                             episode_state,
                             episode_action,
                             episode_last_action,
@@ -1799,13 +1803,9 @@ if __name__ == "__main__":
                     # initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
                     #                     qf2_hidden[1].detach().clone())
 
-                    # Add unsqueeze(1) to ensure 3D shape [num_layers, 1, hidden_dim] for consistency with SA dataset
-                    h, c = actor.get_zero_hidden()
-                    actor_hidden = (h.unsqueeze(1), c.unsqueeze(1))
-                    h, c = qf1.get_zero_hidden()
-                    qf1_hidden = (h.unsqueeze(1), c.unsqueeze(1))
-                    h, c = qf2.get_zero_hidden()
-                    qf2_hidden = (h.unsqueeze(1), c.unsqueeze(1))
+                    actor_hidden = actor.get_zero_hidden()
+                    qf1_hidden = qf1.get_zero_hidden()
+                    qf2_hidden = qf2.get_zero_hidden()
                     initial_actor_hidden = actor_hidden
                     initial_qf1_hidden = qf1_hidden
                     initial_qf2_hidden = qf2_hidden
@@ -1876,13 +1876,9 @@ if __name__ == "__main__":
                                 elif warmup_obs.dtype == np.uint16:
                                     warmup_obs = (warmup_obs / 65535.0).astype(np.float32)
                                 # Reset hidden states since episode ended
-                                # Add unsqueeze(1) to ensure 3D shape [num_layers, 1, hidden_dim]
-                                h, c = actor.get_zero_hidden()
-                                actor_hidden = (h.unsqueeze(1), c.unsqueeze(1))
-                                h, c = qf1.get_zero_hidden()
-                                qf1_hidden = (h.unsqueeze(1), c.unsqueeze(1))
-                                h, c = qf2.get_zero_hidden()
-                                qf2_hidden = (h.unsqueeze(1), c.unsqueeze(1))
+                                actor_hidden = actor.get_zero_hidden()
+                                qf1_hidden = qf1.get_zero_hidden()
+                                qf2_hidden = qf2.get_zero_hidden()
                                 # Reset prior actions/rewards for new episode
                                 warmup_prior_actions = np.zeros_like(warmup_prior_actions)
                                 warmup_prior_rewards = np.zeros_like(warmup_prior_rewards)
