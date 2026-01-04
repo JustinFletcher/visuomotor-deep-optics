@@ -23,7 +23,7 @@ for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
     poetry run python optomech/imitation_learning/train_trajectory_behavior_cloning.py \
-        --dataset-path $WORKDIR/datasets/sa_full_dataset_1m \
+        --dataset-path /wdata/scratch/fletch/datasets/sa_dataset_1m \
         --pretrained-encoder $WORKDIR/models/trained_autoencoder_corrector_last_epoch.pth \
         --num-epochs 1000000 \
         --batch-size 64 \

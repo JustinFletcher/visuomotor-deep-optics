@@ -120,13 +120,15 @@ class Args:
     """the batch size of sample from the reply memory"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
-    learning_starts: int = 256
-    """timestep to start learning"""
+    learning_starts: int = 100
+    """minimum number of sequences in replay buffer before learning starts"""
     policy_frequency: int = 1
     """the frequency of training policy (delayed)"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
-    decay_rate: float = 0.00001
+    policy_noise: float = 0.2
+    """std of noise added to target policy actions for TD3 target smoothing"""
+    decay_rate: float = 0.995
     """Decay rate for noise decay"""
     action_scale: float = 1.0
     """The scale of the actors actions"""
@@ -876,8 +878,6 @@ if __name__ == "__main__":
         )
     actor_hidden = new_actor_hidden
     
-    # ...Everybody's a critic! (except the actor, of course)
-    # Note to humans: ChatGPT made ^^^this^^^ joke, unprompted. -jrf
     first_actions_tensor = torch.from_numpy(first_actions).to(device, dtype=torch.float32)
     
     qf1_a_values, qf1_hidden = qf1(
@@ -918,14 +918,19 @@ if __name__ == "__main__":
     print(f"Starting training: {args.total_timesteps:,} steps")
     print(f"{'='*60}\n")
 
+    # Track when learning actually starts (in terms of global_step).
+    # This is set when the replay buffer first has enough sequences.
+    learning_started_at_step = None
+
     for iteration in range(args.total_timesteps):
 
         step_time = time.time()
 
         # First, check to see if we need to save the model.
         if args.save_model:
-            # Check that we've complete at least one post-learning episode.
-            if global_step > (args.learning_starts + args.max_episode_steps):
+            # Check that we've completed at least one post-learning episode.
+            # Use learning_started_at_step to know when learning actually began.
+            if learning_started_at_step is not None and global_step > (learning_started_at_step + args.max_episode_steps):
 
                 # If mean reward of recent episodes improved, save the model.
                 if np.mean(train_episodic_return_list) > best_train_episode_return:
@@ -1100,7 +1105,9 @@ if __name__ == "__main__":
         if global_step >= args.experience_sampling_delay:
 
             # If there is a prelearning phase, use it.
-            if global_step < (args.learning_starts + args.actor_training_delay):
+            # Use exploration sampling until learning has started AND actor training delay has passed.
+            prelearning_active = (learning_started_at_step is None) or (global_step < learning_started_at_step + args.actor_training_delay)
+            if prelearning_active:
 
                 # Cache action_scale on CPU to avoid repeated GPU transfers
                 action_scale_np = actor.action_scale.cpu().numpy()
@@ -1182,7 +1189,7 @@ if __name__ == "__main__":
                     
                     # Sample and add noise to the actions, then clip to action space bounds.
                     noise = noise_generator.sample().to(device)
-                    actions += noise
+                    actions = actions + noise
                     
                     # Cache action_scale on CPU to avoid repeated transfers
                     action_scale_np = actor.action_scale.cpu().numpy()
@@ -1243,9 +1250,12 @@ if __name__ == "__main__":
             if first_step_reward is None:
                 first_step_reward = rewards
 
+            # Determine if we're past the learning start + actor training delay
+            past_prelearning = (learning_started_at_step is not None) and (global_step > learning_started_at_step + args.actor_training_delay)
+
             # If we've hit a writing interval, log the data.
-            if iteration % args.writer_interval == 0 and (global_step > args.learning_starts + args.actor_training_delay):
-                if global_step > args.learning_starts + args.actor_training_delay:
+            if iteration % args.writer_interval == 0:
+                if past_prelearning:
                     writer.add_scalar("online/action_mean", actions.mean().item(), global_step)
                     writer.add_scalar("online/action_std", actions.std().item(), global_step)
                     # writer.add_scalar("online/actions_l2", torch.norm(actions, p=2), global_step)
@@ -1436,8 +1446,90 @@ if __name__ == "__main__":
                     initial_qf2_hidden = qf2_hidden
 
                     noise_generator.reset()
-                    if global_step > args.learning_starts:
+                    if len(rb) >= args.learning_starts:
                         noise_generator.decay()
+                    
+                    # Warmup phase: take 16 on-policy steps to initialize hidden states
+                    # This helps the LSTM get context before we start storing transitions
+                    warmup_steps = 16
+                    warmup_obs = obs.copy() if isinstance(obs, np.ndarray) else obs.cpu().numpy().copy()
+                    warmup_prior_actions = prior_actions.copy() if isinstance(prior_actions, np.ndarray) else prior_actions
+                    warmup_prior_rewards = prior_rewards.copy() if isinstance(prior_rewards, np.ndarray) else prior_rewards
+                    
+                    with torch.no_grad():
+                        for _ in range(warmup_steps):
+                            # Convert to tensors
+                            warmup_obs_tensor = torch.from_numpy(warmup_obs).to(device, dtype=torch.float32)
+                            warmup_prior_actions_tensor = torch.from_numpy(warmup_prior_actions).to(device, dtype=torch.float32)
+                            warmup_prior_rewards_tensor = torch.from_numpy(warmup_prior_rewards).to(device, dtype=torch.float32)
+                            
+                            # Get actions and update hidden states
+                            warmup_actions, actor_hidden = actor(
+                                warmup_obs_tensor,
+                                warmup_prior_actions_tensor,
+                                warmup_prior_rewards_tensor,
+                                actor_hidden
+                            )
+                            
+                            warmup_actions_tensor = warmup_actions if isinstance(warmup_actions, torch.Tensor) else torch.from_numpy(warmup_actions).to(device, dtype=torch.float32)
+                            
+                            _, qf1_hidden = qf1(
+                                warmup_obs_tensor,
+                                warmup_actions_tensor,
+                                warmup_prior_actions_tensor,
+                                warmup_prior_rewards_tensor,
+                                qf1_hidden
+                            )
+                            _, qf2_hidden = qf2(
+                                warmup_obs_tensor,
+                                warmup_actions_tensor,
+                                warmup_prior_actions_tensor,
+                                warmup_prior_rewards_tensor,
+                                qf2_hidden
+                            )
+                            
+                            # Step the environment (but don't store transitions)
+                            warmup_actions_np = warmup_actions.cpu().numpy() if isinstance(warmup_actions, torch.Tensor) else warmup_actions
+                            warmup_next_obs, warmup_rewards, warmup_term, warmup_trunc, _ = envs.step(warmup_actions_np)
+                            
+                            # Normalize observations
+                            if warmup_next_obs.dtype == np.uint8:
+                                warmup_next_obs = (warmup_next_obs / 255.0).astype(np.float32)
+                            elif warmup_next_obs.dtype == np.uint16:
+                                warmup_next_obs = (warmup_next_obs / 65535.0).astype(np.float32)
+                            
+                            # Update for next warmup step
+                            warmup_prior_actions = warmup_actions_np
+                            warmup_prior_rewards = warmup_rewards * args.reward_scale
+                            warmup_obs = warmup_next_obs
+                            
+                            # If episode ends during warmup, reset env AND hidden states
+                            if any(warmup_term) or any(warmup_trunc):
+                                warmup_obs, _ = envs.reset()
+                                if warmup_obs.dtype == np.uint8:
+                                    warmup_obs = (warmup_obs / 255.0).astype(np.float32)
+                                elif warmup_obs.dtype == np.uint16:
+                                    warmup_obs = (warmup_obs / 65535.0).astype(np.float32)
+                                # Reset hidden states since episode ended
+                                actor_hidden = actor.get_zero_hidden()
+                                qf1_hidden = qf1.get_zero_hidden()
+                                qf2_hidden = qf2.get_zero_hidden()
+                                # Reset prior actions/rewards for new episode
+                                warmup_prior_actions = np.zeros_like(warmup_prior_actions)
+                                warmup_prior_rewards = np.zeros_like(warmup_prior_rewards)
+                    
+                    # After warmup, update initial hidden states for the next sequence
+                    initial_actor_hidden = (actor_hidden[0].detach().clone(),
+                                            actor_hidden[1].detach().clone())
+                    initial_qf1_hidden = (qf1_hidden[0].detach().clone(),
+                                          qf1_hidden[1].detach().clone())
+                    initial_qf2_hidden = (qf2_hidden[0].detach().clone(),
+                                          qf2_hidden[1].detach().clone())
+                    
+                    # Update obs and prior values to continue from warmup state
+                    obs = warmup_obs
+                    prior_actions = warmup_prior_actions
+                    prior_rewards = warmup_prior_rewards
                         
                     break
 
@@ -1453,11 +1545,11 @@ if __name__ == "__main__":
 
         # ALGO LOGIC: training.
         # If it is time to train, then train.
-        if global_step > args.learning_starts and len(rb) >= args.batch_size:
+        if len(rb) >= args.learning_starts and len(rb) >= args.batch_size:
             
-            # Print message on first training step (use a flag to track this)
-            if not hasattr(args, '_training_started'):
-                args._training_started = True
+            # Record when learning actually started (in terms of global_step)
+            if learning_started_at_step is None:
+                learning_started_at_step = global_step
                 print(f"\n{'='*60}")
                 print(f"✓ TRAINING STARTED at step {global_step}")
                 print(f"  Buffer size: {len(rb)} sequences")
@@ -1509,9 +1601,9 @@ if __name__ == "__main__":
                         rewards_batch,
                         actor_hidden_batch,
                     )
-                policy_noise = 0.0
 
-                noise = (torch.randn_like(next_state_actions_batch) * policy_noise).clamp(-args.noise_clip, args.noise_clip)
+                # TD3 target policy smoothing: add noise to target actions
+                noise = (torch.randn_like(next_state_actions_batch) * args.policy_noise).clamp(-args.noise_clip, args.noise_clip)
 
                 noisy_next_action = (
                         next_state_actions_batch + noise
@@ -1611,7 +1703,8 @@ if __name__ == "__main__":
             qf2_optimizer.step()
 
             # If it a policy update step and we're past the actor training delay, update the actor.
-            if (global_step > args.actor_training_delay + (args.learning_starts)) and (global_step % args.policy_frequency == 0):
+            # learning_started_at_step is guaranteed to be set here since we're inside the training block.
+            if (global_step > learning_started_at_step + args.actor_training_delay) and (global_step % args.policy_frequency == 0):
 
                 loss_actions, _ = actor(
                         observations_batch,
