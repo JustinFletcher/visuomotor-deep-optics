@@ -1692,13 +1692,18 @@ if __name__ == "__main__":
                 
                 if should_add_to_buffer:
                     timer.start("replay_buffer_push")
-                    # Add batch dim to hidden states: [num_layers, hidden_dim] -> [num_layers, 1, hidden_dim]
-                    # This ensures consistency with SA dataset hidden states
-                    def add_batch_dim(hidden):
-                        return (hidden[0].unsqueeze(1), hidden[1].unsqueeze(1))
-                    rb.push(add_batch_dim(initial_actor_hidden),
-                            add_batch_dim(initial_qf1_hidden),
-                            add_batch_dim(initial_qf2_hidden),
+                    # Ensure hidden states are 3D [num_layers, 1, hidden_dim] for consistency with SA dataset
+                    # LSTM output is already 3D, but get_zero_hidden() returns 2D
+                    def ensure_3d_hidden(hidden):
+                        h, c = hidden
+                        if h.dim() == 2:
+                            h = h.unsqueeze(1)
+                        if c.dim() == 2:
+                            c = c.unsqueeze(1)
+                        return (h, c)
+                    rb.push(ensure_3d_hidden(initial_actor_hidden),
+                            ensure_3d_hidden(initial_qf1_hidden),
+                            ensure_3d_hidden(initial_qf2_hidden),
                             episode_state,
                             episode_action,
                             episode_last_action,
