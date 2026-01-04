@@ -190,10 +190,11 @@ class ImpalaActorLSTM(nn.Module):
         # When batched from replay buffer, hidden[0] and hidden[1] are lists of tensors
         if isinstance(hidden, (list, tuple)) and len(hidden) == 2:
             h0_raw, c0_raw = hidden[0], hidden[1]
-            # Concatenate if lists of tensors (each already [num_layers, 1, hidden_dim])
+            # Concatenate if lists of tensors
             if isinstance(h0_raw, list):
-                h0 = torch.cat(h0_raw, dim=1)  # Concat along batch dim: [num_layers, batch, hidden_dim]
-                c0 = torch.cat(c0_raw, dim=1)
+                # Each tensor is [num_layers, hidden_dim], need to add batch dim before concat
+                h0 = torch.cat([h.unsqueeze(1) for h in h0_raw], dim=1)  # [num_layers, batch, hidden_dim]
+                c0 = torch.cat([c.unsqueeze(1) for c in c0_raw], dim=1)
             else:
                 h0, c0 = h0_raw, c0_raw
         else:
@@ -419,17 +420,9 @@ class ImpalaCriticLSTM(nn.Module):
             h0_raw, c0_raw = hidden[0], hidden[1]
             # Concatenate if lists of tensors
             if isinstance(h0_raw, list):
-                # Check dimensionality of first tensor to determine how to batch
-                if h0_raw[0].dim() == 2:
-                    # Tensors are 2D [num_layers, hidden_dim], stack to create batch dim
-                    h0 = torch.stack(h0_raw, dim=1)  # [num_layers, batch, hidden_dim]
-                    c0 = torch.stack(c0_raw, dim=1)
-                elif h0_raw[0].dim() == 3:
-                    # Tensors are 3D [num_layers, 1, hidden_dim], concatenate along batch dim
-                    h0 = torch.cat(h0_raw, dim=1)  # [num_layers, batch, hidden_dim]
-                    c0 = torch.cat(c0_raw, dim=1)
-                else:
-                    raise ValueError(f"Unexpected hidden state dimension: {h0_raw[0].dim()}")
+                # Each tensor is [num_layers, hidden_dim], need to add batch dim before concat
+                h0 = torch.cat([h.unsqueeze(1) for h in h0_raw], dim=1)  # [num_layers, batch, hidden_dim]
+                c0 = torch.cat([c.unsqueeze(1) for c in c0_raw], dim=1)
             else:
                 h0, c0 = h0_raw, c0_raw
         else:
