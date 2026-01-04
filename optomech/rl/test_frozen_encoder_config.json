@@ -52,5 +52,6 @@
   "freeze_encoder": true,
   "pretrained_actor_path": null,
   "freeze_actor_encoder": true,
-  "replay_buffer_cutoff_step": null
+  "replay_buffer_cutoff_step": null,
+  "prefetch_batches": false
 }
