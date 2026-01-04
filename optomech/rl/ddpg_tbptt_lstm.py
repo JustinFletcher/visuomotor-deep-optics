@@ -2026,7 +2026,6 @@ if __name__ == "__main__":
                         actions_batch_batch,
                         rewards_batch,
                         actor_hidden_batch,
-                        debug_hidden=debug_first_step,
                     )
 
                 # TD3 target policy smoothing: add noise to target actions

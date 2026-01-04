@@ -134,6 +134,13 @@ def load_sa_dataset_to_buffer(
                 episode_ids = f['episode_ids'][:]
                 episode_steps = f['episode_steps'][:]
                 
+                # Debug: print shapes from first file
+                if batch_idx == 0 and verbose:
+                    print(f"      [DEBUG] Raw shapes from HDF5:")
+                    print(f"        observations: {observations.shape}, dtype={observations.dtype}")
+                    print(f"        actions: {actions.shape}, dtype={actions.dtype}")
+                    print(f"        rewards: {rewards.shape}, dtype={rewards.dtype}")
+                
                 # Group by episode
                 for i in range(len(observations)):
                     ep_id = episode_ids[i]
