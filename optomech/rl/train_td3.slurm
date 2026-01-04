@@ -6,7 +6,7 @@
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./om-td3.out
 #SBATCH --error=./om-td3.err
-#SBATCH --time=5-00:00:00             # Maximum runtime (5 days)
+#SBATCH --time=5-00:00:00             # Maximum runtime (5 days) 
 
 # Change to the project directory
 cd ~/visuomotor-deep-optics/
