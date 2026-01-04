@@ -2552,7 +2552,7 @@ class OptomechEnv(gym.Env):
 
                     bandwidth_nanometers = 100.0
                     bandwidth_meters = bandwidth_nanometers / 1e9
-                    sampling = 5
+                    sampling = 1
                     bandwidth_increment_meters = bandwidth_meters / sampling
                     min_wavelength = self.optical_system.wavelength - (bandwidth_meters / 2)
                     wavelengths = [min_wavelength + (i * bandwidth_increment_meters) for i in range(sampling)]
