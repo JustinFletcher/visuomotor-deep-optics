@@ -51,6 +51,7 @@ from optomech.replay_buffers import *
 # Import TD3 modular components
 from models.td3_models import ImpalaActorLSTM, ImpalaCriticLSTM
 from optomech.rl.td3_replay_buffer import TD3ReplayBufferLSTM, load_pretrained_encoder, load_pretrained_actor
+from optomech.rl.sa_dataset_loader import load_sa_dataset_to_buffer, get_sa_dataset_info, get_sa_dataset_info
 
 # Import AutoencoderConfig for unpickling saved checkpoints
 try:
@@ -59,6 +60,253 @@ try:
     sys.modules['__main__'].AutoencoderConfig = AutoencoderConfig
 except ImportError:
     pass
+
+
+class StepTimer:
+    """
+    Hierarchical timing instrumentation for training loop.
+    Tracks cumulative and per-step timing for various operations.
+    
+    Uses a two-level hierarchy:
+    - Level 1 (categories): Major phases that DON'T overlap (env_interaction, training, logging)
+    - Level 2 (operations): Specific operations within each category
+    
+    The table shows only leaf operations that don't contain other timed operations,
+    avoiding double-counting confusion.
+    """
+    def __init__(self, enabled: bool = True, print_interval: int = 100, writer=None):
+        self.enabled = enabled
+        self.print_interval = print_interval
+        self.writer = writer  # TensorBoard SummaryWriter
+        self.timings = {}  # name -> list of durations
+        self.current_starts = {}  # name -> start time
+        self.step_count = 0
+        self.global_step = 0  # Track global step for TensorBoard logging
+        
+        # Define the hierarchy for display purposes
+        # Format: category -> [operations]
+        self.categories = {
+            "ENV INTERACTION": [
+                "action_sample_random",
+                "action_sample_policy", 
+                "action_add_noise",
+                "hidden_state_warmup",
+                "hidden_state_update",
+                "env_step",
+                "obs_normalize",
+                "episode_data_append",
+                "replay_buffer_push",
+                "episode_reset",
+            ],
+            "TRAINING": [
+                "rb_sample",
+                "tensor_to_device",
+                "target_actor_forward",
+                "target_critic_forward", 
+                "td_target_compute",
+                "critic_forward",
+                "critic_loss_compute",
+                "critic_backward",
+                "critic_grad_clip",
+                "critic_optimizer_step",
+                "actor_forward",
+                "actor_loss_compute",
+                "actor_backward",
+                "actor_grad_clip",
+                "actor_optimizer_step",
+                "target_network_update",
+            ],
+            "LOGGING": [
+                "tensorboard_write",
+                "checkpoint_save",
+            ],
+        }
+        
+    def start(self, name: str):
+        """Start timing an operation."""
+        if self.enabled:
+            self.current_starts[name] = time.perf_counter()
+    
+    def stop(self, name: str):
+        """Stop timing and record duration."""
+        if self.enabled and name in self.current_starts:
+            duration = time.perf_counter() - self.current_starts[name]
+            if name not in self.timings:
+                self.timings[name] = []
+            self.timings[name].append(duration)
+            del self.current_starts[name]
+            return duration
+        return 0.0
+    
+    def step(self, global_step: int = None):
+        """Increment step counter and print/log if at interval."""
+        self.step_count += 1
+        if global_step is not None:
+            self.global_step = global_step
+        if self.enabled and self.step_count % self.print_interval == 0:
+            self.print_summary()
+            self.log_to_tensorboard()
+    
+    def print_summary(self):
+        """Print hierarchical timing summary."""
+        if not self.timings:
+            return
+        
+        print(f"\n{'═'*80}")
+        print(f"⏱  TIMING BREAKDOWN (steps {self.step_count - self.print_interval + 1}-{self.step_count})")
+        print(f"{'═'*80}")
+        
+        grand_total_time = 0.0
+        category_totals = {}
+        
+        # First pass: calculate totals
+        for category, operations in self.categories.items():
+            category_total = 0.0
+            for op in operations:
+                if op in self.timings:
+                    recent = self.timings[op][-self.print_interval:] if len(self.timings[op]) >= self.print_interval else self.timings[op]
+                    category_total += sum(recent)
+            category_totals[category] = category_total
+            grand_total_time += category_total
+        
+        # Also check for uncategorized timings
+        all_categorized = set()
+        for ops in self.categories.values():
+            all_categorized.update(ops)
+        uncategorized_total = 0.0
+        uncategorized_ops = []
+        for name in self.timings:
+            if name not in all_categorized:
+                recent = self.timings[name][-self.print_interval:] if len(self.timings[name]) >= self.print_interval else self.timings[name]
+                uncategorized_total += sum(recent)
+                uncategorized_ops.append(name)
+        if uncategorized_total > 0:
+            category_totals["OTHER"] = uncategorized_total
+            grand_total_time += uncategorized_total
+        
+        # Print header
+        print(f"{'Operation':<40} {'Mean':>8} {'Std':>8} {'Total':>10} {'%':>6}")
+        print(f"{'─'*40} {'─'*8} {'─'*8} {'─'*10} {'─'*6}")
+        
+        # Print each category
+        for category, operations in self.categories.items():
+            cat_total = category_totals.get(category, 0.0)
+            if cat_total == 0:
+                continue
+                
+            cat_pct = 100 * cat_total / grand_total_time if grand_total_time > 0 else 0
+            print(f"\n{category} ({cat_total*1000:.1f}ms, {cat_pct:.1f}%)")
+            print(f"{'─'*40}")
+            
+            # Sort operations by total time
+            op_stats = []
+            for op in operations:
+                if op in self.timings:
+                    recent = self.timings[op][-self.print_interval:] if len(self.timings[op]) >= self.print_interval else self.timings[op]
+                    if recent:
+                        mean_ms = np.mean(recent) * 1000
+                        std_ms = np.std(recent) * 1000
+                        total_ms = sum(recent) * 1000
+                        op_stats.append((op, mean_ms, std_ms, total_ms, len(recent)))
+            
+            op_stats.sort(key=lambda x: -x[3])
+            
+            for op, mean_ms, std_ms, total_ms, count in op_stats:
+                pct = 100 * (total_ms / 1000) / grand_total_time if grand_total_time > 0 else 0
+                # Indent operations under category
+                print(f"  {op:<38} {mean_ms:>7.2f} {std_ms:>7.2f} {total_ms:>9.1f} {pct:>5.1f}%")
+        
+        # Print uncategorized if any
+        if uncategorized_ops:
+            cat_total = category_totals.get("OTHER", 0.0)
+            cat_pct = 100 * cat_total / grand_total_time if grand_total_time > 0 else 0
+            print(f"\nOTHER ({cat_total*1000:.1f}ms, {cat_pct:.1f}%)")
+            print(f"{'─'*40}")
+            for op in uncategorized_ops:
+                recent = self.timings[op][-self.print_interval:] if len(self.timings[op]) >= self.print_interval else self.timings[op]
+                if recent:
+                    mean_ms = np.mean(recent) * 1000
+                    std_ms = np.std(recent) * 1000
+                    total_ms = sum(recent) * 1000
+                    pct = 100 * (total_ms / 1000) / grand_total_time if grand_total_time > 0 else 0
+                    print(f"  {op:<38} {mean_ms:>7.2f} {std_ms:>7.2f} {total_ms:>9.1f} {pct:>5.1f}%")
+        
+        # Summary
+        print(f"\n{'═'*80}")
+        print(f"TOTAL TIMED: {grand_total_time*1000:.1f}ms over {self.print_interval} steps")
+        print(f"AVG PER STEP: {grand_total_time*1000/self.print_interval:.2f}ms  |  THROUGHPUT: {self.print_interval/grand_total_time:.1f} steps/sec")
+        print(f"{'═'*80}\n")
+        
+        # Clear old timings to prevent memory growth
+        for name in self.timings:
+            self.timings[name] = self.timings[name][-self.print_interval*2:]
+    
+    def log_to_tensorboard(self):
+        """Log timing table as text to TensorBoard."""
+        if not self.writer or not self.timings:
+            return
+        
+        # Build the timing table as a markdown string
+        lines = []
+        lines.append(f"**TIMING BREAKDOWN (steps {self.step_count - self.print_interval + 1}-{self.step_count})**\n")
+        lines.append("| Operation | Mean (ms) | Std (ms) | Total (ms) | % |")
+        lines.append("|:----------|----------:|---------:|-----------:|--:|")
+        
+        grand_total_time = 0.0
+        category_totals = {}
+        
+        # Calculate totals per category
+        for category, operations in self.categories.items():
+            category_total = 0.0
+            for op in operations:
+                if op in self.timings:
+                    recent = self.timings[op][-self.print_interval:] if len(self.timings[op]) >= self.print_interval else self.timings[op]
+                    category_total += sum(recent)
+            category_totals[category] = category_total
+            grand_total_time += category_total
+        
+        # Build table rows for each category
+        for category, operations in self.categories.items():
+            cat_total = category_totals.get(category, 0.0)
+            if cat_total == 0:
+                continue
+            
+            cat_pct = 100 * cat_total / grand_total_time if grand_total_time > 0 else 0
+            lines.append(f"| **{category}** | | | **{cat_total*1000:.1f}** | **{cat_pct:.1f}%** |")
+            
+            # Sort operations by total time
+            op_stats = []
+            for op in operations:
+                if op in self.timings:
+                    recent = self.timings[op][-self.print_interval:] if len(self.timings[op]) >= self.print_interval else self.timings[op]
+                    if recent:
+                        mean_ms = np.mean(recent) * 1000
+                        std_ms = np.std(recent) * 1000
+                        total_ms = sum(recent) * 1000
+                        op_stats.append((op, mean_ms, std_ms, total_ms))
+            
+            op_stats.sort(key=lambda x: -x[3])
+            
+            for op, mean_ms, std_ms, total_ms in op_stats:
+                pct = 100 * (total_ms / 1000) / grand_total_time if grand_total_time > 0 else 0
+                lines.append(f"| &nbsp;&nbsp;{op} | {mean_ms:.2f} | {std_ms:.2f} | {total_ms:.1f} | {pct:.1f}% |")
+        
+        # Add summary
+        if grand_total_time > 0:
+            throughput = self.print_interval / grand_total_time
+            avg_step_ms = grand_total_time * 1000 / self.print_interval
+            lines.append(f"| | | | | |")
+            lines.append(f"| **TOTAL** | | | **{grand_total_time*1000:.1f}** | |")
+            lines.append(f"\n**Avg/step:** {avg_step_ms:.2f}ms | **Throughput:** {throughput:.1f} steps/sec")
+        
+        # Write to TensorBoard as text
+        table_text = "\n".join(lines)
+        self.writer.add_text("timing/breakdown", table_text, self.global_step)
+    
+    def reset(self):
+        """Reset all timings."""
+        self.timings = {}
+        self.current_starts = {}
 
 
 @dataclass
@@ -140,6 +388,8 @@ class Args:
     """The scale of the L1 regularization"""
     max_grad_norm: float = 1.0
     """The maximum gradient norm"""
+    clip_gradients: bool = False
+    """Whether to clip gradients and log gradient norms (expensive when writer_interval is low)"""
     use_q_bias: bool = False
     """If toggled, compute q bias in the critic model."""
     normalize_returns: bool = False
@@ -206,6 +456,16 @@ class Args:
     """Whether to use the new TD3ReplayBufferLSTM for dataset loading"""
     replay_buffer_cutoff_step: Optional[int] = None
     """Step after which no more writes are made to replay buffer (None = no cutoff)"""
+    
+    # SA Dataset pre-loading arguments
+    sa_dataset_path: Optional[str] = None
+    """Path to SA dataset directory for pre-loading replay buffer (e.g., datasets/sa_dataset_1m)"""
+    sa_action_type: str = "perfect_actions"
+    """Action type to use from SA dataset: 'perfect_actions', 'sa_actions', 'perfect_incremental_actions', 'sa_incremental_actions'"""
+    sa_max_sequences: Optional[int] = None
+    """Maximum number of sequences to load from SA dataset (None = no limit)"""
+    sa_max_episodes: Optional[int] = None
+    """Maximum number of episodes to load from SA dataset (None = no limit)"""
 
     # visual pendulum parameters
     # learning_rate: float = 3e-4
@@ -226,6 +486,12 @@ class Args:
     # """the frequency of training policy (delayed)"""
     # noise_clip: float = 0.5
     # """noise clip parameter of the Target Policy Smoothing Regularization"""
+
+    # Timing instrumentation
+    timing_enabled: bool = True
+    """Enable detailed timing instrumentation for performance profiling"""
+    timing_interval: int = 100
+    """How often to print timing summary (in steps)"""
 
     # Environment specific arguments
     """Class for holding all arguments for the script."""
@@ -742,7 +1008,7 @@ if __name__ == "__main__":
         if preprocess_obs:
             print(f"  └─ Preprocessing enabled: normalize=True, crop=256, log_scale=True")
         
-        # Pre-load from dataset if specified
+        # Pre-load from dataset if specified (legacy format)
         if args.dataset_path:
             print(f"  └─ Pre-loading from {args.dataset_path}...")
             rb.load_from_dataset(
@@ -756,6 +1022,37 @@ if __name__ == "__main__":
                 verbose=True
             )
             print(f"  └─ Pre-loaded {len(rb)} sequences")
+        
+        # Pre-load from SA dataset if specified
+        if args.sa_dataset_path:
+            print(f"\n📂 Pre-loading from SA dataset: {args.sa_dataset_path}")
+            
+            # Show dataset info first
+            try:
+                sa_info = get_sa_dataset_info(args.sa_dataset_path)
+                print(f"  └─ Dataset contains {sa_info['total_samples']:,} samples from {sa_info['num_episodes']:,} episodes")
+                print(f"  └─ Observation shape: {sa_info['observation_shape']}")
+                print(f"  └─ Action shape: {sa_info['action_shape']}")
+            except Exception as e:
+                print(f"  └─ Warning: Could not get dataset info: {e}")
+            
+            # Load SA dataset into replay buffer
+            sequences_added = load_sa_dataset_to_buffer(
+                replay_buffer=rb,
+                dataset_path=args.sa_dataset_path,
+                actor_model=actor,
+                qf1_model=qf1,
+                qf2_model=qf2,
+                sequence_length=args.tbptt_seq_len,
+                action_type=args.sa_action_type,
+                device=device,
+                max_sequences=args.sa_max_sequences,
+                max_episodes=args.sa_max_episodes,
+                verbose=True
+            )
+            print(f"✅ Pre-loaded {sequences_added} sequences from SA dataset")
+            print(f"   Total buffer size: {len(rb)} sequences\n")
+            
     else:
         rb = ReplayBufferWithHiddenStatesBPTT(args.buffer_size)
         print(f"✓ Replay buffer: ReplayBufferWithHiddenStatesBPTT (capacity={args.buffer_size:,})")
@@ -914,6 +1211,11 @@ if __name__ == "__main__":
                  auto_decay=False,
                  device='cpu')
 
+    # Initialize timing instrumentation
+    timer = StepTimer(enabled=args.timing_enabled, print_interval=args.timing_interval, writer=writer)
+    if args.timing_enabled:
+        print(f"✓ Timing instrumentation enabled (interval: {args.timing_interval} steps)")
+
     print(f"\n{'='*60}")
     print(f"Starting training: {args.total_timesteps:,} steps")
     print(f"{'='*60}\n")
@@ -921,7 +1223,6 @@ if __name__ == "__main__":
     # Track when learning actually starts (in terms of global_step).
     # This is set when the replay buffer first has enough sequences.
     learning_started_at_step = None
-
     for iteration in range(args.total_timesteps):
 
         step_time = time.time()
@@ -1109,6 +1410,7 @@ if __name__ == "__main__":
             prelearning_active = (learning_started_at_step is None) or (global_step < learning_started_at_step + args.actor_training_delay)
             if prelearning_active:
 
+                timer.start("action_sample_random")
                 # Cache action_scale on CPU to avoid repeated GPU transfers
                 action_scale_np = actor.action_scale.cpu().numpy()
 
@@ -1130,8 +1432,10 @@ if __name__ == "__main__":
                 else:
                     
                     actions = np.array([(action_scale_np * envs.single_action_space.sample()) for _ in range(envs.num_envs)])
+                timer.stop("action_sample_random")
 
                 # Now we'll get the hidden states for the actor and critics, but ignore the outputs.
+                timer.start("hidden_state_warmup")
                 with torch.no_grad():
 
                     # Convert to tensors once and reuse
@@ -1167,6 +1471,7 @@ if __name__ == "__main__":
                 actor_hidden = new_actor_hidden
                 qf1_hidden = new_qf1_hidden
                 qf2_hidden = new_qf2_hidden
+                timer.stop("hidden_state_warmup")
 
 
             # Once prelearning is complete, sample actions using the actor.
@@ -1174,6 +1479,7 @@ if __name__ == "__main__":
 
                 with torch.no_grad():
 
+                    timer.start("action_sample_policy")
                     # Convert to tensors once and reuse
                     obs_tensor = torch.from_numpy(obs).to(device, dtype=torch.float32)
                     prior_actions_tensor = torch.from_numpy(prior_actions).to(device, dtype=torch.float32)
@@ -1186,7 +1492,9 @@ if __name__ == "__main__":
                         prior_rewards_tensor,
                         actor_hidden
                     )
+                    timer.stop("action_sample_policy")
                     
+                    timer.start("action_add_noise")
                     # Sample and add noise to the actions, then clip to action space bounds.
                     noise = noise_generator.sample().to(device)
                     actions = actions + noise
@@ -1196,7 +1504,9 @@ if __name__ == "__main__":
                     actions = actions.cpu().numpy().clip(
                         action_scale_np * envs.single_action_space.low,
                         action_scale_np * envs.single_action_space.high)
+                    timer.stop("action_add_noise")
                     
+                    timer.start("hidden_state_update")
                     # Convert actions to tensor once for critic calls
                     actions_tensor = torch.from_numpy(actions).to(device, dtype=torch.float32)
                     
@@ -1214,6 +1524,7 @@ if __name__ == "__main__":
                         prior_rewards_tensor,
                         qf2_hidden
                     )
+                    timer.stop("hidden_state_update")
 
                 # Update hidden states for next timestep
                 actor_hidden = new_actor_hidden
@@ -1230,8 +1541,11 @@ if __name__ == "__main__":
             prior_rewards = rewards.copy()
 
             # TRY NOT TO MODIFY: execute the game and log data.
+            timer.start("env_step")
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+            timer.stop("env_step")
 
+            timer.start("obs_normalize")
             # Convert uint8/uint16 images to float32 - check numpy dtype directly
             if obs.dtype == np.uint8:
                 obs = (obs / 255.0).astype(np.float32)
@@ -1242,6 +1556,7 @@ if __name__ == "__main__":
                 next_obs = (next_obs / 255.0).astype(np.float32)
             elif next_obs.dtype == np.uint16:
                 next_obs = (next_obs / 65535.0).astype(np.float32)
+            timer.stop("obs_normalize")
                 
             # Rescale the rewards. By default, this is 1.0 and does nothing.
             rewards = args.reward_scale * rewards
@@ -1317,6 +1632,7 @@ if __name__ == "__main__":
             prior_rewards = np.array(prior_rewards, dtype=np.float32)
 
             # Store the trajectory data.
+            timer.start("episode_data_append")
             episode_state.append(obs)
             episode_action.append(actions)
             episode_last_action.append(prior_actions)
@@ -1324,6 +1640,8 @@ if __name__ == "__main__":
             episode_last_reward.append(prior_rewards)
             episode_next_state.append(real_next_obs)
             episode_done.append(terminations)
+            timer.stop("episode_data_append")
+            
             if len(episode_state) == args.tbptt_seq_len:
 
                 # Check if we should add to replay buffer (respect cutoff if set)
@@ -1332,6 +1650,7 @@ if __name__ == "__main__":
                     should_add_to_buffer = global_step < args.replay_buffer_cutoff_step
                 
                 if should_add_to_buffer:
+                    timer.start("replay_buffer_push")
                     rb.push(initial_actor_hidden,
                             initial_qf1_hidden,
                             initial_qf2_hidden,
@@ -1342,6 +1661,7 @@ if __name__ == "__main__":
                             episode_last_reward,
                             episode_next_state,
                             episode_done)
+                    timer.stop("replay_buffer_push")
                     
                     # Log replay buffer metrics to TensorBoard
                     buffer_size = len(rb)
@@ -1566,6 +1886,7 @@ if __name__ == "__main__":
                 print(f"Progress: {progress_pct:.1f}% | Step {global_step:,}/{args.total_timesteps:,} | {steps_per_sec:.1f} SPS | ETA: {eta_hours:.1f}h")
 
             # Unpack data
+            timer.start("rb_sample")
             (actor_hidden_batch,
              qf1_hidden_batch,
              qf2_hidden_batch,
@@ -1577,9 +1898,11 @@ if __name__ == "__main__":
              next_observations_batch,
              dones_batch) = rb.sample(args.batch_size,
                                       device=device,)
+            timer.stop("rb_sample")
             
             
             # Convert to tensors efficiently - use torch.from_numpy if already numpy, avoid double wrapping
+            timer.start("tensor_to_device")
             observations_batch =      torch.from_numpy(np.asarray(observations_batch)).to(device, dtype=torch.float32)
             actions_batch_batch =     torch.from_numpy(np.asarray(actions_batch_batch)).to(device, dtype=torch.float32)
             prior_actions_batch =     torch.from_numpy(np.asarray(prior_actions_batch)).to(device, dtype=torch.float32)
@@ -1587,10 +1910,12 @@ if __name__ == "__main__":
             prior_rewards_batch =     torch.from_numpy(np.asarray(prior_rewards_batch)).to(device, dtype=torch.float32)
             next_observations_batch = torch.from_numpy(np.asarray(next_observations_batch)).to(device, dtype=torch.float32)
             dones_batch =             torch.from_numpy(np.asarray(dones_batch)).to(device, dtype=torch.float32)
+            timer.stop("tensor_to_device")
 
             # Stop the gradients from flowing through the actor and target actor.
             with torch.no_grad():
 
+                timer.start("target_actor_forward")
                 # print(actor_hidden_batch)
                 # print(len(actor_hidden_batch), len(actor_hidden_batch[0]), len(actor_hidden_batch[1]))
                 # TODO: investigate the time-ordering of inputs herte. Should actions, not prior actions. Might not matter
@@ -1614,7 +1939,9 @@ if __name__ == "__main__":
                 
                 if args.target_smoothing:
                     next_state_actions_batch = noisy_next_action
+                timer.stop("target_actor_forward")
 
+                timer.start("target_critic_forward")
                 qf1_next_target_batch, _ = qf1_target(
                         next_observations_batch,
                         next_state_actions_batch,
@@ -1630,6 +1957,9 @@ if __name__ == "__main__":
                         rewards_batch,
                         qf2_hidden_batch
                     )
+                timer.stop("target_critic_forward")
+                
+                timer.start("td_target_compute")
                 qf1_next_target_batch = torch.min(
                         qf1_next_target_batch,
                         qf2_next_target_batch
@@ -1650,10 +1980,12 @@ if __name__ == "__main__":
                 # dones_batch shape: torch.Size([8, 2, 1])
                 # qf1_next_target_batch shape: torch.Size([8, 2, 1])
                 # next_q_value_batch shape: torch.Size([8, 2, 16])
+                timer.stop("td_target_compute")
 
             # TODO: Should I remove the view here?
             # print("next_q_value_batch shape:", next_q_value_batch.shape)
 
+            timer.start("critic_forward")
             qf1_a_values_batch, _ = qf1(
                 observations_batch,
                 actions_batch_batch,
@@ -1668,44 +2000,51 @@ if __name__ == "__main__":
                 prior_rewards_batch,
                 qf2_hidden_batch
             )
+            timer.stop("critic_forward")
 
-            clip_gradients = True
+            clip_gradients = args.clip_gradients
             
             # Compute and apply the critic losses.
             # (input, target)
             # Both critics should use the same loss computation for consistency
+            timer.start("critic_loss_compute")
             qf1_loss = F.mse_loss(qf1_a_values_batch.view(-1), next_q_value_batch.view(-1))
+            qf2_loss = F.mse_loss(qf2_a_values_batch.view(-1), next_q_value_batch.view(-1))
+            timer.stop("critic_loss_compute")
+            
+            timer.start("critic_backward")
             qf1_optimizer.zero_grad()
             qf1_loss.backward(retain_graph=False)
-            if iteration % args.writer_interval == 0:
-                qf1_grad = get_grad_norm(qf1)
-            if clip_gradients:
-                torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=args.max_grad_norm)
-            if iteration % args.writer_interval == 0:
-                qf1_grad_clipped = get_grad_norm(qf1)
-                writer.add_scalar("grads/qf1_grad", qf1_grad, global_step)
-                writer.add_scalar("grads/qf1_grad_clipped", qf1_grad_clipped, global_step)
-            # Step the critic optimizers.
-            qf1_optimizer.step()
-
-            qf2_loss = F.mse_loss(qf2_a_values_batch.view(-1), next_q_value_batch.view(-1))
             qf2_optimizer.zero_grad()
             qf2_loss.backward(retain_graph=False)
-            if iteration % args.writer_interval == 0:
-                qf2_grad = get_grad_norm(qf2)
+            timer.stop("critic_backward")
+            
+            timer.start("critic_grad_clip")
             if clip_gradients:
+                if iteration % args.writer_interval == 0:
+                    qf1_grad = get_grad_norm(qf1)
+                    qf2_grad = get_grad_norm(qf2)
+                torch.nn.utils.clip_grad_norm_(qf1.parameters(), max_norm=args.max_grad_norm)
                 torch.nn.utils.clip_grad_norm_(qf2.parameters(), max_norm=args.max_grad_norm)
-            if iteration % args.writer_interval == 0:
-                qf2_grad_clipped = get_grad_norm(qf2)
-                writer.add_scalar("grads/qf2_grad", qf2_grad, global_step)
-                writer.add_scalar("grads/qf2_grad_clipped", qf2_grad_clipped, global_step)
-            # Step the critic optimizers.
+                if iteration % args.writer_interval == 0:
+                    qf1_grad_clipped = get_grad_norm(qf1)
+                    qf2_grad_clipped = get_grad_norm(qf2)
+                    writer.add_scalar("grads/qf1_grad", qf1_grad, global_step)
+                    writer.add_scalar("grads/qf1_grad_clipped", qf1_grad_clipped, global_step)
+                    writer.add_scalar("grads/qf2_grad", qf2_grad, global_step)
+                    writer.add_scalar("grads/qf2_grad_clipped", qf2_grad_clipped, global_step)
+            timer.stop("critic_grad_clip")
+            
+            timer.start("critic_optimizer_step")
+            qf1_optimizer.step()
             qf2_optimizer.step()
+            timer.stop("critic_optimizer_step")
 
             # If it a policy update step and we're past the actor training delay, update the actor.
             # learning_started_at_step is guaranteed to be set here since we're inside the training block.
             if (global_step > learning_started_at_step + args.actor_training_delay) and (global_step % args.policy_frequency == 0):
-
+                
+                timer.start("actor_forward")
                 loss_actions, _ = actor(
                         observations_batch,
                         prior_actions_batch,
@@ -1719,8 +2058,13 @@ if __name__ == "__main__":
                     prior_rewards_batch,
                     qf1_hidden_batch
                 )
-                actor_loss = -loss_qvalues.mean()
+                timer.stop("actor_forward")
                 
+                timer.start("actor_loss_compute")
+                actor_loss = -loss_qvalues.mean()
+                timer.stop("actor_loss_compute")
+                
+                timer.start("actor_backward")
                 actor_optimizer.zero_grad()
 
                 for p in qf1.parameters():
@@ -1729,32 +2073,41 @@ if __name__ == "__main__":
 
                 for p in qf1.parameters():
                     p.requires_grad = True
+                timer.stop("actor_backward")
 
-                if iteration % args.writer_interval == 0:
-                    actor_grad = get_grad_norm(actor)
-
+                timer.start("actor_grad_clip")
                 if clip_gradients:
+                    if iteration % args.writer_interval == 0:
+                        actor_grad = get_grad_norm(actor)
+
                     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.max_grad_norm)
                 
-                if iteration % args.writer_interval == 0:
-                    actor_grad_clipped = get_grad_norm(actor)
-                    writer.add_scalar("grads/actor_grad", actor_grad, global_step)
-                    writer.add_scalar("grads/actor_grad_clipped", actor_grad_clipped, global_step)
+                    if iteration % args.writer_interval == 0:
+                        actor_grad_clipped = get_grad_norm(actor)
+                        writer.add_scalar("grads/actor_grad", actor_grad, global_step)
+                        writer.add_scalar("grads/actor_grad_clipped", actor_grad_clipped, global_step)
+                timer.stop("actor_grad_clip")
 
+                timer.start("actor_optimizer_step")
                 actor_optimizer.step()
+                timer.stop("actor_optimizer_step")
 
                 if iteration % args.writer_interval == 0:
                     writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                # update the target network
+                    
+                # update the target actor network
+                timer.start("target_network_update")
                 for param, target_param in zip(actor.parameters(), target_actor.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                timer.stop("target_network_update")
 
-            # Soft update the target networks.
+            # Soft update the target critic networks.
+            timer.start("target_network_update")
             for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
             for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-
+            timer.stop("target_network_update")
 
             if iteration % args.writer_interval == 0:
                 writer.add_scalar("losses/qf1_a_values", qf1_a_values_batch.mean().item(), global_step)
@@ -1766,6 +2119,8 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
 
+        # End of step - trigger timer summary and TensorBoard logging
+        timer.step(global_step=global_step)
 
         if iteration % args.writer_interval == 0:
             writer.add_scalar("charts/step_length", (time.time() - step_time), global_step)

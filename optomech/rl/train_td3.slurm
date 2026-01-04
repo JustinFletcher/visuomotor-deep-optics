@@ -14,7 +14,7 @@ cd ~/visuomotor-deep-optics/
 
 # SA Dataset Generation Variants
 VARIANTS=(
-    "--num-samples 1000000 --dataset-name sa_dataset_1m"
+    "--gpu_list 0"
 )
 
 # Run all variants in parallel
@@ -26,3 +26,6 @@ for VARIANT in "${VARIANTS[@]}"; do
 done
 
 wait
+
+
+
