@@ -15,6 +15,14 @@ cd ~/visuomotor-deep-optics/
 # SA Dataset Generation Variants
 VARIANTS=(
     "--seed 1 --gpu_list 0"
+    "--seed 2 --gpu_list 1"
+    "--seed 3 --gpu_list 2"
+    "--seed 4 --gpu_list 3"
+    "--seed 5 --gpu_list 4"
+    "--seed 6 --gpu_list 5"
+    "--seed 7 --gpu_list 6"
+    "--seed 8 --gpu_list 7"
+
 )
 
 # Run all variants in parallel
