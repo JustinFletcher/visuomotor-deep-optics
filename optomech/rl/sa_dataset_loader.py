@@ -155,11 +155,12 @@ def load_sa_dataset_to_buffer(
             continue
         
         # Progress update every 10% of target (if early stopping) or total files
-        target_files = batch_idx + 1 if early_stopped else len(batch_files)
         if estimated_samples_needed is not None:
-            # Progress based on samples loaded vs needed
+            # Progress based on samples loaded vs needed - update every ~10%
             progress_interval = max(1, estimated_samples_needed // 10)
-            if verbose and (total_samples_loaded % progress_interval < 1000 or (batch_idx + 1) == len(batch_files)):
+            current_bucket = total_samples_loaded // progress_interval
+            prev_bucket = (total_samples_loaded - 10) // progress_interval  # Approx previous (assuming ~10 samples per file)
+            if verbose and (current_bucket > prev_bucket or (batch_idx + 1) == len(batch_files)):
                 elapsed = time.time() - load_start_time
                 pct = min(100.0, 100 * total_samples_loaded / estimated_samples_needed)
                 print(f"      [{pct:5.1f}%] {batch_idx + 1:,} files | {total_samples_loaded:,}/{estimated_samples_needed:,} samples | {len(all_episodes):,} episodes | {elapsed:.1f}s")
@@ -290,6 +291,14 @@ def load_sa_dataset_to_buffer(
                 initial_actor_hidden = actor_model.get_zero_hidden()
                 initial_qf1_hidden = qf1_model.get_zero_hidden()
                 initial_qf2_hidden = qf2_model.get_zero_hidden()
+                
+                # Debug: verify hidden state shape on first sequence
+                if sequences_added == 0 and verbose:
+                    print(f"   Hidden state shapes from models:")
+                    print(f"      Actor: h={initial_actor_hidden[0].shape}, c={initial_actor_hidden[1].shape}")
+                    print(f"      Actor lstm_hidden_dim={actor_model.lstm_hidden_dim}")
+                    print(f"      Qf1: h={initial_qf1_hidden[0].shape}")
+                    print(f"      Qf2: h={initial_qf2_hidden[0].shape}")
                 
                 # Optionally: Run the first observation through models to get
                 # "warmed up" hidden states. For now, we use zero hidden states

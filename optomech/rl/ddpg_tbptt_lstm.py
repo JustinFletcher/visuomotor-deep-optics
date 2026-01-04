@@ -1981,6 +1981,15 @@ if __name__ == "__main__":
                 dones_batch =             torch.from_numpy(np.asarray(dones_batch)).to(device, dtype=torch.float32)
                 timer.stop("tensor_to_device")
 
+            # Debug: print hidden state shape on first training step
+            if learning_started_at_step == global_step:
+                if isinstance(actor_hidden_batch[0], list):
+                    h_sample = actor_hidden_batch[0][0]  # First h in batch
+                else:
+                    h_sample = actor_hidden_batch[0]
+                print(f"DEBUG: actor_hidden_batch sample shape: {h_sample.shape}")
+                print(f"DEBUG: model expects lstm_hidden_dim={actor.lstm_hidden_dim}")
+
             # Stop the gradients from flowing through the actor and target actor.
             with torch.no_grad():
 
