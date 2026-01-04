@@ -103,10 +103,27 @@ def load_sa_dataset_to_buffer(
     import time
     load_start_time = time.time()
     
+    # Estimate how many samples we need to load (with 2x safety margin for episode boundaries)
+    # Each sequence needs `sequence_length` samples, but episodes may not divide evenly
+    estimated_samples_needed = None
+    if max_sequences is not None:
+        estimated_samples_needed = max_sequences * sequence_length * 2  # 2x margin for episode boundaries
+        if verbose:
+            print(f"   Estimated samples needed: ~{estimated_samples_needed:,} (with 2x margin)")
+    
     if verbose:
         print(f"\n   Phase 1/3: Loading batch files from disk...")
     
+    early_stopped = False
     for batch_idx, batch_file in enumerate(batch_files):
+        # Early stop if we have enough samples
+        if estimated_samples_needed is not None and total_samples_loaded >= estimated_samples_needed:
+            early_stopped = True
+            if verbose:
+                elapsed = time.time() - load_start_time
+                print(f"      [EARLY STOP] Loaded enough samples ({total_samples_loaded:,}) after {batch_idx:,} files in {elapsed:.1f}s")
+            break
+        
         try:
             with h5py.File(batch_file, 'r') as f:
                 # Load arrays
@@ -137,15 +154,28 @@ def load_sa_dataset_to_buffer(
                 print(f"   ⚠️ Error loading {batch_file.name}: {e}")
             continue
         
-        # Progress update every 10% of files or every 1000 files
-        if verbose and ((batch_idx + 1) % max(1, len(batch_files) // 10) == 0 or (batch_idx + 1) == len(batch_files)):
-            elapsed = time.time() - load_start_time
-            pct = 100 * (batch_idx + 1) / len(batch_files)
-            print(f"      [{pct:5.1f}%] {batch_idx + 1:,}/{len(batch_files):,} files | {total_samples_loaded:,} samples | {len(all_episodes):,} episodes | {elapsed:.1f}s")
+        # Progress update every 10% of target (if early stopping) or total files
+        target_files = batch_idx + 1 if early_stopped else len(batch_files)
+        if estimated_samples_needed is not None:
+            # Progress based on samples loaded vs needed
+            progress_interval = max(1, estimated_samples_needed // 10)
+            if verbose and (total_samples_loaded % progress_interval < 1000 or (batch_idx + 1) == len(batch_files)):
+                elapsed = time.time() - load_start_time
+                pct = min(100.0, 100 * total_samples_loaded / estimated_samples_needed)
+                print(f"      [{pct:5.1f}%] {batch_idx + 1:,} files | {total_samples_loaded:,}/{estimated_samples_needed:,} samples | {len(all_episodes):,} episodes | {elapsed:.1f}s")
+        else:
+            # Progress based on files processed
+            if verbose and ((batch_idx + 1) % max(1, len(batch_files) // 10) == 0 or (batch_idx + 1) == len(batch_files)):
+                elapsed = time.time() - load_start_time
+                pct = 100 * (batch_idx + 1) / len(batch_files)
+                print(f"      [{pct:5.1f}%] {batch_idx + 1:,}/{len(batch_files):,} files | {total_samples_loaded:,} samples | {len(all_episodes):,} episodes | {elapsed:.1f}s")
     
     if verbose:
         load_elapsed = time.time() - load_start_time
-        print(f"   ✓ Loaded {total_samples_loaded:,} samples from {len(all_episodes):,} episodes in {load_elapsed:.1f}s")
+        if early_stopped:
+            print(f"   ✓ Loaded {total_samples_loaded:,} samples from {len(all_episodes):,} episodes in {load_elapsed:.1f}s (early stopped)")
+        else:
+            print(f"   ✓ Loaded {total_samples_loaded:,} samples from {len(all_episodes):,} episodes in {load_elapsed:.1f}s")
         print(f"\n   Phase 2/3: Sorting and validating episodes...")
     
     # Sort each episode by step number
