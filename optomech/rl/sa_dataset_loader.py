@@ -228,7 +228,10 @@ def load_sa_dataset_to_buffer(
     if verbose:
         print(f"\n   Phase 3/3: Building {estimated_sequences:,} sequences...")
     
-    # Put models in eval mode
+    # Save original training mode and put models in eval mode for loading
+    actor_was_training = actor_model.training
+    qf1_was_training = qf1_model.training
+    qf2_was_training = qf2_model.training
     actor_model.eval()
     qf1_model.eval()
     qf2_model.eval()
@@ -381,6 +384,14 @@ def load_sa_dataset_to_buffer(
         total_elapsed = time.time() - load_start_time
         print(f"\n✅ Added {sequences_added:,} sequences to replay buffer in {total_elapsed:.1f}s")
         print(f"   Buffer now contains {len(replay_buffer):,} sequences")
+    
+    # Restore original training mode
+    if actor_was_training:
+        actor_model.train()
+    if qf1_was_training:
+        qf1_model.train()
+    if qf2_was_training:
+        qf2_model.train()
     
     return sequences_added
 
