@@ -86,6 +86,10 @@ def load_sa_dataset_to_buffer(
         print(f"   Found {len(batch_files)} batch files")
         print(f"   Action type: {action_type}")
         print(f"   Sequence length: {sequence_length}")
+        if max_sequences:
+            print(f"   Max sequences: {max_sequences:,}")
+        if max_episodes:
+            print(f"   Max episodes: {max_episodes:,}")
     
     # Validate action_type
     valid_action_types = ["perfect_actions", "sa_actions", "perfect_incremental_actions", "sa_incremental_actions"]
@@ -96,7 +100,13 @@ def load_sa_dataset_to_buffer(
     all_episodes = defaultdict(list)
     total_samples_loaded = 0
     
-    for batch_file in batch_files:
+    import time
+    load_start_time = time.time()
+    
+    if verbose:
+        print(f"\n   Phase 1/3: Loading batch files from disk...")
+    
+    for batch_idx, batch_file in enumerate(batch_files):
         try:
             with h5py.File(batch_file, 'r') as f:
                 # Load arrays
@@ -126,11 +136,20 @@ def load_sa_dataset_to_buffer(
             if verbose:
                 print(f"   ⚠️ Error loading {batch_file.name}: {e}")
             continue
+        
+        # Progress update every 10% of files or every 1000 files
+        if verbose and ((batch_idx + 1) % max(1, len(batch_files) // 10) == 0 or (batch_idx + 1) == len(batch_files)):
+            elapsed = time.time() - load_start_time
+            pct = 100 * (batch_idx + 1) / len(batch_files)
+            print(f"      [{pct:5.1f}%] {batch_idx + 1:,}/{len(batch_files):,} files | {total_samples_loaded:,} samples | {len(all_episodes):,} episodes | {elapsed:.1f}s")
     
     if verbose:
-        print(f"   Loaded {total_samples_loaded} samples from {len(all_episodes)} episodes")
+        load_elapsed = time.time() - load_start_time
+        print(f"   ✓ Loaded {total_samples_loaded:,} samples from {len(all_episodes):,} episodes in {load_elapsed:.1f}s")
+        print(f"\n   Phase 2/3: Sorting and validating episodes...")
     
     # Sort each episode by step number
+    sort_start_time = time.time()
     for ep_id in all_episodes:
         all_episodes[ep_id].sort(key=lambda x: x['step'])
     
@@ -142,7 +161,12 @@ def load_sa_dataset_to_buffer(
     }
     
     if verbose:
-        print(f"   {len(valid_episodes)} episodes have enough steps for sequences")
+        sort_elapsed = time.time() - sort_start_time
+        skipped_episodes = len(all_episodes) - len(valid_episodes)
+        if skipped_episodes > 0:
+            print(f"   ✓ {len(valid_episodes):,} episodes valid (skipped {skipped_episodes:,} too short) in {sort_elapsed:.1f}s")
+        else:
+            print(f"   ✓ All {len(valid_episodes):,} episodes valid in {sort_elapsed:.1f}s")
     
     if not valid_episodes:
         print("   ⚠️ No episodes with enough steps for the requested sequence length")
@@ -153,7 +177,18 @@ def load_sa_dataset_to_buffer(
     if max_episodes is not None and len(episode_ids) > max_episodes:
         episode_ids = episode_ids[:max_episodes]
         if verbose:
-            print(f"   Limiting to first {max_episodes} episodes")
+            print(f"   Limiting to first {max_episodes:,} episodes")
+    
+    # Estimate total sequences
+    estimated_sequences = sum(
+        (len(valid_episodes[ep_id]) - sequence_length + 1) // sequence_length
+        for ep_id in episode_ids
+    )
+    if max_sequences is not None:
+        estimated_sequences = min(estimated_sequences, max_sequences)
+    
+    if verbose:
+        print(f"\n   Phase 3/3: Building {estimated_sequences:,} sequences...")
     
     # Put models in eval mode
     actor_model.eval()
@@ -162,6 +197,7 @@ def load_sa_dataset_to_buffer(
     
     # Process episodes into sequences
     sequences_added = 0
+    seq_start_time = time.time()
     
     with torch.no_grad():
         for ep_idx, ep_id in enumerate(episode_ids):
@@ -281,12 +317,16 @@ def load_sa_dataset_to_buffer(
                     continue
             
             # Progress update
-            if verbose and (ep_idx + 1) % 100 == 0:
-                print(f"   Processed {ep_idx + 1}/{len(episode_ids)} episodes, {sequences_added} sequences added")
+            if verbose and ((ep_idx + 1) % max(1, len(episode_ids) // 10) == 0 or (ep_idx + 1) == len(episode_ids)):
+                elapsed = time.time() - seq_start_time
+                pct = 100 * (ep_idx + 1) / len(episode_ids)
+                seq_rate = sequences_added / elapsed if elapsed > 0 else 0
+                print(f"      [{pct:5.1f}%] {ep_idx + 1:,}/{len(episode_ids):,} episodes | {sequences_added:,} sequences | {seq_rate:.0f} seq/s | {elapsed:.1f}s")
     
     if verbose:
-        print(f"✅ Added {sequences_added} sequences to replay buffer")
-        print(f"   Buffer now contains {len(replay_buffer)} sequences")
+        total_elapsed = time.time() - load_start_time
+        print(f"\n✅ Added {sequences_added:,} sequences to replay buffer in {total_elapsed:.1f}s")
+        print(f"   Buffer now contains {len(replay_buffer):,} sequences")
     
     return sequences_added
 
