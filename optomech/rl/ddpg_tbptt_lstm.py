@@ -1983,12 +1983,35 @@ if __name__ == "__main__":
 
             # Debug: print hidden state shape on first training step
             if learning_started_at_step == global_step:
+                print(f"\n{'='*60}")
+                print(f"DEBUG: Hidden state shapes at first training step")
+                print(f"{'='*60}")
+                print(f"actor_hidden_batch structure:")
+                print(f"  type: {type(actor_hidden_batch)}")
+                print(f"  len: {len(actor_hidden_batch)}")
+                print(f"  actor_hidden_batch[0] type: {type(actor_hidden_batch[0])}")
+                print(f"  actor_hidden_batch[1] type: {type(actor_hidden_batch[1])}")
                 if isinstance(actor_hidden_batch[0], list):
-                    h_sample = actor_hidden_batch[0][0]  # First h in batch
+                    print(f"  actor_hidden_batch[0] len: {len(actor_hidden_batch[0])}")
+                    print(f"  actor_hidden_batch[1] len: {len(actor_hidden_batch[1])}")
+                    print(f"  Individual h tensor shapes:")
+                    for i, h in enumerate(actor_hidden_batch[0][:3]):  # First 3
+                        print(f"    h[{i}].shape: {h.shape}, dim: {h.dim()}")
+                    print(f"  Individual c tensor shapes:")
+                    for i, c in enumerate(actor_hidden_batch[1][:3]):  # First 3
+                        print(f"    c[{i}].shape: {c.shape}, dim: {c.dim()}")
                 else:
-                    h_sample = actor_hidden_batch[0]
-                print(f"DEBUG: actor_hidden_batch sample shape: {h_sample.shape}")
-                print(f"DEBUG: model expects lstm_hidden_dim={actor.lstm_hidden_dim}")
+                    print(f"  actor_hidden_batch[0].shape: {actor_hidden_batch[0].shape}")
+                    print(f"  actor_hidden_batch[1].shape: {actor_hidden_batch[1].shape}")
+                print(f"\nModel config:")
+                print(f"  actor.lstm_hidden_dim: {actor.lstm_hidden_dim}")
+                print(f"  actor.lstm_num_layers: {actor.lstm_num_layers}")
+                print(f"  batch_size (args): {args.batch_size}")
+                print(f"\nObservation batch shape: {next_observations_batch.shape}")
+                print(f"{'='*60}\n")
+
+            # Enable debug output on first training step
+            debug_first_step = (learning_started_at_step == global_step)
 
             # Stop the gradients from flowing through the actor and target actor.
             with torch.no_grad():
@@ -2003,6 +2026,7 @@ if __name__ == "__main__":
                         actions_batch_batch,
                         rewards_batch,
                         actor_hidden_batch,
+                        debug_hidden=debug_first_step,
                     )
 
                 # TD3 target policy smoothing: add noise to target actions
