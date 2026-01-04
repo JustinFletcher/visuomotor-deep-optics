@@ -44,7 +44,7 @@
   "target_smoothing": true,
   "policy_noise": 0.2,
   "model_save_interval": 10000,
-  "writer_interval": 100,
+  "writer_interval": 10,
   "num_eval_rollouts": 0,
   "use_q_bias": false,
   "use_td3_replay_buffer": true,

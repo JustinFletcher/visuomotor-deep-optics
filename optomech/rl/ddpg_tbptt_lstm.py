@@ -390,6 +390,8 @@ class Args:
     """The maximum gradient norm"""
     clip_gradients: bool = False
     """Whether to clip gradients and log gradient norms (expensive when writer_interval is low)"""
+    prefetch_batches: bool = False
+    """Use pinned memory + CUDA streams to prefetch next batch while training (CUDA only)"""
     use_q_bias: bool = False
     """If toggled, compute q bias in the critic model."""
     normalize_returns: bool = False
@@ -1211,6 +1213,45 @@ if __name__ == "__main__":
                  auto_decay=False,
                  device='cpu')
 
+    # ============ Batch Prefetching Setup ============
+    # Helper function to prepare batch tensors from replay buffer sample
+    def prepare_batch_tensors(rb_sample, device, non_blocking=False):
+        """Convert replay buffer sample to GPU tensors, optionally with non-blocking transfer."""
+        (actor_hidden_batch, qf1_hidden_batch, qf2_hidden_batch,
+         observations_batch, actions_batch_batch, prior_actions_batch,
+         rewards_batch, prior_rewards_batch, next_observations_batch, dones_batch) = rb_sample
+        
+        # Convert to tensors - use pin_memory for async transfer when prefetching
+        if non_blocking:
+            observations_batch = torch.from_numpy(np.asarray(observations_batch)).pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+            actions_batch_batch = torch.from_numpy(np.asarray(actions_batch_batch)).pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+            prior_actions_batch = torch.from_numpy(np.asarray(prior_actions_batch)).pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+            rewards_batch = torch.from_numpy(np.asarray(rewards_batch)).pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+            prior_rewards_batch = torch.from_numpy(np.asarray(prior_rewards_batch)).pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+            next_observations_batch = torch.from_numpy(np.asarray(next_observations_batch)).pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+            dones_batch = torch.from_numpy(np.asarray(dones_batch)).pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+        else:
+            observations_batch = torch.from_numpy(np.asarray(observations_batch)).to(device, dtype=torch.float32)
+            actions_batch_batch = torch.from_numpy(np.asarray(actions_batch_batch)).to(device, dtype=torch.float32)
+            prior_actions_batch = torch.from_numpy(np.asarray(prior_actions_batch)).to(device, dtype=torch.float32)
+            rewards_batch = torch.from_numpy(np.asarray(rewards_batch)).to(device, dtype=torch.float32)
+            prior_rewards_batch = torch.from_numpy(np.asarray(prior_rewards_batch)).to(device, dtype=torch.float32)
+            next_observations_batch = torch.from_numpy(np.asarray(next_observations_batch)).to(device, dtype=torch.float32)
+            dones_batch = torch.from_numpy(np.asarray(dones_batch)).to(device, dtype=torch.float32)
+        
+        return (actor_hidden_batch, qf1_hidden_batch, qf2_hidden_batch,
+                observations_batch, actions_batch_batch, prior_actions_batch,
+                rewards_batch, prior_rewards_batch, next_observations_batch, dones_batch)
+
+    # Initialize prefetch stream for CUDA async data loading
+    prefetch_stream = None
+    prefetched_batch = None
+    if args.prefetch_batches and device.type == 'cuda':
+        prefetch_stream = torch.cuda.Stream()
+        print(f"✓ Batch prefetching enabled (CUDA stream created)")
+    elif args.prefetch_batches:
+        print(f"⚠ Batch prefetching requested but not available on {device.type} (requires CUDA)")
+
     # Initialize timing instrumentation
     timer = StepTimer(enabled=args.timing_enabled, print_interval=args.timing_interval, writer=writer)
     if args.timing_enabled:
@@ -1885,32 +1926,60 @@ if __name__ == "__main__":
                 eta_hours = eta_seconds / 3600
                 print(f"Progress: {progress_pct:.1f}% | Step {global_step:,}/{args.total_timesteps:,} | {steps_per_sec:.1f} SPS | ETA: {eta_hours:.1f}h")
 
-            # Unpack data
-            timer.start("rb_sample")
-            (actor_hidden_batch,
-             qf1_hidden_batch,
-             qf2_hidden_batch,
-             observations_batch,
-             actions_batch_batch,
-             prior_actions_batch,
-             rewards_batch,
-             prior_rewards_batch,
-             next_observations_batch,
-             dones_batch) = rb.sample(args.batch_size,
-                                      device=device,)
-            timer.stop("rb_sample")
-            
-            
-            # Convert to tensors efficiently - use torch.from_numpy if already numpy, avoid double wrapping
-            timer.start("tensor_to_device")
-            observations_batch =      torch.from_numpy(np.asarray(observations_batch)).to(device, dtype=torch.float32)
-            actions_batch_batch =     torch.from_numpy(np.asarray(actions_batch_batch)).to(device, dtype=torch.float32)
-            prior_actions_batch =     torch.from_numpy(np.asarray(prior_actions_batch)).to(device, dtype=torch.float32)
-            rewards_batch =           torch.from_numpy(np.asarray(rewards_batch)).to(device, dtype=torch.float32)
-            prior_rewards_batch =     torch.from_numpy(np.asarray(prior_rewards_batch)).to(device, dtype=torch.float32)
-            next_observations_batch = torch.from_numpy(np.asarray(next_observations_batch)).to(device, dtype=torch.float32)
-            dones_batch =             torch.from_numpy(np.asarray(dones_batch)).to(device, dtype=torch.float32)
-            timer.stop("tensor_to_device")
+            # ============ Batch Loading (with optional prefetching) ============
+            if prefetch_stream is not None:
+                # Use prefetched batch if available, otherwise sync-load first batch
+                if prefetched_batch is not None:
+                    timer.start("prefetch_sync")
+                    prefetch_stream.synchronize()  # Wait for prefetch to complete
+                    timer.stop("prefetch_sync")
+                    
+                    (actor_hidden_batch, qf1_hidden_batch, qf2_hidden_batch,
+                     observations_batch, actions_batch_batch, prior_actions_batch,
+                     rewards_batch, prior_rewards_batch, next_observations_batch, dones_batch) = prefetched_batch
+                else:
+                    # First iteration: no prefetched batch yet, do sync load
+                    timer.start("rb_sample")
+                    rb_sample = rb.sample(args.batch_size, device=device)
+                    timer.stop("rb_sample")
+                    timer.start("tensor_to_device")
+                    (actor_hidden_batch, qf1_hidden_batch, qf2_hidden_batch,
+                     observations_batch, actions_batch_batch, prior_actions_batch,
+                     rewards_batch, prior_rewards_batch, next_observations_batch, dones_batch) = prepare_batch_tensors(rb_sample, device, non_blocking=False)
+                    timer.stop("tensor_to_device")
+                
+                # Prefetch next batch asynchronously in the background stream
+                timer.start("prefetch_launch")
+                with torch.cuda.stream(prefetch_stream):
+                    next_rb_sample = rb.sample(args.batch_size, device=device)
+                    prefetched_batch = prepare_batch_tensors(next_rb_sample, device, non_blocking=True)
+                timer.stop("prefetch_launch")
+            else:
+                # No prefetching: original sync loading path
+                timer.start("rb_sample")
+                (actor_hidden_batch,
+                 qf1_hidden_batch,
+                 qf2_hidden_batch,
+                 observations_batch,
+                 actions_batch_batch,
+                 prior_actions_batch,
+                 rewards_batch,
+                 prior_rewards_batch,
+                 next_observations_batch,
+                 dones_batch) = rb.sample(args.batch_size,
+                                          device=device,)
+                timer.stop("rb_sample")
+                
+                # Convert to tensors efficiently - use torch.from_numpy if already numpy, avoid double wrapping
+                timer.start("tensor_to_device")
+                observations_batch =      torch.from_numpy(np.asarray(observations_batch)).to(device, dtype=torch.float32)
+                actions_batch_batch =     torch.from_numpy(np.asarray(actions_batch_batch)).to(device, dtype=torch.float32)
+                prior_actions_batch =     torch.from_numpy(np.asarray(prior_actions_batch)).to(device, dtype=torch.float32)
+                rewards_batch =           torch.from_numpy(np.asarray(rewards_batch)).to(device, dtype=torch.float32)
+                prior_rewards_batch =     torch.from_numpy(np.asarray(prior_rewards_batch)).to(device, dtype=torch.float32)
+                next_observations_batch = torch.from_numpy(np.asarray(next_observations_batch)).to(device, dtype=torch.float32)
+                dones_batch =             torch.from_numpy(np.asarray(dones_batch)).to(device, dtype=torch.float32)
+                timer.stop("tensor_to_device")
 
             # Stop the gradients from flowing through the actor and target actor.
             with torch.no_grad():
@@ -2051,6 +2120,9 @@ if __name__ == "__main__":
                         prior_rewards_batch,
                         actor_hidden_batch
                     )
+                timer.stop("actor_forward")
+                
+                timer.start("actor_loss_compute")
                 loss_qvalues, _ = qf1(
                     observations_batch,
                     loss_actions,
@@ -2058,9 +2130,6 @@ if __name__ == "__main__":
                     prior_rewards_batch,
                     qf1_hidden_batch
                 )
-                timer.stop("actor_forward")
-                
-                timer.start("actor_loss_compute")
                 actor_loss = -loss_qvalues.mean()
                 timer.stop("actor_loss_compute")
                 
