@@ -295,15 +295,23 @@ def load_sa_dataset_to_buffer(
                     first_prior_reward = first_prior_reward.to(device, dtype=torch.float32)
                 
                 # Get zero hidden states as starting point
-                initial_actor_hidden = actor_model.get_zero_hidden()
-                initial_qf1_hidden = qf1_model.get_zero_hidden()
-                initial_qf2_hidden = qf2_model.get_zero_hidden()
+                # Model expects [num_layers, 1, hidden_dim] (3D with batch dim)
+                # get_zero_hidden() returns [num_layers, hidden_dim] (2D)
+                # So we need to unsqueeze(1) to add the batch dimension
+                actor_h, actor_c = actor_model.get_zero_hidden()
+                initial_actor_hidden = (actor_h.unsqueeze(1), actor_c.unsqueeze(1))
+                
+                qf1_h, qf1_c = qf1_model.get_zero_hidden()
+                initial_qf1_hidden = (qf1_h.unsqueeze(1), qf1_c.unsqueeze(1))
+                
+                qf2_h, qf2_c = qf2_model.get_zero_hidden()
+                initial_qf2_hidden = (qf2_h.unsqueeze(1), qf2_c.unsqueeze(1))
                 
                 # Debug: verify hidden state shape on first sequence
                 if sequences_added == 0 and verbose:
-                    print(f"   Hidden state shapes from models:")
+                    print(f"   Hidden state shapes (after unsqueeze for batch dim):")
                     print(f"      Actor: h={initial_actor_hidden[0].shape}, c={initial_actor_hidden[1].shape}")
-                    print(f"      Actor lstm_hidden_dim={actor_model.lstm_hidden_dim}")
+                    print(f"      Expected: [num_layers={actor_model.lstm_num_layers}, 1, hidden_dim={actor_model.lstm_hidden_dim}]")
                     print(f"      Qf1: h={initial_qf1_hidden[0].shape}")
                     print(f"      Qf2: h={initial_qf2_hidden[0].shape}")
                 
