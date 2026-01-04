@@ -7,7 +7,7 @@
 #SBATCH --output=./om-td3.out
 #SBATCH --error=./om-td3.err
 #SBATCH --gres=gpu:A100-PCIe:8
-#SBATCH --time=4-00:00:00             # Maximum runtime (5 days) 
+#SBATCH --time=1-00:00:00             # Maximum runtime (5 days) 
 
 # Change to the project directory
 cd ~/visuomotor-deep-optics/
