@@ -24,7 +24,6 @@ for VARIANT in "${VARIANTS[@]}"; do
     poetry run python optomech/rl/ddpg_tbptt_lstm.py \
         --config optomech/rl/test_frozen_encoder_config.json \
         --sa_dataset_path /wdata/scratch/fletch/datasets/sa_dataset_1m \
-        --sa_max_sequences 2048 \
         $VARIANT &
 done
 
