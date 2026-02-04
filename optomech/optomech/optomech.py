@@ -597,6 +597,30 @@ class OpticalSystem(object):
                 int(np.sqrt(perfect_image.intensity.size))
             )
         )
+
+        # Check if dark_hole flag exists, if not set it to False
+        if 'dark_hole' not in kwargs:
+            kwargs['dark_hole'] = False
+
+        if kwargs['dark_hole']:
+            # This is the angular location of the center of the dark hole in degrees, measured counterclockwise from the positive x-axis.
+            dark_hole_angular_location_degrees = kwargs['dark_hole_angular_location_degrees']
+            # This is the radius of the dark hole location in units of the maximum radius of the focal grid.
+            dark_hole_location_radius_fraction = kwargs['dark_hole_location_radius_fraction']
+            # This is the radius of the dark hole size in units of the maximum radius of the focal grid.
+            dark_hole_size_radius = kwargs['dark_hole_size_radius']
+            dark_hole_size_radius_pixels = int(dark_hole_size_radius * num_pupil_grid_simulation_pixels / 2)
+
+
+            # Simply set the target image to zero inside the dark hole region.
+            dark_hole_angular_location_radians = np.deg2rad(dark_hole_angular_location_degrees)
+            dark_hole_location_radius_pixels = int(dark_hole_location_radius_fraction * num_pupil_grid_simulation_pixels / 2)
+            dark_hole_center_x = int(num_pupil_grid_simulation_pixels / 2 + dark_hole_location_radius_pixels * np.cos(dark_hole_angular_location_radians))
+            dark_hole_center_y = int(num_pupil_grid_simulation_pixels / 2 + dark_hole_location_radius_pixels * np.sin(dark_hole_angular_location_radians))
+            y, x = np.ogrid[:num_pupil_grid_simulation_pixels, :num_pupil_grid_simulation_pixels]
+            mask = (x - dark_hole_center_x) ** 2 + (y - dark_hole_center_y) ** 2 <= dark_hole_size_radius_pixels ** 2
+            self.target_image[mask] = 0.0
+
         # TODO: Build a camera-based imaging approach here.
         # self.camera = hcipy.NoiselessDetector(focal_grid)
 
@@ -1269,6 +1293,9 @@ class OpticalSystem(object):
             wind_ptt_displacements = np.random.randn(self.num_apertures, 3)
             # Sample displacement in meters.
             wind_ptt_displacements[:, 0] *= wind_diff_motion_piston_micron_std * 1e-6
+            # Limit the piston displacement to the phsyical range of the system.
+            wind_ptt_displacements[:, 0] = np.clip(wind_ptt_displacements[:, 0], -8e-6, 8e-6)
+
             # Sample displacement in radians.
             wind_ptt_displacements[:, 1] *= wind_diff_motion_tip_arcsec_std * np.pi / (180 * 3600)
             wind_ptt_displacements[:, 2] *= wind_diff_motion_tilt_arcsec_std  * np.pi / (180 * 3600)
@@ -1537,7 +1564,7 @@ class OpticalSystem(object):
         segments_ptt_commands = secondaries_commands
     
         # Cannonical
-        max_piston_correction_micron = 2.5
+        max_piston_correction_micron = 10.0
         max_tip_correction_as = 20.0
         max_tilt_correction_as = 20.0
 
