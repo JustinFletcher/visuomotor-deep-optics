@@ -114,9 +114,9 @@ class SADatasetRenderer:
                 sample = {
                     'observation': f['observations'][i],
                     'sa_action': f['sa_actions'][i],
-                    'perfect_action': f['perfect_actions'][i],
+                    # 'perfect_action': f['perfect_actions'][i],
                     'sa_incremental_action': f['sa_incremental_actions'][i],
-                    'perfect_incremental_action': f['perfect_incremental_actions'][i],
+                    # 'perfect_incremental_action': f['perfect_incremental_actions'][i],
                     'reward': float(f['rewards'][i]),
                     'temperature': float(f['temperatures'][i]),
                     'cost_delta': float(f[cost_delta_key][i]),
@@ -145,9 +145,9 @@ class SADatasetRenderer:
                 sample = {
                     'observation': data['observations'][i],
                     'sa_action': data['sa_actions'][i],
-                    'perfect_action': data['perfect_actions'][i],
+                    # 'perfect_action': data['perfect_actions'][i],
                     'sa_incremental_action': data['sa_incremental_actions'][i],
-                    'perfect_incremental_action': data['perfect_incremental_actions'][i],
+                    # 'perfect_incremental_action': data['perfect_incremental_actions'][i],
                     'reward': float(data['rewards'][i]),
                     'temperature': float(data['temperatures'][i]),
                     'cost_delta': float(data[cost_delta_key][i]),
@@ -229,11 +229,11 @@ class SADatasetRenderer:
         
         # SA actions and Perfect actions (fourth row, smaller)
         ax_sa = fig.add_subplot(gs[3, :3])
-        ax_perfect = fig.add_subplot(gs[3, 3:])
-        
+        # ax_perfect = fig.add_subplot(gs[3, 3:])
+
         # Incremental actions (bottom row, smaller)
         ax_inc_sa = fig.add_subplot(gs[4, :3])
-        ax_inc_perfect = fig.add_subplot(gs[4, 3:])
+        # ax_inc_perfect = fig.add_subplot(gs[4, 3:])
         
         # Prepare data for plotting
         steps = list(range(num_steps))
@@ -262,7 +262,7 @@ class SADatasetRenderer:
         # Animation function
         def animate(frame):
             # Clear all axes except colorbar axes
-            for ax in [ax_obs_linear, ax_obs_log, ax_reward, ax_temp, ax_sa, ax_perfect, ax_inc_sa, ax_inc_perfect]:
+            for ax in [ax_obs_linear, ax_obs_log, ax_reward, ax_temp, ax_sa, ax_inc_sa]:  # ax_perfect, ax_inc_perfect commented out
                 ax.clear()
             # Clear colorbar axes too
             cax_linear.clear()
@@ -270,9 +270,9 @@ class SADatasetRenderer:
             
             current_sample = episode_samples[frame]
             
-            # 1. Large linear scale observation image
+            # 1. Large log scale CURRENT observation image
             obs = current_sample['observation']
-            
+
             # Handle multi-channel observations
             if len(obs.shape) == 3:
                 if obs.shape[0] == 1:
@@ -283,15 +283,17 @@ class SADatasetRenderer:
                 else:
                     # Multiple channels - take first channel
                     obs = obs[0]
-            
-            im_linear = ax_obs_linear.imshow(obs, cmap='viridis', vmin=0, vmax=65535, interpolation='nearest')
-            
+
+            # Log scale the observation
+            obs_log = np.log10(obs + 1)
+            im_linear = ax_obs_linear.imshow(obs_log, cmap='viridis', interpolation='nearest')
+
             # Build title with optimization step if available
-            title_parts = [f"Observation (Linear Scale) - Episode Step {current_sample['episode_step']}"]
+            title_parts = [f"Observation (Log10 Scale) - Episode Step {current_sample['episode_step']}"]
             if current_sample['optimization_step'] is not None:
                 title_parts.append(f"Optimization Step {current_sample['optimization_step']}")
             title = " | ".join(title_parts)
-            
+
             ax_obs_linear.set_title(title, fontsize=14)
             
             # Add pixel count axes with tick labels every 8 pixels
@@ -331,13 +333,26 @@ class SADatasetRenderer:
             
             # Add colorbar for linear image (reuse existing axes)
             cbar_linear_ref[0] = plt.colorbar(im_linear, cax=cax_linear)
-            cbar_linear_ref[0].set_label('Intensity (counts)', fontsize=10)
-            
-            # 2. Large log scale observation image
-            # Add small epsilon to avoid log(0)
-            obs_log = np.log10(obs + 1)
-            im_log = ax_obs_log.imshow(obs_log, cmap='plasma', interpolation='nearest')
-            ax_obs_log.set_title(f"Observation (Log10 Scale) - Step {current_sample['episode_step']}", fontsize=14)
+            cbar_linear_ref[0].set_label('Log10(Intensity + 1)', fontsize=10)
+
+            # 2. Large log scale NEXT observation image
+            next_obs = current_sample['next_observation']
+
+            # Handle multi-channel next observations
+            if len(next_obs.shape) == 3:
+                if next_obs.shape[0] == 1:
+                    next_obs = next_obs[0]  # Remove channel dimension if present
+                elif next_obs.shape[0] == 2:
+                    # Two channels - compute magnitude (assuming complex or dual measurements)
+                    next_obs = np.sqrt(next_obs[0]**2 + next_obs[1]**2)
+                else:
+                    # Multiple channels - take first channel
+                    next_obs = next_obs[0]
+
+            # Log scale the next observation
+            next_obs_log = np.log10(next_obs + 1)
+            im_log = ax_obs_log.imshow(next_obs_log, cmap='plasma', interpolation='nearest')
+            ax_obs_log.set_title(f"Next Observation (Log10 Scale) - Step {current_sample['episode_step']}", fontsize=14)
             
             # Add pixel count axes for log image too with tick labels every 8 pixels
             ax_obs_log.set_xlabel('X (pixels)', fontsize=12)
@@ -404,30 +419,31 @@ class SADatasetRenderer:
             
             # 4. SA Actions (smaller) - Calculate error metrics relative to perfect action
             sa_action = current_sample['sa_action']
-            perfect_action = current_sample['perfect_action']
+            # perfect_action = current_sample['perfect_action']
             action_indices = list(range(action_dim))
-            
+
             # Calculate MSE and MAE for SA action relative to perfect action
-            action_error = sa_action - perfect_action
-            sa_mse = np.mean(action_error**2)
-            sa_mae = np.mean(np.abs(action_error))
-            
+            # action_error = sa_action - perfect_action
+            # sa_mse = np.mean(action_error**2)
+            # sa_mae = np.mean(np.abs(action_error))
+
             bars_sa = ax_sa.bar(action_indices, sa_action, alpha=0.7, color='blue', width=0.8)
-            ax_sa.set_title(f'SA Action (MSE: {sa_mse:.3f}, MAE: {sa_mae:.3f})', fontsize=11)
+            # ax_sa.set_title(f'SA Action (MSE: {sa_mse:.3f}, MAE: {sa_mae:.3f})', fontsize=11)
+            ax_sa.set_title('SA Action', fontsize=11)
             ax_sa.set_xlabel('Action Dimension', fontsize=10)
             ax_sa.set_ylabel('Value', fontsize=10)
             ax_sa.set_ylim(-1, 1)
             ax_sa.grid(True, alpha=0.3)
             ax_sa.tick_params(labelsize=9)
-            
+
             # 5. Perfect Actions (smaller)
-            bars_perfect = ax_perfect.bar(action_indices, perfect_action, alpha=0.7, color='green', width=0.8)
-            ax_perfect.set_title('Perfect Action', fontsize=11)
-            ax_perfect.set_xlabel('Action Dimension', fontsize=10)
-            ax_perfect.set_ylabel('Value', fontsize=10)
-            ax_perfect.set_ylim(-1, 1)
-            ax_perfect.grid(True, alpha=0.3)
-            ax_perfect.tick_params(labelsize=9)
+            # bars_perfect = ax_perfect.bar(action_indices, perfect_action, alpha=0.7, color='green', width=0.8)
+            # ax_perfect.set_title('Perfect Action', fontsize=11)
+            # ax_perfect.set_xlabel('Action Dimension', fontsize=10)
+            # ax_perfect.set_ylabel('Value', fontsize=10)
+            # ax_perfect.set_ylim(-1, 1)
+            # ax_perfect.grid(True, alpha=0.3)
+            # ax_perfect.tick_params(labelsize=9)
             
             # 6. SA Incremental Actions (smaller) - Calculate error metrics relative to zero
             sa_inc = current_sample['sa_incremental_action']
@@ -443,17 +459,17 @@ class SADatasetRenderer:
             ax_inc_sa.tick_params(labelsize=9)
             
             # 7. Perfect Incremental Actions (smaller) - Calculate error metrics relative to zero
-            perfect_inc = current_sample['perfect_incremental_action']
-            perfect_inc_mse = np.mean(perfect_inc**2)  # MSE relative to zero
-            perfect_inc_mae = np.mean(np.abs(perfect_inc))  # MAE relative to zero
-            
-            bars_perfect_inc = ax_inc_perfect.bar(action_indices, perfect_inc, alpha=0.7, color='orange', width=0.8)
-            ax_inc_perfect.set_title(f'Perfect Incremental Action (MSE: {perfect_inc_mse:.3f}, MAE: {perfect_inc_mae:.3f})', fontsize=11)
-            ax_inc_perfect.set_xlabel('Action Dimension', fontsize=10)
-            ax_inc_perfect.set_ylabel('Δ Value', fontsize=10)
-            ax_inc_perfect.set_ylim(-2, 2)
-            ax_inc_perfect.grid(True, alpha=0.3)
-            ax_inc_perfect.tick_params(labelsize=9)
+            # perfect_inc = current_sample['perfect_incremental_action']
+            # perfect_inc_mse = np.mean(perfect_inc**2)  # MSE relative to zero
+            # perfect_inc_mae = np.mean(np.abs(perfect_inc))  # MAE relative to zero
+
+            # bars_perfect_inc = ax_inc_perfect.bar(action_indices, perfect_inc, alpha=0.7, color='orange', width=0.8)
+            # ax_inc_perfect.set_title(f'Perfect Incremental Action (MSE: {perfect_inc_mse:.3f}, MAE: {perfect_inc_mae:.3f})', fontsize=11)
+            # ax_inc_perfect.set_xlabel('Action Dimension', fontsize=10)
+            # ax_inc_perfect.set_ylabel('Δ Value', fontsize=10)
+            # ax_inc_perfect.set_ylim(-2, 2)
+            # ax_inc_perfect.grid(True, alpha=0.3)
+            # ax_inc_perfect.tick_params(labelsize=9)
             
             # Add episode info as text (positioned to not overlap with large images)
             info_text = (f"Episode: {episode_id[:8]}...\n"
