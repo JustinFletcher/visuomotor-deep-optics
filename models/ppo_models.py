@@ -124,9 +124,14 @@ class RecurrentActorCritic(nn.Module):
             layer_init(nn.Linear(fc_scale, 1), std=1.0),
         )
 
-        # Action scaling (registered as buffer for compatibility with rollout tools)
+        # Action scaling and clamping
         self.register_buffer("action_scale", torch.tensor(action_scale, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor(0.0, dtype=torch.float32))
+        # Store environment action bounds for clamping
+        action_low = torch.tensor(envs.single_action_space.low, dtype=torch.float32)
+        action_high = torch.tensor(envs.single_action_space.high, dtype=torch.float32)
+        self.register_buffer("action_low", action_low)
+        self.register_buffer("action_high", action_high)
 
     # ------------------------------------------------------------------
     # Hidden state management
@@ -272,6 +277,11 @@ class RecurrentActorCritic(nn.Module):
     # Public API
     # ------------------------------------------------------------------
 
+    def scale_and_clamp_action(self, raw_action: torch.Tensor) -> torch.Tensor:
+        """Scale a raw policy-space action and clamp to environment bounds."""
+        scaled = raw_action * self.action_scale + self.action_bias
+        return torch.clamp(scaled, self.action_low, self.action_high)
+
     def get_action_and_value(
         self,
         obs: torch.Tensor,
@@ -283,6 +293,12 @@ class RecurrentActorCritic(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Get action, log_prob, entropy, value, and new hidden state.
+
+        IMPORTANT: Returns the *raw* (unscaled) action and its log_prob.
+        The caller is responsible for scaling/clamping via
+        scale_and_clamp_action() before stepping the environment.
+        This ensures log_prob and stored actions are consistent for PPO
+        ratio computation.
 
         If action is None, sample a new action from the policy.
         If action is provided, evaluate that action under the current policy
@@ -308,13 +324,10 @@ class RecurrentActorCritic(nn.Module):
             log_prob = dist.log_prob(action).sum(dim=-1)  # [B, T]
             entropy = dist.entropy().sum(dim=-1)  # [B, T]
 
-            # Scale action for environment interaction
-            scaled_action = action * self.action_scale + self.action_bias
-
             # hidden state not meaningful here (we process the full sequence),
             # return dummy hidden — caller should use stored hidden states
             new_hidden = hidden
-            return scaled_action, log_prob, entropy, value.squeeze(-1), new_hidden
+            return action, log_prob, entropy, value.squeeze(-1), new_hidden
         else:
             # Single-step or non-sequential batch
             lstm_out, new_hidden = self._forward_shared(
@@ -330,8 +343,7 @@ class RecurrentActorCritic(nn.Module):
             log_prob = dist.log_prob(action).sum(dim=-1)
             entropy = dist.entropy().sum(dim=-1)
 
-            scaled_action = action * self.action_scale + self.action_bias
-            return scaled_action, log_prob, entropy, value.squeeze(-1), new_hidden
+            return action, log_prob, entropy, value.squeeze(-1), new_hidden
 
     def get_value(
         self,
@@ -351,12 +363,12 @@ class RecurrentActorCritic(nn.Module):
         prior_reward: torch.Tensor,
         hidden: Tuple[torch.Tensor, torch.Tensor],
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """Get deterministic (mean) action for evaluation/deployment."""
+        """Get deterministic (mean) action, scaled and clamped for deployment."""
         lstm_out, new_hidden = self._forward_shared(
             obs, prior_action, prior_reward, hidden
         )
         mean = self.policy_head(lstm_out)
-        action = mean * self.action_scale + self.action_bias
+        action = self.scale_and_clamp_action(mean)
         return action, new_hidden
 
 

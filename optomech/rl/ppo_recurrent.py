@@ -66,6 +66,8 @@ class Args:
     """if using cuda, set the gpu"""
     gpu_list: int = 0
     """GPU device index"""
+    device_override: Optional[str] = None
+    """Force a specific device (e.g., 'cpu', 'cuda', 'mps'). Overrides auto-detection."""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "optomech-ppo"
@@ -274,17 +276,22 @@ def make_env(env_id, idx, capture_video, run_name, flags):
 
 
 def normalize_obs(obs: np.ndarray) -> np.ndarray:
-    """Normalize observations based on dtype, converting to float32 in [0, 1]."""
-    if obs.dtype == np.uint8:
-        return (obs / 255.0).astype(np.float32)
-    elif obs.dtype == np.uint16:
-        return (obs / 65535.0).astype(np.float32)
-    elif obs.dtype in (np.float32, np.float64):
-        if obs.max() > 256:
-            return (obs / 65535.0).astype(np.float32)
-        elif obs.max() > 1.0:
-            return (obs / 255.0).astype(np.float32)
-    return obs.astype(np.float32)
+    """Normalize observations to float32 in [0, 1] using per-observation max.
+
+    Each observation is divided by its own maximum value so the peak is 1.0
+    and the full dynamic range is preserved.  For batched inputs [N, C, H, W]
+    the max is taken per sample (over C, H, W).
+    """
+    obs = obs.astype(np.float32)
+    if obs.ndim >= 3:
+        # Per-sample max: keep leading dim, reduce over the rest
+        reduce_axes = tuple(range(1, obs.ndim))
+        maxvals = obs.max(axis=reduce_axes, keepdims=True)
+        maxvals = np.maximum(maxvals, 1e-10)  # avoid div-by-zero
+        return obs / maxvals
+    else:
+        m = obs.max()
+        return obs / max(m, 1e-10)
 
 
 # ============================================================================
@@ -375,6 +382,10 @@ def recurrent_generator(
     T, N = obs.shape[:2]
     num_chunks_per_env = T // seq_len
     total_chunks = num_chunks_per_env * N
+
+    # Clamp num_minibatches so chunk_size >= 1
+    if num_minibatches > total_chunks:
+        num_minibatches = max(1, total_chunks)
 
     # Reshape into chunks: [num_chunks_per_env, N, seq_len, ...]
     def chunk(x):
@@ -505,13 +516,23 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # Device
-    if torch.cuda.is_available() and args.cuda:
+    if args.device_override is not None:
+        device = torch.device(args.device_override)
+        print(f"Device: {args.device_override} (user override)")
+    elif torch.cuda.is_available() and args.cuda:
         device = torch.device("cuda")
         torch.cuda.set_device(int(args.gpu_list))
         print(f"Device: CUDA (GPU {args.gpu_list})")
     elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-        print("Device: MPS")
+        # MPS has a known bug with LSTM backward pass (assertion crash in
+        # _getLSTMGradKernelDAGObject). Fall back to CPU automatically.
+        print(
+            "WARNING: MPS detected but LSTM backward is broken on MPS "
+            "(PyTorch issue). Falling back to CPU. "
+            "Use --device-override mps to force MPS at your own risk."
+        )
+        device = torch.device("cpu")
+        print("Device: CPU (MPS fallback)")
     else:
         device = torch.device("cpu")
         print("Device: CPU")
@@ -708,7 +729,8 @@ if __name__ == "__main__":
                 prior_act_device = running_prior_action.to(device)
                 prior_rew_device = running_prior_reward.to(device)
 
-                action, log_prob, _, value, (lstm_h, lstm_c) = (
+                # get_action_and_value returns RAW (unscaled) action + log_prob
+                raw_action, log_prob, _, value, (lstm_h, lstm_c) = (
                     agent.get_action_and_value(
                         obs_device,
                         prior_act_device,
@@ -717,22 +739,17 @@ if __name__ == "__main__":
                     )
                 )
 
-            # Store action outputs
-            action_buf[step] = action.cpu()
+                # Scale and clamp for environment interaction
+                env_action = agent.scale_and_clamp_action(raw_action)
+
+            # Store RAW action in buffer (consistent with log_prob for PPO ratio)
+            action_buf[step] = raw_action.cpu()
             logprob_buf[step] = log_prob.cpu()
             value_buf[step] = value.cpu()
 
-            # Clamp actions for environment interaction
-            action_np = (
-                action.cpu()
-                .numpy()
-                .clip(
-                    args.action_scale * envs.single_action_space.low,
-                    args.action_scale * envs.single_action_space.high,
-                )
-            )
+            # Step environment with clamped action
+            action_np = env_action.cpu().numpy()
 
-            # Step environment
             next_obs_np, rewards_np, terminations, truncations, infos = envs.step(
                 action_np
             )
@@ -748,8 +765,9 @@ if __name__ == "__main__":
             dones_step = np.logical_or(terminations, truncations)
             next_done = torch.from_numpy(dones_step.astype(np.float32))
 
-            # Update running prior action/reward
-            running_prior_action = action.cpu().clone()
+            # Update running prior action/reward — use the CLAMPED env action
+            # (this is what the environment actually received)
+            running_prior_action = env_action.cpu().clone()
             running_prior_reward = torch.from_numpy(rewards_np).float()
 
             # Track episode starts for next step
@@ -772,11 +790,14 @@ if __name__ == "__main__":
                         continue
                     ep_return = float(info["episode"]["r"])
                     ep_length = int(info["episode"]["l"])
-                    ep_gain = ep_return - (
-                        args.max_episode_steps
-                        * np.mean(first_step_reward)
-                        / args.reward_scale
-                    )
+                    if first_step_reward is not None and np.size(first_step_reward) > 0:
+                        ep_gain = ep_return - (
+                            args.max_episode_steps
+                            * np.mean(first_step_reward)
+                            / args.reward_scale
+                        )
+                    else:
+                        ep_gain = 0.0
 
                     writer.add_scalar(
                         "episode/episodic_return", ep_return, global_step
