@@ -187,17 +187,23 @@ make && make install
 cd ..
 ```
 
-Then build Python, pointing it at the local libffi:
+Then build Python, pointing it at the local libffi (note: some systems install to `lib64` — include both):
 ```bash
 curl -LO https://www.python.org/ftp/python/3.10.14/Python-3.10.14.tgz
 tar -xzf Python-3.10.14.tgz && cd Python-3.10.14
-LDFLAGS="-L$HOME/local/lib" CPPFLAGS="-I$HOME/local/include" PKG_CONFIG_PATH="$HOME/local/lib/pkgconfig" \
+LDFLAGS="-L$HOME/local/lib -L$HOME/local/lib64" CPPFLAGS="-I$HOME/local/include" PKG_CONFIG_PATH="$HOME/local/lib/pkgconfig:$HOME/local/lib64/pkgconfig" \
   ./configure --prefix=$HOME/local --enable-optimizations
 make -j$(nproc) && make install
 export PATH=$HOME/local/bin:$PATH
 echo 'export PATH=$HOME/local/bin:$PATH' >> ~/.bashrc
 cd ..
 ```
+
+Verify that `_ctypes` built correctly before proceeding:
+```bash
+$HOME/local/bin/python3.10 -c "import _ctypes; print('OK')"
+```
+If this fails, libffi was not found during the build. Check `ls $HOME/local/lib/libffi*` and `ls $HOME/local/lib64/libffi*` to locate it, then rebuild Python with the correct path.
 
 On HPC systems, you may also be able to load a module:
 ```bash
