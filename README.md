@@ -219,7 +219,7 @@ poetry env use $HOME/local/bin/python3.10
 
 **5. Install project dependencies:**
 ```bash
-poetry install --no-extras
+poetry install
 ```
 
 ### Verify Setup
