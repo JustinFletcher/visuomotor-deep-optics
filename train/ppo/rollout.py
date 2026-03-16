@@ -63,6 +63,14 @@ _DEFAULT_OUTPUT_DIR = os.path.join(_REPO_ROOT, "test_output")
 # ============================================================================
 
 
+class _EnvShim:
+    """Minimal shim to satisfy RecurrentActorCritic's envs.single_*_space API."""
+
+    def __init__(self, env):
+        self.single_observation_space = env.observation_space
+        self.single_action_space = env.action_space
+
+
 def load_agent(checkpoint_path, env, device="cpu"):
     """Load a PPO agent from a checkpoint file.
 
@@ -72,7 +80,7 @@ def load_agent(checkpoint_path, env, device="cpu"):
     config = ckpt["config"]
 
     agent = RecurrentActorCritic(
-        env,
+        _EnvShim(env),
         device,
         lstm_hidden_dim=config.get("lstm_hidden_dim", 128),
         channel_scale=config.get("channel_scale", 32),
