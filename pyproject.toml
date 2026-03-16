@@ -4,7 +4,7 @@ version = "2.0.0b1"
 description = "High-quality single file implementation of Deep Reinforcement Learning algorithms with research-friendly features"
 authors = ["Costa Huang <costa.huang@outlook.com>"]
 packages = [
-    { include = "cleanrl" },
+    { include = "models" },
 ]
 keywords = ["reinforcement", "machine", "learning", "research"]
 license="MIT"
