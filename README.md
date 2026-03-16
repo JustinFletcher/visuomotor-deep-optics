@@ -156,11 +156,63 @@ Bootstrap DRL training using BC-pretrained encoders and actors to reduce varianc
 ## Getting Started
 
 ### Prerequisites
-```bash
-# Install dependencies
-poetry install
 
-# Verify setup
+- Python 3.10.x (`>=3.10,<3.11`)
+- [Poetry](https://python-poetry.org/) (package manager)
+- Git
+
+### Installation
+
+**1. Clone the repository and switch to the active branch:**
+```bash
+git clone https://github.com/JustinFletcher/visuomotor-deep-optics.git
+cd visuomotor-deep-optics
+git checkout dev
+```
+
+**2. Install Python 3.10 (if not already available):**
+
+Check your version:
+```bash
+python3 --version
+```
+
+If your system Python is below 3.10, install from source to a local prefix:
+```bash
+curl -LO https://www.python.org/ftp/python/3.10.14/Python-3.10.14.tgz
+tar -xzf Python-3.10.14.tgz && cd Python-3.10.14
+./configure --prefix=$HOME/local --enable-optimizations
+make -j$(nproc) && make install
+export PATH=$HOME/local/bin:$PATH
+echo 'export PATH=$HOME/local/bin:$PATH' >> ~/.bashrc
+cd ..
+```
+
+On HPC systems, you may also be able to load a module:
+```bash
+module avail python
+module load python/3.10   # if available
+```
+
+**3. Install Poetry:**
+```bash
+curl -sSL https://install.python-poetry.org | python3 -
+export PATH=$HOME/.local/bin:$PATH
+echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc
+```
+
+**4. Point Poetry to the correct Python (if you built from source):**
+```bash
+poetry env use $HOME/local/bin/python3.10
+```
+
+**5. Install project dependencies:**
+```bash
+poetry install --no-extras
+```
+
+### Verify Setup
+```bash
 poetry run python utils/test_training.py mini_checkout_dataset
 ```
 
