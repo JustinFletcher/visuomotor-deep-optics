@@ -177,11 +177,22 @@ Check your version:
 python3 --version
 ```
 
-If your system Python is below 3.10, install from source to a local prefix:
+If your system Python is below 3.10, install from source to a local prefix.
+First, build `libffi` (required for Python's `_ctypes` module — without it, packages like `gymnasium` will fail to import):
+```bash
+curl -LO https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz
+tar -xzf libffi-3.4.6.tar.gz && cd libffi-3.4.6
+./configure --prefix=$HOME/local
+make && make install
+cd ..
+```
+
+Then build Python, pointing it at the local libffi:
 ```bash
 curl -LO https://www.python.org/ftp/python/3.10.14/Python-3.10.14.tgz
 tar -xzf Python-3.10.14.tgz && cd Python-3.10.14
-./configure --prefix=$HOME/local --enable-optimizations
+LDFLAGS="-L$HOME/local/lib" CPPFLAGS="-I$HOME/local/include" PKG_CONFIG_PATH="$HOME/local/lib/pkgconfig" \
+  ./configure --prefix=$HOME/local --enable-optimizations
 make -j$(nproc) && make install
 export PATH=$HOME/local/bin:$PATH
 echo 'export PATH=$HOME/local/bin:$PATH' >> ~/.bashrc
