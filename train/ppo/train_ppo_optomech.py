@@ -1177,7 +1177,10 @@ def run_ppo_training(config: dict, run_dir: str):
         # ROLLOUT PHASE
         # ==============================================================
         agent.eval()
+        update_start_time = time.time()
+        rollout_start_time = time.time()
         for step in range(num_steps):
+            step_start_time = time.time()
             global_step += num_envs
 
             obs_buf[step] = next_obs
@@ -1240,6 +1243,11 @@ def run_ppo_training(config: dict, run_dir: str):
                         "train/episodic_length", ep_length, global_step
                     )
 
+            # Per-step instantaneous SPS
+            step_dt = time.time() - step_start_time
+            step_sps = num_envs / step_dt if step_dt > 0 else 0
+            writer.add_scalar("charts/step_SPS", step_sps, global_step)
+
             # Per-step diagnostic metrics from env info dict
             if "strehl" in infos:
                 for env_idx in range(num_envs):
@@ -1263,6 +1271,10 @@ def run_ppo_training(config: dict, run_dir: str):
                         "train/step_reward_raw",
                         float(infos["reward_raw"][env_idx]), global_step,
                     )
+
+        rollout_end_time = time.time()
+        rollout_dt = rollout_end_time - rollout_start_time
+        rollout_sps = (num_steps * num_envs) / rollout_dt if rollout_dt > 0 else 0
 
         # ==============================================================
         # COMPUTE GAE
@@ -1412,6 +1424,16 @@ def run_ppo_training(config: dict, run_dir: str):
             global_step,
         )
 
+        # Per-update phase timing
+        update_dt = time.time() - update_start_time
+        optimize_dt = update_dt - rollout_dt
+        current_sps = (num_steps * num_envs) / update_dt if update_dt > 0 else 0
+        writer.add_scalar("charts/current_SPS", current_sps, global_step)
+        writer.add_scalar("charts/rollout_SPS", rollout_sps, global_step)
+        writer.add_scalar("timing/rollout_s", rollout_dt, global_step)
+        writer.add_scalar("timing/optimize_s", optimize_dt, global_step)
+        writer.add_scalar("timing/update_total_s", update_dt, global_step)
+
         if len(recent_train_returns) > 0:
             writer.add_scalar(
                 "train/mean_recent_return",
@@ -1430,7 +1452,10 @@ def run_ppo_training(config: dict, run_dir: str):
             )
             print(
                 f"  Update {update:>4}/{num_updates} | Step {global_step:>7,} | "
-                f"{sps:.0f} SPS | PG: {np.mean(all_pg_losses):.4f} | "
+                f"{sps:.0f} avg SPS | {current_sps:.0f} cur SPS | "
+                f"rollout {rollout_dt:.1f}s ({rollout_sps:.0f} SPS) | "
+                f"optim {optimize_dt:.1f}s | "
+                f"PG: {np.mean(all_pg_losses):.4f} | "
                 f"V: {np.mean(all_v_losses):.4f} | Ent: {np.mean(all_entropy):.4f} | "
                 f"Mean Ret (20): {mean_ret:.4f}"
             )
