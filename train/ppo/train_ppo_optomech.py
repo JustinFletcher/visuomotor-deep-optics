@@ -942,16 +942,19 @@ def run_ppo_training(config: dict, run_dir: str):
     torch.manual_seed(seed)
 
     # Vectorized environments
-    envs = gym.vector.SyncVectorEnv(
-        [
-            make_optomech_env(
-                config["env_kwargs"],
-                max_episode_steps=config["max_episode_steps"],
-                idx=i,
-            )
-            for i in range(config["num_envs"])
-        ]
-    )
+    # Use AsyncVectorEnv when num_envs > 1 to parallelize HCIPy across processes
+    env_fns = [
+        make_optomech_env(
+            config["env_kwargs"],
+            max_episode_steps=config["max_episode_steps"],
+            idx=i,
+        )
+        for i in range(config["num_envs"])
+    ]
+    VecEnvCls = (gym.vector.AsyncVectorEnv if config["num_envs"] > 1
+                 else gym.vector.SyncVectorEnv)
+    print(f"  Creating {config['num_envs']} envs with {VecEnvCls.__name__}")
+    envs = VecEnvCls(env_fns)
 
     obs_shape = envs.single_observation_space.shape
     action_shape = envs.single_action_space.shape
@@ -1570,6 +1573,12 @@ def run_main(full_config: dict, fast_config: dict):
         help="Path to a full PPO checkpoint to initialise weights from "
              "(loads model weights only, starts training from scratch)",
     )
+    parser.add_argument(
+        "--num-envs",
+        type=int,
+        default=None,
+        help="Override number of parallel environments (default: from config)",
+    )
     cli = parser.parse_args()
 
     _ENV_ID = f"optomech-{cli.env_version}"
@@ -1591,6 +1600,10 @@ def run_main(full_config: dict, fast_config: dict):
     # Pretrained encoder
     config["pretrained_encoder"] = cli.pretrained_encoder
     config["freeze_encoder"] = cli.freeze_encoder
+
+    # Override num_envs if specified on command line
+    if cli.num_envs is not None:
+        config["num_envs"] = cli.num_envs
 
     # Full model resume / init
     config["resume_from"] = cli.resume_from
