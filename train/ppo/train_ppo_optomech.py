@@ -1442,7 +1442,7 @@ def run_ppo_training(config: dict, run_dir: str):
             )
 
         # Progress print
-        if update % max(1, num_updates // 20) == 0 or update == 1:
+        if update % 10 == 0 or update == 1:
             elapsed = time.time() - start_time
             sps = global_step / elapsed if elapsed > 0 else 0
             mean_ret = (
