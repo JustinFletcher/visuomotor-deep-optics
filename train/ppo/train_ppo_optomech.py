@@ -942,7 +942,8 @@ def run_ppo_training(config: dict, run_dir: str):
     torch.manual_seed(seed)
 
     # Vectorized environments
-    # Use AsyncVectorEnv when num_envs > 1 to parallelize HCIPy across processes
+    # Default: SyncVectorEnv (lower overhead for moderate env counts).
+    # Use --async-envs to enable AsyncVectorEnv for true multiprocess parallelism.
     env_fns = [
         make_optomech_env(
             config["env_kwargs"],
@@ -951,8 +952,8 @@ def run_ppo_training(config: dict, run_dir: str):
         )
         for i in range(config["num_envs"])
     ]
-    VecEnvCls = (gym.vector.AsyncVectorEnv if config["num_envs"] > 1
-                 else gym.vector.SyncVectorEnv)
+    use_async = config.get("async_envs", False)
+    VecEnvCls = gym.vector.AsyncVectorEnv if use_async else gym.vector.SyncVectorEnv
     print(f"  Creating {config['num_envs']} envs with {VecEnvCls.__name__}")
     envs = VecEnvCls(env_fns)
 
@@ -1595,6 +1596,12 @@ def run_main(full_config: dict, fast_config: dict):
         default=None,
         help="Override number of parallel environments (default: from config)",
     )
+    parser.add_argument(
+        "--async-envs",
+        action="store_true",
+        default=False,
+        help="Use AsyncVectorEnv (multiprocess) instead of SyncVectorEnv",
+    )
     cli = parser.parse_args()
 
     _ENV_ID = f"optomech-{cli.env_version}"
@@ -1620,6 +1627,9 @@ def run_main(full_config: dict, fast_config: dict):
     # Override num_envs if specified on command line
     if cli.num_envs is not None:
         config["num_envs"] = cli.num_envs
+
+    # Async env parallelism
+    config["async_envs"] = cli.async_envs
 
     # Full model resume / init
     config["resume_from"] = cli.resume_from
