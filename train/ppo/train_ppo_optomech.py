@@ -961,11 +961,19 @@ def run_ppo_training(config: dict, run_dir: str):
 
     # Extract reference max for fixed-reference normalization.
     # This preserves flux information when the PSF moves off the detector.
-    _base_env = envs.envs[0].unwrapped
+    # Create a temporary single env to read the reference value, since
+    # AsyncVectorEnv does not expose .envs directly.
+    _tmp_env = gym.make(
+        _ENV_ID,
+        **config["env_kwargs"],
+    )
+    _base_env = _tmp_env.unwrapped
     if hasattr(_base_env, 'optical_system') and hasattr(_base_env.optical_system, '_reference_fpi_max'):
         obs_ref_max = _base_env.optical_system._reference_fpi_max
     else:
         obs_ref_max = 1.0  # fallback
+    _tmp_env.close()
+    del _tmp_env, _base_env
     print(f"  Obs ref max (DN):  {obs_ref_max:.1f}")
 
     # --- Load pretrained encoder if provided ---
@@ -1149,10 +1157,18 @@ def run_ppo_training(config: dict, run_dir: str):
         if curriculum_cfg:
             progress = min(global_step / _cur_steps, 1.0)
             cur_std = _cur_start + progress * (_cur_end - _cur_start)
-            for env_wrapper in envs.envs:
-                base_env = env_wrapper.unwrapped
-                base_env.cfg["init_wind_tip_arcsec_std_tt"] = cur_std
-                base_env.cfg["init_wind_tilt_arcsec_std_tt"] = cur_std
+            if hasattr(envs, 'envs'):
+                # SyncVectorEnv: direct access
+                for env_wrapper in envs.envs:
+                    base_env = env_wrapper.unwrapped
+                    base_env.cfg["init_wind_tip_arcsec_std_tt"] = cur_std
+                    base_env.cfg["init_wind_tilt_arcsec_std_tt"] = cur_std
+            else:
+                # AsyncVectorEnv: not yet supported for curriculum.
+                # Curriculum requires num_envs=1 or SyncVectorEnv.
+                if update == 1:
+                    print("  WARNING: Curriculum annealing is not supported "
+                          "with AsyncVectorEnv. Ignoring curriculum config.")
             if update % 100 == 1:
                 writer.add_scalar("curriculum/tip_tilt_std", cur_std, global_step)
 
