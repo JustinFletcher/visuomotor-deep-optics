@@ -33,6 +33,15 @@ import torch.nn as nn
 import matplotlib
 
 matplotlib.use("Agg")
+
+
+def _auto_device():
+    """Pick the best available torch device."""
+    if torch.cuda.is_available():
+        return "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "cpu"  # MPS has LSTM issues; fall back to CPU
+    return "cpu"
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.colors as mcolors
@@ -180,7 +189,7 @@ def run_rollouts(
     num_episodes=8,
     max_episode_steps=256,
     seeds=None,
-    device="cpu",
+    device=None,
 ):
     """Run multiple independent evaluation rollouts.
 
@@ -198,8 +207,8 @@ def run_rollouts(
         Max steps per episode (default: 256).
     seeds : list[int], optional
         Seeds for each episode. If None, uses 0..num_episodes-1.
-    device : str
-        Torch device (default: "cpu").
+    device : str, optional
+        Torch device. If None, auto-detects (CUDA > CPU).
 
     Returns
     -------
@@ -208,6 +217,9 @@ def run_rollouts(
     metrics : dict
         Aggregate metrics across all episodes.
     """
+    if device is None:
+        device = _auto_device()
+
     import train.ppo.train_ppo_optomech as _mod
     _mod._ENV_ID = f"optomech-{env_version}"
 
