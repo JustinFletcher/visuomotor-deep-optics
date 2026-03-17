@@ -930,7 +930,12 @@ def run_ppo_training(config: dict, run_dir: str):
     Trains a recurrent PPO agent on an optomech environment and returns
     (best_eval_return, tensorboard_log_dir).
     """
-    device = torch.device("cpu")  # CPU to avoid MPS LSTM issues
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("cpu")  # MPS has LSTM issues; fall back to CPU
+    else:
+        device = torch.device("cpu")
 
     seed = config["seed"]
     np.random.seed(seed)
