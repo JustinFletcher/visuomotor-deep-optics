@@ -178,7 +178,10 @@ python3 --version
 ```
 
 If your system Python is below 3.10, install from source to a local prefix.
-First, build `libffi` (required for Python's `_ctypes` module — without it, packages like `gymnasium` will fail to import):
+Python's standard library requires several C libraries that may not be present on minimal HPC systems.
+Build all of them before building Python:
+
+**libffi** (required for `_ctypes` — without it, `gymnasium` and many packages fail to import):
 ```bash
 curl -LO https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz
 tar -xzf libffi-3.4.6.tar.gz && cd libffi-3.4.6
@@ -187,7 +190,26 @@ make && make install
 cd ..
 ```
 
-Then build Python, pointing it at the local libffi (note: some systems install to `lib64` — include both):
+**bzip2** (required for `_bz2` — without it, `torchvision` and other packages fail to import):
+```bash
+curl -LO https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
+tar -xzf bzip2-1.0.8.tar.gz && cd bzip2-1.0.8
+make -f Makefile-libbz2_so
+make install PREFIX=$HOME/local
+cp libbz2.so* $HOME/local/lib/
+cd ..
+```
+
+**xz / liblzma** (required for `_lzma`):
+```bash
+curl -LO https://github.com/tukaani-project/xz/releases/download/v5.4.6/xz-5.4.6.tar.gz
+tar -xzf xz-5.4.6.tar.gz && cd xz-5.4.6
+./configure --prefix=$HOME/local
+make && make install
+cd ..
+```
+
+Then build Python, pointing it at all local libraries (note: some systems install to `lib64` — include both):
 ```bash
 curl -LO https://www.python.org/ftp/python/3.10.14/Python-3.10.14.tgz
 tar -xzf Python-3.10.14.tgz && cd Python-3.10.14
@@ -199,11 +221,13 @@ echo 'export PATH=$HOME/local/bin:$PATH' >> ~/.bashrc
 cd ..
 ```
 
-Verify that `_ctypes` built correctly before proceeding:
+Verify that all required modules built correctly before proceeding:
 ```bash
-$HOME/local/bin/python3.10 -c "import _ctypes; print('OK')"
+$HOME/local/bin/python3.10 -c "import _ctypes, _bz2, _lzma; print('All OK')"
 ```
-If this fails, libffi was not found during the build. Check `ls $HOME/local/lib/libffi*` and `ls $HOME/local/lib64/libffi*` to locate it, then rebuild Python with the correct path.
+If any module fails, its corresponding C library was not found during the build. Check both `$HOME/local/lib/` and `$HOME/local/lib64/` for the missing library, then rebuild Python with the correct paths.
+
+> **HPC note:** Compute nodes often lack internet access. Download all source tarballs on a login node first — your home directory is typically shared across nodes.
 
 On HPC systems, you may also be able to load a module:
 ```bash
