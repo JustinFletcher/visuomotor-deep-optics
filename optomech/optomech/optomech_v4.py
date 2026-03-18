@@ -2,32 +2,17 @@
 Optomech V4 -- GPU-accelerated Gymnasium environment for distributed-aperture
 telescope control.
 
-This is a performance-optimized version of optomech_v3.py that bypasses HCIPy
-in the hot path by extracting raw arrays at init time and running the optical
-simulation as PyTorch tensor operations on the best available device:
-
-  - Metal/MPS on Mac  (~10x speedup)
-  - CUDA on NVIDIA GPUs (~30-100x speedup)
-  - CPU fallback (~3x speedup from eliminated overhead)
-
-HCIPy is still used for:
-  - Aperture construction and segment layout
-  - DM interaction matrix calibration (disk-cached)
-  - Atmosphere evolution (Markov chain phase screen generation)
-  - SHWFS forward propagation (when AO loop is active)
-
-The hot path (simulate + get_science_frame) is replaced with:
-  1. Fused optics kernel: aperture * exp(j*(atm + 2k*seg + 2k*dm))
-  2. FFT propagation: exact replica of HCIPy's FastFourierTransform
-  3. PSF + science image: |E|^2 * weights → FFT convolution with object
-
-All intermediate tensors live on the device. Only one .cpu().numpy()
-transfer occurs per frame (at the end, for observation/reward).
+Built on top of v3, this version moves the optical propagation hot path to
+GPU via PyTorch tensors.  HCIPy is used **only at init/reset time** to
+construct aperture geometry, segment influence functions, and Fraunhofer
+propagator phase arrays.  All per-step computation (wavefront propagation,
+FFT convolution, detector model, reward) runs on GPU.
 
 Functionally identical to v3 -- same action/observation spaces, same reward
-values given identical seeds and configurations.
+values given identical seeds and configurations (within float32 tolerance).
 
-Author: Justin Fletcher (original), refactored for v2, optimized v3, v4 GPU.
+Author: Justin Fletcher (original), refactored for v2, optimized for v3,
+        GPU-accelerated for v4.
 """
 
 # ---------------------------------------------------------------------------
@@ -45,7 +30,6 @@ import glob
 import numpy as np
 import gymnasium as gym
 import torch
-import scipy.sparse
 
 from collections import deque
 from pathlib import Path
@@ -64,8 +48,6 @@ from matplotlib.figure import Figure
 
 import astropy.units as u
 import hcipy
-from hcipy.fourier.fast_fourier_transform import FastFourierTransform
-from hcipy.fourier.matrix_fourier_transform import MatrixFourierTransform
 
 
 # ===================================================================
@@ -118,7 +100,7 @@ DEFAULT_CONFIG = {
     "ground_temp_ms_sampled_std": 0.0,
     "initial_gravity_normal_deg": 45.0,
     "gravity_normal_ms_sampled_std": 0.0,
-    "init_wind_piston_micron_std": 1.0,
+    "init_wind_piston_micron_std": 3.0,
     "init_wind_piston_clip_m": 4e-6,
     "init_wind_tip_arcsec_std_tt": 0.05,
     "init_wind_tilt_arcsec_std_tt": 0.05,
@@ -150,6 +132,8 @@ DEFAULT_CONFIG = {
     "action_type": "none",
     "actuator_noise": True,
     "actuator_noise_fraction": 1e-4,
+    "minimum_absolute_action": 0.0,
+    "env_action_scale": 1.0,
 
     # --- Observation -------------------------------------------------
     "observation_mode": "image_only",
@@ -188,6 +172,18 @@ DEFAULT_CONFIG = {
     "reward_weight_strehl": 1.0,
     "reward_weight_dark_hole": 0.0,
     "reward_weight_image_quality": 0.0,
+    "reward_weight_centering": 0.0,
+    "reward_weight_flux": 0.0,
+    "reward_weight_convex_flux": 0.0,
+    "convex_flux_power": 2.0,
+    "reward_weight_dist": 0.0,
+    "reward_weight_concentration": 0.0,
+    "reward_weight_peak": 0.0,
+    "reward_weight_centered_strehl": 0.0,
+    "centering_sigma_fraction": 0.25,
+    "centering_mode": "gaussian",           # "gaussian" or "circular"
+    "centering_radius_fraction": 0.25,      # radius as fraction of image size (circular mode)
+    "reward_weight_shape": 1.0,
     "reward_threshold": 25.0,
     "align_radius": 32,
     "align_radius_max_expand": 64,
@@ -197,7 +193,10 @@ DEFAULT_CONFIG = {
     "action_penalty": True,
     "action_penalty_weight": 0.03,
     "oob_penalty": True,
-    "oob_penalty_weight": 0.5,
+    "oob_penalty_weight": 2.0,
+    "holding_bonus_weight": 0.0,
+    "holding_bonus_min_reward": -1.0,
+    "holding_bonus_threshold": 0.0,
 
     # --- Dark hole ---------------------------------------------------
     "dark_hole": False,
@@ -224,17 +223,32 @@ DEFAULT_CONFIG = {
     # --- Optomech version tag ----------------------------------------
     "optomech_version": "v4",
 
-    # --- Device (v4-specific) ----------------------------------------
-    "device": None,    # None = auto-detect, or "cpu", "mps", "cuda"
+    # --- GPU acceleration (v4) ----------------------------------------
+    "device": "auto",  # "auto", "cuda", "mps", "cpu"
 }
 
 
+# ---------------------------------------------------------------------------
+# Device helper
+# ---------------------------------------------------------------------------
+
+def _resolve_device(cfg_device):
+    """Resolve 'auto' to the best available torch device."""
+    if cfg_device == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    return torch.device(cfg_device)
+
+
 # ===================================================================
-# V4 Logging  (green tag to distinguish from v3 magenta, v2 cyan)
+# V4 Logging  (green tag to distinguish from v3 magenta)
 # ===================================================================
 
-_V4_TAG = "\033[92m[optomech-v4]\033[0m"
-_V4_TAG_PLAIN = "[optomech-v4]"
+_V3_TAG = "\033[92m[optomech-v4]\033[0m"
+_V3_TAG_PLAIN = "[optomech-v4]"
 
 _TOP    = "\u2554" + "\u2550" * 58 + "\u2557"
 _BOT    = "\u255A" + "\u2550" * 58 + "\u255D"
@@ -244,83 +258,56 @@ _THIN   = "\u2502"
 _HTHIN  = "\u2500" * 58
 
 
-def _v4(msg, indent=0):
-    """Print with the v4 prefix tag and optional indent."""
+def _v3(msg, indent=0):
+    """Print with the v3 prefix tag and optional indent."""
     pad = "  " * indent
-    print(f"{_V4_TAG} {pad}{msg}")
+    print(f"{_V3_TAG} {pad}{msg}")
 
 
-def _v4_section(title):
+def _v3_section(title):
     """Print a box-drawn section header."""
     inner = f" {title} ".center(58)
-    print(f"{_V4_TAG} {_TOP}")
-    print(f"{_V4_TAG} {_SIDE}{inner}{_SIDE}")
-    print(f"{_V4_TAG} {_BOT}")
+    print(f"{_V3_TAG} {_TOP}")
+    print(f"{_V3_TAG} {_SIDE}{inner}{_SIDE}")
+    print(f"{_V3_TAG} {_BOT}")
 
 
-def _v4_subsection(title):
+def _v3_subsection(title):
     """Print a lighter sub-section separator."""
     inner = f" {title} ".center(58, "\u2500")
-    print(f"{_V4_TAG} {inner}")
+    print(f"{_V3_TAG} {inner}")
 
 
-def _v4_kv(key, value, indent=1):
+def _v3_kv(key, value, indent=1):
     """Print a key-value pair."""
     pad = "  " * indent
-    print(f"{_V4_TAG} {pad}{key:<42s} {value}")
+    print(f"{_V3_TAG} {pad}{key:<42s} {value}")
 
 
-def _v4_timer(label, elapsed, indent=1):
+def _v3_timer(label, elapsed, indent=1):
     """Print a timing measurement."""
     pad = "  " * indent
     bar_len = min(int(elapsed * 200), 30)
     bar = "\u2588" * bar_len
-    print(f"{_V4_TAG} {pad}\u23f1  {label:<34s} {elapsed:8.4f}s {bar}")
+    print(f"{_V3_TAG} {pad}\u23f1  {label:<34s} {elapsed:8.4f}s {bar}")
 
 
-def _print_config_banner(cfg, title="Optomech V4 Configuration"):
+def _print_config_banner(cfg, title="Optomech V3 Configuration"):
     """Pretty-print all configuration key-value pairs inside a box."""
-    _v4_section(title)
+    _v3_section(title)
     max_key_len = max(len(k) for k in cfg)
     prev_section = None
     for k in sorted(cfg.keys()):
         section = k.split("_")[0]
         if section != prev_section and prev_section is not None:
-            print(f"{_V4_TAG}   {'':>{max_key_len}}   {'':>10}")
+            print(f"{_V3_TAG}   {'':>{max_key_len}}   {'':>10}")
         prev_section = section
-        print(f"{_V4_TAG}   {k:<{max_key_len}}  =  {cfg[k]}")
-    print(f"{_V4_TAG} {_BOT}")
+        print(f"{_V3_TAG}   {k:<{max_key_len}}  =  {cfg[k]}")
+    print(f"{_V3_TAG} {_BOT}")
 
 
 # ===================================================================
-# Device selection
-# ===================================================================
-
-def _select_device(requested=None):
-    """Select the best available PyTorch device.
-
-    Priority: explicit request > CUDA > MPS > CPU.
-    Matches the RL trainer convention in ddpg_tbptt_lstm.py.
-    """
-    if requested is not None and requested != "auto":
-        dev = torch.device(requested)
-        _v4("Device (requested): %s" % dev)
-        return dev
-    if torch.cuda.is_available():
-        dev = torch.device("cuda")
-        _v4("Device (auto): CUDA")
-        return dev
-    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-        dev = torch.device("mps")
-        _v4("Device (auto): MPS (Metal)")
-        return dev
-    dev = torch.device("cpu")
-    _v4("Device (auto): CPU")
-    return dev
-
-
-# ===================================================================
-# Utility functions  (identical to v3)
+# Utility functions
 # ===================================================================
 
 
@@ -377,8 +364,18 @@ def one_hot_array(n, x, y, value=1.0):
     return scene_array
 
 
+def _centered_wavelengths(center_wl, bandwidth_nm, n_samples):
+    """Compute centered wavelength samples across a bandwidth."""
+    bw_m = bandwidth_nm / 1e9
+    if n_samples <= 1:
+        return [center_wl]
+    bin_width = bw_m / n_samples
+    first = center_wl - bw_m / 2.0 + bin_width / 2.0
+    return [first + i * bin_width for i in range(n_samples)]
+
+
 # ===================================================================
-# ObjectPlane  (identical to v3)
+# ObjectPlane
 # ===================================================================
 
 class ObjectPlane(object):
@@ -391,6 +388,7 @@ class ObjectPlane(object):
                  object_plane_distance_meters=1000000,
                  randomize=False,
                  **kwargs):
+
         self.extent_pixels = object_plane_extent_pixels
         self.extent_meters = object_plane_extent_meters
         self.distance_meters = object_plane_distance_meters
@@ -403,10 +401,13 @@ class ObjectPlane(object):
                     np.random.uniform(0.0, self.extent_pixels)
                 ]
             self.array = self._make_single_object(**kwargs)
+
         elif object_type == "binary":
             self.array = self._make_binary_object(**kwargs)
+
         elif object_type == "usaf1951":
             self.array = self._load_usaf1951(object_plane_extent_pixels)
+
         elif object_type == "flat":
             self.array = np.ones((object_plane_extent_pixels,
                                   object_plane_extent_pixels))
@@ -416,26 +417,31 @@ class ObjectPlane(object):
                 "'binary', 'usaf1951' and 'flat' are implemented." % object_type)
 
     def _make_binary_object(self, **kwargs):
+        """Two Gaussian blobs separated by ~0.6 arcsec (binary star)."""
         std = 1.0
         kernel_extent = 8 * std
         ifov = 0.0165012
         separation_pixels = int(0.6 / ifov)
         mu_x = self.extent_pixels // 2
+
         mu_y_primary = (self.extent_pixels // 2) - (separation_pixels // 2)
         primary = offset_gaussian(self.extent_pixels, mu_x, mu_y_primary,
                                   std, kernel_extent, normalised=True)
+
         mu_y_secondary = (self.extent_pixels // 2) + (separation_pixels // 2)
         secondary = offset_gaussian(self.extent_pixels, mu_x, mu_y_secondary,
                                     std, kernel_extent, normalised=True)
         return primary + secondary
 
     def _make_single_object(self, **kwargs):
+        """Point source at the centre of the field."""
         x = self.extent_pixels // 2
         y = self.extent_pixels // 2
         array_value = 1.02e-8
         return one_hot_array(self.extent_pixels, x, y, value=array_value)
 
     def _load_usaf1951(self, size):
+        """Load and normalise USAF-1951 resolution target."""
         valid_sizes = {512, 256, 128}
         if size not in valid_sizes:
             raise NotImplementedError(
@@ -448,45 +454,22 @@ class ObjectPlane(object):
 
     @staticmethod
     def _rgb2gray(rgb):
+        """Convert RGB image to greyscale using standard luminance weights."""
         return np.dot(rgb[..., :3], [0.2989, 0.5870, 0.1140])
 
 
 # ===================================================================
-# Wavelength sampling helper (used by both OpticalSystem and OptomechEnv)
-# ===================================================================
-
-
-def _centered_wavelengths(center_wl, bandwidth_nm, n_samples):
-    """Compute centered wavelength samples across a bandwidth.
-
-    For N samples across bandwidth B centered at λ_c, samples are placed
-    at the centers of N equal bins:
-      N=1  →  [λ_c]
-      N=2  →  [λ_c − B/4, λ_c + B/4]
-      N=3  →  [λ_c − B/3, λ_c, λ_c + B/3]
-    """
-    bw_m = bandwidth_nm / 1e9
-    if n_samples <= 1:
-        return [center_wl]
-    bin_width = bw_m / n_samples
-    first = center_wl - bw_m / 2.0 + bin_width / 2.0
-    return [first + i * bin_width for i in range(n_samples)]
-
-
-# ===================================================================
-# OpticalSystem  (identical to v3 -- HCIPy for construction only)
+# OpticalSystem
 # ===================================================================
 
 class OpticalSystem(object):
-    """End-to-end optical simulation with pre-computed caches for speed.
-
-    Used by OptomechEnv for construction and calibration. The hot-path
-    simulation in v4 bypasses this class entirely via PyTorch tensors.
-    """
+    """End-to-end optical simulation with pre-computed caches for speed."""
 
     def __init__(self, **kwargs):
+
         cfg = {**DEFAULT_CONFIG, **kwargs}
 
+        # --- Store key flags -----------------------------------------
         self.model_wind_diff_motion = cfg["model_wind_diff_motion"]
         self.model_gravity_diff_motion = cfg["model_gravity_diff_motion"]
         self.model_temp_diff_motion = cfg["model_temp_diff_motion"]
@@ -501,16 +484,23 @@ class OpticalSystem(object):
         self.discrete_control_steps = cfg['discrete_control_steps']
         self._actuator_noise = cfg['actuator_noise']
         self._actuator_noise_fraction = cfg['actuator_noise_fraction']
+
+        # --- DM physics constants ------------------------------------
         self.microns_opd_per_actuator_bit = cfg["microns_opd_per_actuator_bit"]
         self.stroke_count_limit = cfg["stroke_count_limit"]
+
+        # [v3-opt] Pre-compute DM stroke limit (used in command_dm and AO loop)
         self._dm_stroke_limit_m = (
             self.stroke_count_limit * self.microns_opd_per_actuator_bit * 1e-6 / 2.0)
+
+        # --- Store full config for later reference -------------------
         self._cfg = cfg
 
-        # Wind / temperature / gravity state
+        # --- Wind / temperature / gravity state ----------------------
         self.ground_wind_speed_mps = cfg["initial_ground_wind_speed_mps"]
         self.ground_wind_speed_ms_sampled_std_mps = (
-            cfg["ground_wind_speed_std_fraction"] * self.ground_wind_speed_mps)
+            cfg["ground_wind_speed_std_fraction"] * self.ground_wind_speed_mps
+        )
         self.ground_temp_degcel = cfg["initial_ground_temp_degcel"]
         self.ground_temp_ms_sampled_std_mps = cfg["ground_temp_ms_sampled_std"]
         if self.ground_temp_ms_sampled_std_mps != 0.0:
@@ -522,25 +512,31 @@ class OpticalSystem(object):
             raise NotImplementedError(
                 "Non-zero gravity_normal_ms_sampled_std is not supported.")
 
+        # === Build aperture ==========================================
         aperture_type = cfg['aperture_type']
-        _v4_subsection("Aperture: %s" % aperture_type)
+        _v3_subsection("Aperture: %s" % aperture_type)
         (aperture_func, segments_func,
          focal_length, pupil_diameter,
-         focal_plane_image_size_meters) = self._build_aperture(aperture_type, cfg)
+         focal_plane_image_size_meters) = self._build_aperture(
+             aperture_type, cfg)
 
+        # --- Optical grid parameters ---------------------------------
         num_px = cfg['focal_plane_image_size_pixels']
         self.wavelength = cfg['wavelength']
         oversampling_factor = cfg['oversampling_factor']
 
+        # --- Atmosphere parameters -----------------------------------
         seeing = cfg['seeing_arcsec']
         outer_scale = cfg['outer_scale_meters']
         tau0 = cfg['tau0_seconds']
+
         fried_parameter = hcipy.seeing_to_fried_parameter(seeing)
-        _v4_kv("fried_parameter", fried_parameter)
+        _v3_kv("fried_parameter", fried_parameter)
         Cn_squared = hcipy.Cn_squared_from_fried_parameter(
             fried_parameter, wavelength=self.wavelength)
         velocity = 0.314 * fried_parameter / tau0
 
+        # --- Focal plane geometry ------------------------------------
         focal_plane_extent_metres = focal_plane_image_size_meters
         airy_extent_radians = 1.22 * self.wavelength / pupil_diameter
         airy_extent_meters = airy_extent_radians * focal_length
@@ -553,60 +549,68 @@ class OpticalSystem(object):
         fov = self.ifov * num_px
         num_airy = num_px / (2 * sampling)
 
-        _v4_subsection("Focal Plane Geometry")
-        _v4_kv("grid pixels",            "%d" % num_px)
-        _v4_kv("extent (m)",             "%.6e" % focal_plane_extent_metres)
-        _v4_kv("pixel extent (m)",       "%.6e" % focal_plane_pixel_extent_meters)
-        _v4_kv("resolution element (m)", "%.6e" % focal_plane_resolution_element)
-        _v4_kv("pixels per meter",       "%.2f" % focal_plane_pixels_per_meter)
-        _v4_kv("num airy (res-el radii)","%.4f" % num_airy)
-        _v4_kv("sampling (px/res-el)",   "%.4f" % sampling)
-        _v4_kv("iFOV (arcsec/px)",       "%.7f" % self.ifov)
-        _v4_kv("FOV (arcsec)",           "%.4f" % fov)
-        _v4_kv("incremental_control",    str(self.incremental_control))
+        _v3_subsection("Focal Plane Geometry")
+        _v3_kv("grid pixels",            "%d" % num_px)
+        _v3_kv("extent (m)",             "%.6e" % focal_plane_extent_metres)
+        _v3_kv("pixel extent (m)",       "%.6e" % focal_plane_pixel_extent_meters)
+        _v3_kv("resolution element (m)", "%.6e" % focal_plane_resolution_element)
+        _v3_kv("pixels per meter",       "%.2f" % focal_plane_pixels_per_meter)
+        _v3_kv("num airy (res-el radii)","%.4f" % num_airy)
+        _v3_kv("sampling (px/res-el)",   "%.4f" % sampling)
+        _v3_kv("iFOV (arcsec/px)",       "%.7f" % self.ifov)
+        _v3_kv("FOV (arcsec)",           "%.4f" % fov)
+        _v3_kv("incremental_control",    str(self.incremental_control))
 
-        _v4("Building object plane...")
+        # --- Object plane --------------------------------------------
+        _v3("Building object plane...")
         self.object_plane = ObjectPlane(
             object_type=cfg['object_type'],
             object_plane_extent_pixels=num_px,
             object_plane_extent_meters=cfg['object_plane_extent_meters'],
             object_plane_distance_meters=cfg['object_plane_distance_meters'],
         )
+
+        # [v3-opt] Pre-compute object spectrum (object never changes within episode)
         self._cached_object_spectrum = sp_fft.fft2(self.object_plane.array)
 
-        _v4("Building pupil grid...")
-        self.pupil_grid = hcipy.make_pupil_grid(dims=num_px, diameter=pupil_diameter)
+        # --- Pupil grid ----------------------------------------------
+        _v3("Building pupil grid...")
+        self.pupil_grid = hcipy.make_pupil_grid(
+            dims=num_px, diameter=pupil_diameter)
 
+        # --- Atmosphere layers ---------------------------------------
         self.atmosphere_layers = []
-        _v4("Building %d atmosphere layer(s)..." % cfg['num_atmosphere_layers'])
+        _v3("Building %d atmosphere layer(s)..." % cfg['num_atmosphere_layers'])
         for _ in range(cfg['num_atmosphere_layers']):
             layer = hcipy.InfiniteAtmosphericLayer(
                 self.pupil_grid, Cn_squared, outer_scale, velocity)
             self.atmosphere_layers.append(layer)
 
+        # --- Focal grid & propagator ---------------------------------
         focal_grid = hcipy.make_pupil_grid(
             dims=num_px, diameter=focal_plane_extent_metres)
         focal_grid = focal_grid.shifted(focal_grid.delta / 2)
-        self._focal_grid = focal_grid  # Store for v4 extraction
 
-        _v4("Building Fraunhofer propagator...")
+        _v3("Building Fraunhofer propagator...")
         self.pupil_to_focal_propagator = hcipy.FraunhoferPropagator(
             self.pupil_grid, focal_grid, focal_length)
-        self._focal_length = focal_length  # Store for v4 extraction
 
+        # --- Evaluate aperture / segments ----------------------------
         aperture_field = hcipy.evaluate_supersampled(
             aperture_func, self.pupil_grid, oversampling_factor)
         segments_field = hcipy.evaluate_supersampled(
             segments_func, self.pupil_grid, oversampling_factor)
+
         self.segmented_mirror = hcipy.SegmentedDeformableMirror(segments_field)
         self.aperture = aperture_field
 
+        # --- Perfect (reference) image -------------------------------
         # Polychromatic perfect PSF: average across all sampled wavelengths
         _perfect_wavelengths = _centered_wavelengths(
             self.wavelength,
             cfg['bandwidth_nanometers'],
             cfg['bandwidth_sampling'])
-        _v4("Computing polychromatic perfect PSF (%d wavelength(s): %s nm)"
+        _v3("Computing polychromatic perfect PSF (%d wavelength(s): %s nm)"
             % (len(_perfect_wavelengths),
                ", ".join("%.1f" % (wl * 1e9) for wl in _perfect_wavelengths)))
         perfect_accum = None
@@ -624,30 +628,246 @@ class OpticalSystem(object):
         side = int(np.sqrt(self.perfect_image.size))
         self.target_image = self.perfect_image.reshape((side, side))
 
+        # --- Dark hole (optional) ------------------------------------
         if cfg.get('dark_hole', False):
             self._apply_dark_hole(cfg, num_px)
 
+        # --- AO subsystem (DM + SHWFS) ------------------------------
         if self.model_ao:
             self._build_ao_subsystem(cfg, pupil_diameter, focal_grid)
 
+        # --- Science camera ------------------------------------------
+        # Created before diff-motion so the reference flux can be
+        # measured with aligned segments.
+        _v3("Building science camera...")
+        self.camera = hcipy.NoiselessDetector(focal_grid)
+
+        # --- Reference total flux (aligned system) -------------------
+        # One forward pass through the full pipeline with aligned
+        # segments.  Stored as the expected sum(DN) when all light
+        # lands on the detector.  Used by _absolute_strehl to detect
+        # and correct for flux loss when tip/tilt pushes the PSF off
+        # the focal plane.
+        self._compute_reference_flux(cfg)
+
+        # --- Initialize differential motion --------------------------
         if self.init_differential_motion:
-            _v4("Applying initial differential motion...")
+            _v3("Applying initial differential motion...")
             self._init_natural_diff_motion()
 
         self._store_baseline_segment_displacements()
 
-        _v4("Building science camera...")
-        self.camera = hcipy.NoiselessDetector(focal_grid)
-
+        # [v3-opt] Pre-compute secondary correction limits (constant for lifetime)
         self._max_p_m = cfg["max_piston_correction_micron"] * 1e-6
         self._max_t_r = cfg["max_tip_correction_arcsec"] * np.pi / (180 * 3600)
         self._max_tl_r = cfg["max_tilt_correction_arcsec"] * np.pi / (180 * 3600)
 
-        _v4_subsection("Optical System Ready")
+        # ============================================================
+        # V4: Extract GPU tensors from HCIPy objects
+        # ============================================================
+        self._torch_device = _resolve_device(cfg.get("device", "auto"))
+        _v3("GPU device: %s" % self._torch_device)
 
-    # --- Aperture construction (identical to v3) ---------------------
+        num_px_2d = num_px  # save for reshape
+
+        # Aperture field → complex tensor (num_px, num_px)
+        _ap_np = np.array(self.aperture).reshape(num_px, num_px)
+        self._aperture_t = torch.tensor(_ap_np, dtype=torch.complex64,
+                                         device=self._torch_device)
+
+        # Segment influence functions from SegmentedDeformableMirror
+        # HCIPy stores them as a ModeBasis (list of Field objects).
+        # Stack into (n_modes, n_pixels) array.
+        _inf_list = [np.array(mode) for mode in self.segmented_mirror._influence_functions]
+        _inf_np = np.stack(_inf_list, axis=0)  # (n_modes, n_pixels)
+        n_modes = _inf_np.shape[0]  # 3 * num_apertures
+        self._influence_t = torch.tensor(
+            _inf_np.reshape(n_modes, num_px, num_px),
+            dtype=torch.float32, device=self._torch_device)
+
+        # Actuator state tensor (mirrors segmented_mirror.actuators layout:
+        # [piston_0..n, tip_0..n, tilt_0..n])
+        self._actuators_t = torch.zeros(n_modes, dtype=torch.float32,
+                                         device=self._torch_device)
+
+        # Pre-compute object spectrum on GPU
+        self._object_spectrum_t = torch.fft.fft2(
+            torch.tensor(self.object_plane.array, dtype=torch.complex64,
+                         device=self._torch_device))
+
+        # ---- Extract MFT matrices from HCIPy's Fraunhofer propagator ----
+        # HCIPy uses a MatrixFourierTransform for this grid configuration.
+        # The MFT computes: E_focal = norm * w_in * (M1 @ E_pupil_2d @ M2)
+        # where M1 = exp(-1j * outer(v,y)), M2 = exp(-1j * outer(x,u))
+        # are separable DFT kernels, w_in = pupil grid weight (scalar),
+        # and norm = 1/(1j * f * lambda).
+        #
+        # IMPORTANT: M1,M2 are wavelength-dependent because the uv_grid
+        # is scaled by 2*pi/(f*lambda).  We pre-compute and cache
+        # per-wavelength matrices for all sampled wavelengths.
+        _all_wl = _centered_wavelengths(
+            self.wavelength,
+            cfg['bandwidth_nanometers'],
+            cfg['bandwidth_sampling'])
+        _v3("Pre-computing MFT matrices for %d wavelength(s)..." % len(_all_wl))
+
+        self._mft_cache = {}  # {wavelength: (M1_t, M2_t, norm_scale)}
+        _focal_gw = None
+        for _wl in _all_wl:
+            _wf = hcipy.Wavefront(self.aperture, _wl)
+            _result = self.pupil_to_focal_propagator(_wf)
+            _idata = self.pupil_to_focal_propagator.get_instance_data(
+                self.pupil_grid, None, _wl)
+            _mft = _idata.fourier_transform
+            _norm = _idata.norm_factor  # = 1/(1j*f*wl)
+
+            # Extract input weight (scalar for uniform grid)
+            _w_in = float(_mft.weights_input)
+            # Combined scalar: norm * w_in
+            _scale = complex(_norm * _w_in)
+
+            _M1_t = torch.tensor(
+                _mft.M1, dtype=torch.complex64, device=self._torch_device)
+            _M2_t = torch.tensor(
+                _mft.M2, dtype=torch.complex64, device=self._torch_device)
+            self._mft_cache[_wl] = (_M1_t, _M2_t, _scale)
+
+            if _focal_gw is None:
+                _gw = np.array(_result.grid.weights)
+                _focal_gw = float(_gw) if np.isscalar(_gw) or _gw.ndim == 0 else float(_gw[0])
+
+        # Focal-plane grid weights (for camera readout: PSF = |E|^2 * gw * dt)
+        self._focal_grid_weight = _focal_gw
+
+        # Detector model constants on GPU (scalars, but kept as Python floats)
+        _h = 6.62607015e-34
+        _c_light = 2.99792458e8
+        self._photon_energy = _h * _c_light / cfg['wavelength']
+        self._det_qe = cfg['detector_quantum_efficiency']
+        self._det_gain = cfg['detector_gain_e_per_dn']
+        self._det_max_dn = cfg['detector_max_dn']
+
+        # Store grid size for reshaping
+        self._num_px = num_px
+
+        _v3_subsection("Optical System Ready")
+
+    # ================================================================
+    # Reference flux measurement
+    # ================================================================
+
+    def _compute_reference_flux(self, cfg):
+        """Forward pass with aligned segments through the full pipeline.
+
+        Measures the expected total DN when all light lands on the
+        detector.  Stored as ``self._reference_fpi_sum`` for use by
+        the Strehl flux-fraction correction in OptomechEnv.
+
+        Must be called while segments are still aligned (before
+        ``_init_natural_diff_motion``).  The detector model is inlined
+        here so we don't depend on OptomechEnv.
+        """
+        import math as _math
+
+        wavelengths = _centered_wavelengths(
+            self.wavelength,
+            cfg['bandwidth_nanometers'],
+            cfg['bandwidth_sampling'])
+
+        # Compute integration time that matches the step loop.
+        ao_interval_ms = cfg['ao_interval_ms']
+        control_interval_ms = cfg['control_interval_ms']
+        frame_interval_ms = cfg['frame_interval_ms']
+        ao_steps_per_cmd = _math.ceil(control_interval_ms / ao_interval_ms)
+        cmds_per_frame = _math.ceil(frame_interval_ms / control_interval_ms)
+        ao_steps_per_frame = ao_steps_per_cmd * cmds_per_frame
+        frame_sec = frame_interval_ms / 1000.0
+        integration_sec = frame_sec / ao_steps_per_frame
+
+        num_px = cfg['focal_plane_image_size_pixels']
+        image_shape = (num_px, num_px)
+        n_wl = float(len(wavelengths))
+
+        # Accumulate one aligned science frame per wavelength (mirrors
+        # the inner step loop; with aligned segments every AO sub-step
+        # is identical, so one pass is equivalent to ao_steps_per_frame
+        # identical passes).
+        frame = np.zeros(image_shape, dtype=np.float32)
+        for wl in wavelengths:
+            self.simulate_cpu(wl)
+            science = self.get_science_frame_cpu(
+                integration_seconds=integration_sec)
+            frame += np.reshape(science, image_shape) / n_wl
+
+        # Scale by ao_steps_per_frame to match the accumulated frame
+        # in the step loop (each AO sub-step contributes identically
+        # when the mirror is aligned).
+        frame *= ao_steps_per_frame
+
+        # Inline detector model: power → DN
+        _h = 6.62607015e-34
+        _c = 2.99792458e8
+        photon_energy = _h * _c / cfg['wavelength']
+        det_qe = cfg['detector_quantum_efficiency']
+        det_gain = cfg['detector_gain_e_per_dn']
+        det_max_dn = cfg['detector_max_dn']
+
+        energy_joules = frame * frame_sec
+        n_photons = energy_joules / photon_energy
+        n_electrons = n_photons * det_qe
+        dn = n_electrons / det_gain
+        ref_fpi = np.clip(dn, 0, det_max_dn)
+
+        self._reference_fpi_sum = float(np.sum(ref_fpi))
+        self._reference_fpi_max = float(np.max(ref_fpi))
+
+        # Weighted reference sum for the centering reward.
+        ctr = num_px // 2
+        y, x = np.ogrid[:num_px, :num_px]
+        dist_sq = (y - ctr) ** 2 + (x - ctr) ** 2
+        centering_mode = cfg.get('centering_mode', 'gaussian')
+        if centering_mode == 'circular':
+            r_px = cfg.get('centering_radius_fraction', 0.25) * num_px
+            cen_w = (dist_sq <= r_px ** 2).astype(np.float64)
+        else:
+            sigma_px = cfg.get('centering_sigma_fraction', 0.25) * num_px
+            cen_w = np.exp(-dist_sq.astype(np.float64) / (2.0 * sigma_px ** 2))
+        self._reference_centering_sum = float(np.sum(ref_fpi * cen_w))
+
+        # Reference distance-weighted sum for the dist penalty.
+        # This is the distance score of the perfectly centred PSF — the
+        # best achievable value.  We normalise by ref_sum so the metric
+        # is the flux-weighted mean normalised distance in [0, 1].
+        dist = np.sqrt(dist_sq.astype(np.float64))
+        max_dist = np.sqrt(2.0) * ctr
+        dist_norm = dist / max_dist  # [0, 1]
+        if self._reference_fpi_sum > 0:
+            self._reference_dist_score = float(
+                np.sum(ref_fpi * dist_norm)) / self._reference_fpi_sum
+        else:
+            self._reference_dist_score = 0.0
+
+        _v3("Reference flux sum (DN): %.4f" % self._reference_fpi_sum)
+        _v3("Reference flux max (DN): %.4f" % self._reference_fpi_max)
+        _v3("Reference centering sum: %.4f" % self._reference_centering_sum)
+        _v3("Reference dist score: %.4f" % self._reference_dist_score)
+
+        # Reference concentration (inverse participation ratio).
+        # C = sum(I²) / sum(I)²  — higher when light is more peaked.
+        ref_sum_sq = float(np.sum(ref_fpi.astype(np.float64) ** 2))
+        if self._reference_fpi_sum > 0:
+            self._reference_concentration = ref_sum_sq / (self._reference_fpi_sum ** 2)
+        else:
+            self._reference_concentration = 0.0
+        _v3("Reference concentration: %.6f" % self._reference_concentration)
+
+    # ================================================================
+    # Aperture construction
+    # ================================================================
 
     def _build_aperture(self, aperture_type, cfg):
+        """Build the selected aperture and return (aperture, segments,
+        focal_length, pupil_diameter, focal_plane_image_size_meters)."""
         if aperture_type == "elf":
             self.num_apertures = 15
             focal_plane_image_size_meters = 8.192e-4
@@ -655,21 +875,25 @@ class OpticalSystem(object):
             pupil_diameter = 3.6
             segment_diameter = 0.5
             elf_segment_centroid_diameter = 2.7
+
             self.optomech_interaction_matrix = None
             interaction_size = 1
             self._optomech_encoder = np.random.rand(
                 self.num_tensioners, interaction_size)
             self._optomech_decoder = np.random.rand(
                 interaction_size, self.num_apertures * 3)
+
             aperture, segments = self._make_ring_aperture(
                 pupil_diameter=elf_segment_centroid_diameter,
                 num_apertures=self.num_apertures,
                 segment_diameter=segment_diameter)
+
         elif aperture_type == "circular":
             focal_length = 200.0
             pupil_diameter = 3.6
             elf_segment_centroid_diameter = 2.5
             focal_plane_image_size_meters = 8.192e-4
+
             aper_coords = hcipy.SeparatedCoords(
                 (np.array([0.0]), np.array([0.0])))
             segment_centers = hcipy.PolarGrid(aper_coords)
@@ -677,34 +901,41 @@ class OpticalSystem(object):
                 elf_segment_centroid_diameter)
             aperture, segments = hcipy.make_segmented_aperture(
                 circ_aperture, segment_centers, return_segments=True)
+
         elif aperture_type == "nanoelf":
             self.num_apertures = 2
             focal_length = 1.018
             pupil_diameter = 0.1408
             focal_plane_image_size_meters = 8.192e-5
+
             aperture, segments = self._make_ring_aperture(
                 pupil_diameter=pupil_diameter / 2.0,
                 num_apertures=self.num_apertures,
                 segment_diameter=0.0254 * 2)
+
         elif aperture_type == "nanoelfplus":
             self.num_apertures = 3
             focal_length = 1.018
             pupil_diameter = 0.1408
             focal_plane_image_size_meters = 8.192e-5
+
             aperture, segments = self._make_ring_aperture(
                 pupil_diameter=pupil_diameter / 2.0,
                 num_apertures=self.num_apertures,
                 segment_diameter=0.0254 * 2)
+
         else:
             raise NotImplementedError(
                 "aperture_type was '%s', but only 'elf', 'circular', "
                 "'nanoelf', and 'nanoelfplus' are implemented." % aperture_type)
+
         return (aperture, segments, focal_length,
                 pupil_diameter, focal_plane_image_size_meters)
 
     @staticmethod
     def _make_ring_aperture(pupil_diameter, num_apertures,
                             segment_diameter, return_segments=True):
+        """Create a ring of circular sub-apertures (ELF / nanoELF)."""
         pupil_radius = pupil_diameter / 2
         segment_angles = np.linspace(0, 2 * np.pi, num_apertures + 1)[:-1]
         aper_coords = hcipy.SeparatedCoords(
@@ -716,6 +947,8 @@ class OpticalSystem(object):
         return aperture, segments
 
     def _apply_dark_hole(self, cfg, num_px):
+        """Zero-out a circular region in the target image for dark-hole
+        coronagraphy reward."""
         dh_angle_deg = cfg['dark_hole_angular_location_degrees']
         dh_loc_frac = cfg['dark_hole_location_radius_fraction']
         dh_size = cfg['dark_hole_size_radius']
@@ -729,21 +962,26 @@ class OpticalSystem(object):
         self.target_image[mask] = 0.0
 
     def _build_ao_subsystem(self, cfg, pupil_diameter, focal_grid):
+        """Build the SHWFS, DM, and associated structures."""
         f_number = cfg['shwfs_f_number']
         num_lenslets = cfg['shwfs_num_lenslets']
         sh_diameter = cfg['shwfs_diameter_m']
+
         magnification = sh_diameter / pupil_diameter
         self.magnifier = hcipy.Magnifier(magnification)
+
         dm_model_type = cfg['dm_model_type']
-        _v4("Building SHWFS (f/%.0f, %d lenslets)..." % (f_number, num_lenslets))
+        _v3("Building SHWFS (f/%.0f, %d lenslets)..." % (f_number, num_lenslets))
         self.shwfs = hcipy.SquareShackHartmannWavefrontSensorOptics(
             self.pupil_grid.scaled(magnification),
             f_number, num_lenslets, sh_diameter)
         self.shwfse = hcipy.ShackHartmannWavefrontSensorEstimator(
             self.shwfs.mla_grid,
             self.shwfs.micro_lens_array.mla_index)
+
         self.shwfs_camera = hcipy.NoiselessDetector(focal_grid)
-        _v4("Building DM (model=%s)..." % dm_model_type)
+
+        _v3("Building DM (model=%s)..." % dm_model_type)
         if dm_model_type == "disk_harmonic_basis":
             num_modes = cfg['dm_num_modes']
             dm_modes = hcipy.make_disk_harmonic_basis(
@@ -762,20 +1000,34 @@ class OpticalSystem(object):
         else:
             raise ValueError("Unknown dm_model_type: %s" % dm_model_type)
 
-    # --- Field / atmosphere / simulation helpers (for AO + state recording) ---
+    # ================================================================
+    # Field helpers
+    # ================================================================
 
     def make_object_field(self, array, center=None):
+        """Return an HCIPy Field generator for the given 2-D array."""
         def func(grid):
             f = array.ravel()
             return hcipy.Field(f.astype('float'), grid)
         return func
 
+    # ================================================================
+    # Atmosphere
+    # ================================================================
+
     def evolve_atmosphere_to(self, episode_time_ms):
+        """Advance all atmosphere layers to the given episode time (ms)."""
         episode_time_seconds = episode_time_ms / 1000.0
         for layer in self.atmosphere_layers:
             layer.evolve_until(episode_time_seconds)
 
+    # ================================================================
+    # DM commands
+    # ================================================================
+
     def command_dm(self, dm_command):
+        """Apply a normalised [-1, 1] DM command vector."""
+        # [v3-opt] Use pre-computed stroke limit instead of recomputing
         dm_stroke_meters = self._dm_stroke_limit_m * 2.0
         command_vector = np.array([x[0] for x in dm_command])
         dm_command_meters = (dm_stroke_meters / 2.0) * command_vector
@@ -785,54 +1037,144 @@ class OpticalSystem(object):
                 size=dm_command_meters.shape)
         self.dm.actuators = dm_command_meters
 
-    def simulate(self, wavelength):
-        """Full HCIPy simulation -- used for AO/SHWFS path only."""
+    # ================================================================
+    # Optical simulation
+    # ================================================================
+
+    def simulate_cpu(self, wavelength):
+        """Propagate a wavefront through the full optical train (CPU/HCIPy)."""
+        _report = self.report_time
+
+        t0 = time.time()
         self.object_wavefront = hcipy.Wavefront(self.aperture, wavelength)
         self.pre_atmosphere_object_wavefront = self.object_wavefront
+        if _report:
+            _v3_timer("Object wavefront", time.time() - t0, indent=2)
+
+        t0 = time.time()
         wf = self.pre_atmosphere_object_wavefront
         for atm_layer in self.atmosphere_layers:
             wf = atm_layer.forward(wf)
         self.post_atmosphere_wavefront = wf
+        if _report:
+            _v3_timer("Atmosphere forward", time.time() - t0, indent=2)
+
         if self.simulate_differential_motion:
+            t0 = time.time()
             self._simulate_natural_diff_motion()
+            if _report:
+                _v3_timer("Diff-motion step", time.time() - t0, indent=2)
+
+        t0 = time.time()
         self.pupil_wavefront = self.segmented_mirror(
             self.post_atmosphere_wavefront)
+        if _report:
+            _v3_timer("Segments forward", time.time() - t0, indent=2)
+
         if self.model_ao:
+            t0 = time.time()
             self.post_dm_wavefront = self.dm.forward(self.pupil_wavefront)
+            if _report:
+                _v3_timer("DM forward", time.time() - t0, indent=2)
         else:
             self.post_dm_wavefront = self.pupil_wavefront
+
+        t0 = time.time()
         self.focal_plane_wavefront = self.pupil_to_focal_propagator(
             self.post_dm_wavefront)
+        if _report:
+            _v3_timer("Pupil-to-focal prop", time.time() - t0, indent=2)
+
+    def simulate(self, wavelength):
+        """GPU-accelerated wavefront propagation via Matrix Fourier Transform.
+
+        Replicates HCIPy's FraunhoferPropagator + MatrixFourierTransform
+        pipeline exactly:
+            E_focal = norm * w_in * (M1 @ E_pupil @ M2)
+        where norm = 1/(1j*f*lambda), w_in = pupil grid weight,
+        M1 and M2 are pre-extracted DFT kernels.
+        """
+        dev = self._torch_device
+        k = 2.0 * math.pi / wavelength
+
+        # Start with aperture field (complex amplitude, zero phase)
+        E = self._aperture_t.clone()
+
+        # Atmosphere: keep on CPU via HCIPy if layers exist
+        if self.atmosphere_layers:
+            # Fall back to HCIPy for atmosphere, transfer result
+            wf = hcipy.Wavefront(self.aperture, wavelength)
+            for atm_layer in self.atmosphere_layers:
+                wf = atm_layer.forward(wf)
+            atm_field = np.array(wf.electric_field).reshape(self._num_px, self._num_px)
+            E = torch.tensor(atm_field, dtype=torch.complex64, device=dev)
+
+        # Segmented mirror: surface = sum(actuators_i * influence_i)
+        # then E *= exp(2j * k * surface)
+        surface = torch.einsum('i,ihw->hw', self._actuators_t, self._influence_t)
+        E = E * torch.exp(torch.complex(
+            torch.zeros_like(surface),
+            (2.0 * k * surface)))
+
+        # Fraunhofer propagation via MFT (two separable matrix multiplies)
+        # E_focal = scale * (M1 @ E @ M2)
+        # where scale = norm_factor * w_in = 1/(1j*f*lambda) * grid_weight
+        # M1, M2, scale are pre-computed per wavelength.
+        if wavelength not in self._mft_cache:
+            # On-the-fly: compute MFT matrices for uncached wavelength
+            self._cache_mft_for_wavelength(wavelength)
+        _M1, _M2, _scale = self._mft_cache[wavelength]
+        E_focal = torch.matmul(torch.matmul(_M1, E), _M2) * _scale
+
+        self._focal_field_t = E_focal
+        # Also store as HCIPy-compatible for reference flux code paths
+        self.focal_plane_wavefront = None  # signal that GPU path was used
+
+    def _cache_mft_for_wavelength(self, wavelength):
+        """Compute and cache MFT matrices for an uncached wavelength."""
+        import hcipy as _hcipy
+        _wf = _hcipy.Wavefront(self.aperture, wavelength)
+        _result = self.pupil_to_focal_propagator(_wf)
+        _idata = self.pupil_to_focal_propagator.get_instance_data(
+            self.pupil_grid, None, wavelength)
+        _mft = _idata.fourier_transform
+        _norm = _idata.norm_factor
+        _w_in = float(_mft.weights_input)
+        _scale = complex(_norm * _w_in)
+        _M1_t = torch.tensor(
+            _mft.M1, dtype=torch.complex64, device=self._torch_device)
+        _M2_t = torch.tensor(
+            _mft.M2, dtype=torch.complex64, device=self._torch_device)
+        self._mft_cache[wavelength] = (_M1_t, _M2_t, _scale)
+
+    # ================================================================
+    # SHWFS
+    # ================================================================
 
     def get_shwfs_frame(self, integration_seconds=1.0):
+        """Read a Shack-Hartmann WFS frame."""
         self.shwfs_camera.integrate(
             self.shwfs(self.magnifier(self.post_dm_wavefront)),
             integration_seconds)
         return self.shwfs_camera.read_out()
 
-    def get_science_frame(self, integration_seconds=1.0):
-        """Full HCIPy science frame -- used for state recording only."""
-        self.camera.integrate(self.focal_plane_wavefront, integration_seconds)
-        effective_psf = self.camera.read_out()
-        side = int(np.sqrt(effective_psf.size))
-        effective_psf = effective_psf.reshape((side, side))
-        self.instantaneous_psf = effective_psf
-        effective_otf = sp_fft.fft2(effective_psf, workers=-1)
-        object_spectrum = self._cached_object_spectrum
-        image_spectrum = object_spectrum * effective_otf
-        self.readout_image = np.abs(
-            sp_fft.fftshift(sp_fft.ifft2(image_spectrum, workers=-1)))
-        return self.readout_image
+    # ================================================================
+    # DM interaction-matrix calibration
+    # ================================================================
 
     def calibrate_dm_interaction_matrix(self, env_uuid):
+        """Calibrate the DM interaction matrix (with disk caching)."""
         cfg = self._cfg
         probe_amp = cfg['dm_probe_amp_fraction'] * self.wavelength
+
         wf = hcipy.Wavefront(self.aperture, self.wavelength)
         wf.total_power = 1
         self.shwfs_camera.integrate(self.shwfs(self.magnifier(wf)), 1)
         reference_image = self.shwfs_camera.read_out()
+
         fluxes = ndimage.measurements.sum(
-            reference_image, self.shwfse.mla_index,
+            reference_image,
+            self.shwfse.mla_index,
             self.shwfse.estimation_subapertures)
         flux_limit = fluxes.max() * cfg['dm_flux_limit_fraction']
         estimation_subapertures = self.shwfs.mla_grid.zeros(dtype='bool')
@@ -842,20 +1184,23 @@ class OpticalSystem(object):
             self.shwfs.mla_grid,
             self.shwfs.micro_lens_array.mla_index,
             estimation_subapertures)
+
         self.reference_slopes = self.shwfse.estimate([reference_image])
+
         dm_cache_path = os.path.join(cfg['dm_cache_dir'], str(env_uuid))
         if os.path.exists(dm_cache_path):
-            _v4("Found cached interaction matrix at %s" % dm_cache_path)
+            _v3("Found cached interaction matrix at %s" % dm_cache_path)
             with open(os.path.join(dm_cache_path,
                       'dm_interaction_matrix.pkl'), 'rb') as f:
                 self.interaction_matrix = pickle.load(f)
                 return
+
         n_act = len(self.dm.actuators)
-        _v4_subsection("DM Calibration (%d actuators)" % n_act)
+        _v3_subsection("DM Calibration (%d actuators)" % n_act)
         response_matrix = []
         for i in range(n_act):
             if i % 50 == 0 or i == n_act - 1:
-                _v4("  actuator %d / %d" % (i + 1, n_act))
+                _v3("  actuator %d / %d" % (i + 1, n_act))
             slope = 0
             amps = [-probe_amp, probe_amp]
             for amp in amps:
@@ -869,21 +1214,99 @@ class OpticalSystem(object):
                 slopes = self.shwfse.estimate([img])
                 slope += amp * slopes / np.var(amps)
             response_matrix.append(slope.ravel())
+
         self.interaction_matrix = hcipy.ModeBasis(response_matrix)
+
         Path(dm_cache_path).mkdir(parents=True, exist_ok=True)
         with open(os.path.join(dm_cache_path,
                   "dm_interaction_matrix.pkl"), 'wb') as f:
             pickle.dump(self.interaction_matrix, f)
 
-    # --- Differential motion (identical to v3) -----------------------
+    # ================================================================
+    # Science camera readout
+    # ================================================================
+
+    def get_science_frame_cpu(self, integration_seconds=1.0):
+        """Read the science camera, applying geometric-optics convolution (CPU/HCIPy).
+
+        [v3-opt] Uses pre-cached object_spectrum and scipy.fft with workers.
+        """
+        _report = self.report_time
+
+        t0 = time.time()
+        self.camera.integrate(self.focal_plane_wavefront, integration_seconds)
+        if _report:
+            _v3_timer("Camera integrate", time.time() - t0, indent=2)
+
+        t0 = time.time()
+        effective_psf = self.camera.read_out()
+        side = int(np.sqrt(effective_psf.size))
+        effective_psf = effective_psf.reshape((side, side))
+        self.instantaneous_psf = effective_psf
+        if _report:
+            _v3_timer("Camera readout", time.time() - t0, indent=2)
+
+        # [v3-opt] scipy.fft with workers=-1 for multi-threaded FFT,
+        # plus pre-cached object spectrum.
+        t0 = time.time()
+        effective_otf = sp_fft.fft2(effective_psf, workers=-1)
+        image_spectrum = self._cached_object_spectrum * effective_otf
+        self.readout_image = np.abs(
+            sp_fft.fftshift(sp_fft.ifft2(image_spectrum, workers=-1)))
+        if _report:
+            _v3_timer("FFT convolution", time.time() - t0, indent=2)
+
+        return self.readout_image
+
+    def get_science_frame(self, integration_seconds=1.0):
+        """GPU-accelerated science frame readout.
+
+        Replicates HCIPy NoiselessDetector: PSF = |E|^2 * grid_weight * dt,
+        then convolves with pre-cached object spectrum.
+        """
+        # PSF = |E|^2 * grid_weight * dt  (matches HCIPy camera.integrate)
+        psf = (torch.abs(self._focal_field_t) ** 2) * (
+            self._focal_grid_weight * integration_seconds)
+
+        # Convolve with object spectrum: image = |IFFT(FFT(PSF) * FFT(object))|
+        otf = torch.fft.fft2(psf)
+        image = torch.abs(
+            torch.fft.fftshift(
+                torch.fft.ifft2(self._object_spectrum_t * otf)))
+
+        self._science_frame_t = image
+        return image  # returns GPU tensor
+
+    # ================================================================
+    # Optomechanical interaction
+    # ================================================================
+
+    def _optomechanical_interaction(self, tension_forces):
+        """Map tensioner forces to PTT displacements via placeholder MLP."""
+        tension_forces = np.transpose(np.array(tension_forces))
+        optomech_embedding = tension_forces.dot(self._optomech_encoder)
+        optomech_ptt = optomech_embedding.dot(self._optomech_decoder)
+        optomech_ptt = optomech_ptt.reshape((self.num_apertures, 3))
+        optomech_ptt = np.zeros((self.num_apertures, 3))
+        optomech_ptt[:, 0] *= 1e-6
+        optomech_ptt[:, 1] *= np.pi / (180 * 3600)
+        optomech_ptt[:, 2] *= np.pi / (180 * 3600)
+        self._apply_ptt_displacements(ptt_displacements=optomech_ptt)
+
+    # ================================================================
+    # Structural differential motion
+    # ================================================================
 
     def _simulate_natural_diff_motion(self):
+        """Evolve structural differential motion for one time step."""
         cfg = self._cfg
+
         if self.model_wind_diff_motion:
             self.ground_wind_speed_mps += (
                 np.random.randn() * self.ground_wind_speed_ms_sampled_std_mps)
             self.ground_wind_speed_mps = np.clip(
                 self.ground_wind_speed_mps, 0.0, cfg["max_ground_wind_speed_mps"])
+
             ws = self.ground_wind_speed_mps
             piston_std = ws * cfg["runtime_wind_piston_micron_factor"]
             tip_std = ws * cfg["runtime_wind_tip_arcsec_factor"]
@@ -895,18 +1318,23 @@ class OpticalSystem(object):
             self._apply_ptt_displacements(
                 wind_ptt, incremental=True,
                 incremental_factor=cfg["runtime_wind_incremental_factor"])
+
         if self.model_temp_diff_motion:
             _ = np.random.randn(self.num_apertures, 3)
+
         if self.model_gravity_diff_motion:
             _ = np.random.randn(self.num_apertures, 3)
 
     def _init_natural_diff_motion(self):
+        """Apply initial PTT perturbations at episode start."""
         cfg = self._cfg
+
         if (not self.model_wind_diff_motion and
                 not self.model_temp_diff_motion and
                 not self.model_gravity_diff_motion):
             raise ValueError(
                 "Initialized differential motion but no motion types selected.")
+
         if self.model_wind_diff_motion:
             piston_std = cfg["init_wind_piston_micron_std"]
             if self.command_tip_tilt:
@@ -915,19 +1343,44 @@ class OpticalSystem(object):
             else:
                 tip_std = 0.0
                 tilt_std = 0.0
-            wind_ptt = np.random.randn(self.num_apertures, 3)
-            wind_ptt[:, 0] *= piston_std * 1e-6
+
+            # [DEBUG] Wavelength-aware piston initialization:
+            # Mean at λ/4 physical (= λ/2 OPD, maximally destructive),
+            # std at λ/6 physical.  Random ±sign per segment ensures
+            # relative errors between segments, not a global offset.
+            _wl = self.wavelength
+            _piston_mean = _wl / 4.0     # λ/4 physical
+            _piston_std = _wl / 6.0      # λ/6 physical
+            _signs = np.random.choice([-1.0, 1.0], size=self.num_apertures)
+            wind_ptt = np.zeros((self.num_apertures, 3))
+            wind_ptt[:, 0] = _signs * (
+                _piston_mean + np.random.randn(self.num_apertures) * _piston_std)
             clip_m = cfg["init_wind_piston_clip_m"]
             wind_ptt[:, 0] = np.clip(wind_ptt[:, 0], -clip_m, clip_m)
-            wind_ptt[:, 1] *= tip_std * np.pi / (180 * 3600)
-            wind_ptt[:, 2] *= tilt_std * np.pi / (180 * 3600)
+            # Tip/tilt initialization: random ±sign × (mean + randn × std)
+            # so the error is always away from zero (same pattern as piston).
+            # Mean = std (1-sigma offset), spread = std/3.
+            _tip_signs = np.random.choice([-1.0, 1.0], size=self.num_apertures)
+            _tilt_signs = np.random.choice([-1.0, 1.0], size=self.num_apertures)
+            wind_ptt[:, 1] = _tip_signs * (
+                tip_std + np.random.randn(self.num_apertures) * tip_std / 3.0
+            ) * np.pi / (180 * 3600)
+            wind_ptt[:, 2] = _tilt_signs * (
+                tilt_std + np.random.randn(self.num_apertures) * tilt_std / 3.0
+            ) * np.pi / (180 * 3600)
             self._apply_ptt_displacements(wind_ptt)
+
         if self.model_temp_diff_motion:
             temp_ptt = np.random.randn(self.num_apertures, 3)
             temp_ptt[:, 0] *= 0.0
-            temp_ptt[:, 1] *= 0.0
-            temp_ptt[:, 2] *= 0.0
+            if self.command_tip_tilt:
+                temp_ptt[:, 1] *= 0.0
+                temp_ptt[:, 2] *= 0.0
+            else:
+                temp_ptt[:, 1] *= 0.0
+                temp_ptt[:, 2] *= 0.0
             self._apply_ptt_displacements(temp_ptt)
+
         if self.model_gravity_diff_motion:
             grav_piston_std = cfg["init_gravity_piston_micron_std"]
             if self.command_tip_tilt:
@@ -942,8 +1395,14 @@ class OpticalSystem(object):
             grav_ptt[:, 2] *= grav_tilt_std * np.pi / (180 * 3600)
             self._apply_ptt_displacements(grav_ptt)
 
+    # ================================================================
+    # PTT displacement helpers
+    # ================================================================
+
     def _apply_ptt_displacements(self, ptt_displacements,
-                                  incremental=False, incremental_factor=1.0):
+                                  incremental=False,
+                                  incremental_factor=1.0):
+        """Apply piston/tip/tilt displacements to the segmented mirror."""
         for seg_id in range(self.num_apertures):
             if incremental:
                 (seg_p, seg_t, seg_tl) = self.segmented_mirror.get_segment_actuators(seg_id)
@@ -956,16 +1415,28 @@ class OpticalSystem(object):
                 tl = ptt_displacements[seg_id, 2]
             self.segmented_mirror.set_segment_actuators(seg_id, p, t, tl)
 
+        # V4: sync HCIPy actuators → GPU tensor
+        if hasattr(self, '_actuators_t'):
+            self._actuators_t = torch.tensor(
+                np.array(self.segmented_mirror.actuators),
+                dtype=torch.float32, device=self._torch_device)
+
     def get_ptt_state(self):
-        return [self.segmented_mirror.get_segment_actuators(i)
-                for i in range(self.num_apertures)]
+        """Return list of (piston, tip, tilt) tuples for all segments."""
+        return [
+            self.segmented_mirror.get_segment_actuators(i)
+            for i in range(self.num_apertures)
+        ]
 
     def get_displacement_correction(self):
+        """Normalised [-1,1] corrections to return segments to baseline."""
         cfg = self._cfg
         ptt = self.get_ptt_state()
+
         max_p_m = cfg["get_disp_corr_max_piston_micron"] * 1e-6
         max_t_r = cfg["get_disp_corr_max_tip_arcsec"] * np.pi / (180 * 3600)
         max_tl_r = cfg["get_disp_corr_max_tilt_arcsec"] * np.pi / (180 * 3600)
+
         corrections = []
         for seg_id in range(self.num_apertures):
             cp, ct, ctl = ptt[seg_id]
@@ -977,6 +1448,7 @@ class OpticalSystem(object):
         return corrections
 
     def get_displacement_from_baseline(self):
+        """Physical displacement from baseline for each segment."""
         ptt = self.get_ptt_state()
         displacements = []
         for seg_id in range(self.num_apertures):
@@ -988,33 +1460,41 @@ class OpticalSystem(object):
         return displacements
 
     def _store_baseline_segment_displacements(self):
+        """Snapshot current PTT state as the baseline reference."""
         self.segment_baseline_dict = {}
         for seg_id in range(self.num_apertures):
             (p, t, tl) = self.segmented_mirror.get_segment_actuators(seg_id)
             self.segment_baseline_dict[seg_id] = {
                 "piston": p, "tip": t, "tilt": tl}
 
+        # V4: sync HCIPy actuators → GPU tensor
+        if hasattr(self, '_actuators_t'):
+            self._actuators_t = torch.tensor(
+                np.array(self.segmented_mirror.actuators),
+                dtype=torch.float32, device=self._torch_device)
+
+    # ================================================================
+    # Tensioner & secondary commands
+    # ================================================================
+
     def command_tensioners(self, tensioner_commands):
+        """Apply tensioner commands via the optomechanical interaction."""
         self._optomechanical_interaction(tensioner_commands)
 
-    def _optomechanical_interaction(self, tension_forces):
-        tension_forces = np.transpose(np.array(tension_forces))
-        optomech_embedding = tension_forces.dot(self._optomech_encoder)
-        optomech_ptt = optomech_embedding.dot(self._optomech_decoder)
-        optomech_ptt = optomech_ptt.reshape((self.num_apertures, 3))
-        optomech_ptt = np.zeros((self.num_apertures, 3))
-        optomech_ptt[:, 0] *= 1e-6
-        optomech_ptt[:, 1] *= np.pi / (180 * 3600)
-        optomech_ptt[:, 2] *= np.pi / (180 * 3600)
-        self._apply_ptt_displacements(ptt_displacements=optomech_ptt)
-
     def command_secondaries(self, secondaries_commands):
+        """Command secondary mirror PTT for all segments.
+
+        [v3-opt] Uses pre-computed correction limits from __init__.
+        """
         max_p_m = self._max_p_m
         max_t_r = self._max_t_r
         max_tl_r = self._max_tl_r
+
         self.max_piston_correction = max_p_m
         self.max_tip_correction = max_t_r
         self.max_tilt_correction = max_tl_r
+
+        # Local aliases for inner loop
         _seg_mirror = self.segmented_mirror
         _discrete = self.discrete_control
         _incremental = self.incremental_control
@@ -1022,6 +1502,7 @@ class OpticalSystem(object):
         _discrete_steps = self.discrete_control_steps
         _noisy = self._actuator_noise
         _noise_frac = self._actuator_noise_fraction
+
         for seg_id in range(self.num_apertures):
             seg_piston_cmd = secondaries_commands[seg_id][0]
             if len(secondaries_commands[seg_id]) == 3:
@@ -1030,41 +1511,75 @@ class OpticalSystem(object):
             else:
                 seg_tip_cmd = 0.0
                 seg_tilt_cmd = 0.0
+
             if _discrete:
                 (seg_p, seg_t, seg_tl) = _seg_mirror.get_segment_actuators(seg_id)
-                inc_p = seg_piston_cmd[0]; dec_p = seg_piston_cmd[1]
-                inc_t = seg_tip_cmd[0]; dec_t = seg_tip_cmd[1]
-                inc_tl = seg_tilt_cmd[0]; dec_tl = seg_tilt_cmd[1]
+
+                inc_p = seg_piston_cmd[0]
+                dec_p = seg_piston_cmd[1]
+                inc_t = seg_tip_cmd[0]
+                dec_t = seg_tip_cmd[1]
+                inc_tl = seg_tilt_cmd[0]
+                dec_tl = seg_tilt_cmd[1]
+
                 piston_state = seg_p + inc_p * (max_p_m / _discrete_steps)
                 tip_state = seg_t + inc_t * (max_t_r / _discrete_steps)
                 tilt_state = seg_tl + inc_tl * (max_tl_r / _discrete_steps)
+
                 piston_state = seg_p - dec_p * (max_p_m / _discrete_steps)
                 tip_state = seg_t - dec_t * (max_t_r / _discrete_steps)
                 tilt_state = seg_tl - dec_tl * (max_tl_r / _discrete_steps)
+
                 bl = _baseline[seg_id]
                 pre_clip = np.array([piston_state, tip_state, tilt_state])
                 piston_state = np.clip(piston_state, -max_p_m + bl["piston"], max_p_m + bl["piston"])
                 tip_state = np.clip(tip_state, -max_t_r + bl["tip"], max_t_r + bl["tip"])
                 tilt_state = np.clip(tilt_state, -max_tl_r + bl["tilt"], max_tl_r + bl["tilt"])
                 post_clip = np.array([piston_state, tip_state, tilt_state])
-                self._clipped_dof_count += int(np.sum(pre_clip != post_clip))
-                self._total_dof_count += 3
+                _n_dof = 3 if self.command_tip_tilt else 1
+                self._clipped_dof_count += int(np.sum(pre_clip[:_n_dof] != post_clip[:_n_dof]))
+                self._total_dof_count += _n_dof
+
+                # Rail noise: when clipped, replace with stochastic state
+                # around the rail so the agent can't exploit hard limits.
+                if pre_clip[0] != post_clip[0]:
+                    piston_state += np.random.normal(0.0, _noise_frac * 2.0 * max_p_m)
+                if _n_dof > 1:
+                    if pre_clip[1] != post_clip[1]:
+                        tip_state += np.random.normal(0.0, _noise_frac * 2.0 * max_t_r)
+                    if pre_clip[2] != post_clip[2]:
+                        tilt_state += np.random.normal(0.0, _noise_frac * 2.0 * max_tl_r)
+
             elif _incremental:
                 p_cmd_m = seg_piston_cmd * max_p_m
                 t_cmd_r = seg_tip_cmd * max_t_r
                 tl_cmd_r = seg_tilt_cmd * max_tl_r
+
                 (seg_p, seg_t, seg_tl) = _seg_mirror.get_segment_actuators(seg_id)
                 piston_state = seg_p + p_cmd_m
                 tip_state = seg_t + t_cmd_r
                 tilt_state = seg_tl + tl_cmd_r
+
                 bl = _baseline[seg_id]
                 pre_clip = np.array([piston_state, tip_state, tilt_state])
                 piston_state = np.clip(piston_state, -max_p_m + bl["piston"], max_p_m + bl["piston"])
                 tip_state = np.clip(tip_state, -max_t_r + bl["tip"], max_t_r + bl["tip"])
                 tilt_state = np.clip(tilt_state, -max_tl_r + bl["tilt"], max_tl_r + bl["tilt"])
                 post_clip = np.array([piston_state, tip_state, tilt_state])
-                self._clipped_dof_count += int(np.sum(pre_clip != post_clip))
-                self._total_dof_count += 3
+                _n_dof = 3 if self.command_tip_tilt else 1
+                self._clipped_dof_count += int(np.sum(pre_clip[:_n_dof] != post_clip[:_n_dof]))
+                self._total_dof_count += _n_dof
+
+                # Rail noise: when clipped, replace with stochastic state
+                # around the rail so the agent can't exploit hard limits.
+                if pre_clip[0] != post_clip[0]:
+                    piston_state += np.random.normal(0.0, _noise_frac * 2.0 * max_p_m)
+                if _n_dof > 1:
+                    if pre_clip[1] != post_clip[1]:
+                        tip_state += np.random.normal(0.0, _noise_frac * 2.0 * max_t_r)
+                    if pre_clip[2] != post_clip[2]:
+                        tilt_state += np.random.normal(0.0, _noise_frac * 2.0 * max_tl_r)
+
             else:
                 p_cmd_m = seg_piston_cmd * max_p_m
                 t_cmd_r = seg_tip_cmd * max_t_r
@@ -1073,38 +1588,59 @@ class OpticalSystem(object):
                 piston_state = bl["piston"] + p_cmd_m
                 tip_state = bl["tip"] + t_cmd_r
                 tilt_state = bl["tilt"] + tl_cmd_r
+
                 pre_clip = np.array([piston_state, tip_state, tilt_state])
                 piston_state = np.clip(piston_state, -max_p_m + bl["piston"], max_p_m + bl["piston"])
                 tip_state = np.clip(tip_state, -max_t_r + bl["tip"], max_t_r + bl["tip"])
                 tilt_state = np.clip(tilt_state, -max_tl_r + bl["tilt"], max_tl_r + bl["tilt"])
                 post_clip = np.array([piston_state, tip_state, tilt_state])
-                self._clipped_dof_count += int(np.sum(pre_clip != post_clip))
-                self._total_dof_count += 3
+                _n_dof = 3 if self.command_tip_tilt else 1
+                self._clipped_dof_count += int(np.sum(pre_clip[:_n_dof] != post_clip[:_n_dof]))
+                self._total_dof_count += _n_dof
+
+                # Rail noise: when clipped, replace with stochastic state
+                # around the rail so the agent can't exploit hard limits.
+                if pre_clip[0] != post_clip[0]:
+                    piston_state += np.random.normal(0.0, _noise_frac * 2.0 * max_p_m)
+                if _n_dof > 1:
+                    if pre_clip[1] != post_clip[1]:
+                        tip_state += np.random.normal(0.0, _noise_frac * 2.0 * max_t_r)
+                    if pre_clip[2] != post_clip[2]:
+                        tilt_state += np.random.normal(0.0, _noise_frac * 2.0 * max_tl_r)
+
             # Actuator repeatability noise: Gaussian perturbation
             # proportional to correction range (models real hardware).
+            # Only applied when the actuator actually moved (non-zero cmd);
+            # a dead-zoned (zero) command means the actuator is idle.
+            # No re-clip: tiny noise (1e-4 fraction) may push slightly
+            # past rails, which is physically realistic and prevents the
+            # agent from exploiting hard limits for state certainty.
             if _noisy:
-                piston_state += np.random.normal(0.0, _noise_frac * 2.0 * max_p_m)
-                tip_state += np.random.normal(0.0, _noise_frac * 2.0 * max_t_r)
-                tilt_state += np.random.normal(0.0, _noise_frac * 2.0 * max_tl_r)
-                # Re-clip after noise to stay within physical limits
-                bl = _baseline[seg_id]
-                piston_state = np.clip(piston_state, -max_p_m + bl["piston"], max_p_m + bl["piston"])
-                tip_state = np.clip(tip_state, -max_t_r + bl["tip"], max_t_r + bl["tip"])
-                tilt_state = np.clip(tilt_state, -max_tl_r + bl["tilt"], max_tl_r + bl["tilt"])
+                if seg_piston_cmd != 0.0:
+                    piston_state += np.random.normal(0.0, _noise_frac * 2.0 * max_p_m)
+                if seg_tip_cmd != 0.0:
+                    tip_state += np.random.normal(0.0, _noise_frac * 2.0 * max_t_r)
+                if seg_tilt_cmd != 0.0:
+                    tilt_state += np.random.normal(0.0, _noise_frac * 2.0 * max_tl_r)
+
             _seg_mirror.set_segment_actuators(
                 seg_id, piston_state, tip_state, tilt_state)
 
+        # V4: sync HCIPy actuators → GPU tensor
+        self._actuators_t = torch.tensor(
+            np.array(self.segmented_mirror.actuators),
+            dtype=torch.float32, device=self._torch_device)
+
 
 # ===================================================================
-# OptomechEnv -- Gymnasium environment with PyTorch fast path
+# OptomechEnv -- Gymnasium environment
 # ===================================================================
 
 class OptomechEnv(gym.Env):
-    """GPU-accelerated v4 environment for distributed-aperture telescope control.
+    """Gymnasium environment for distributed-aperture telescope control.
 
-    Construction and calibration use HCIPy. The step() hot path bypasses
-    HCIPy entirely, operating on pre-extracted PyTorch tensors on the
-    best available device (MPS / CUDA / CPU).
+    High-performance v3: functionally identical to v2 with optimised
+    hot paths.
     """
 
     metadata = {
@@ -1113,12 +1649,11 @@ class OptomechEnv(gym.Env):
     }
 
     def __init__(self, **kwargs):
+
         self.cfg = {**DEFAULT_CONFIG, **kwargs}
         cfg = self.cfg
-        _print_config_banner(cfg)
 
-        # --- Device selection ----------------------------------------
-        self._device = _select_device(cfg.get('device', None))
+        _print_config_banner(cfg)
 
         # --- Seed & identity -----------------------------------------
         self.seed()
@@ -1147,41 +1682,64 @@ class OptomechEnv(gym.Env):
         self.discrete_control = cfg['discrete_control']
         self.discrete_control_steps = cfg['discrete_control_steps']
         self.randomize_dm = cfg['randomize_dm']
-        self.reward_function = cfg['reward_function']
-
-        # --- Composite reward weights --------------------------------
-        self._reward_weight_strehl = cfg['reward_weight_strehl']
-        self._reward_weight_dark_hole = cfg['reward_weight_dark_hole']
-        self._reward_weight_image_quality = cfg['reward_weight_image_quality']
 
         # --- Actuator noise (stochastic repeatability) ---------------
         self._actuator_noise = cfg['actuator_noise']
         self._actuator_noise_fraction = cfg['actuator_noise_fraction']
+        self._action_scale = cfg.get('env_action_scale', 1.0)
 
         # --- Action penalty ------------------------------------------
         self._action_penalty = cfg['action_penalty']
         self._action_penalty_weight = cfg['action_penalty_weight']
         self._oob_penalty = cfg['oob_penalty']
         self._oob_penalty_weight = cfg['oob_penalty_weight']
+        self._holding_bonus_weight = cfg.get('holding_bonus_weight', 0.0)
+        self._holding_bonus_min_reward = cfg.get('holding_bonus_min_reward', -1.0)
+        self._holding_bonus_threshold = cfg.get('holding_bonus_threshold', 0.0)
+        self._minimum_absolute_action = cfg.get('minimum_absolute_action', 0.0)
+        self._reward_scale = cfg.get('reward_scale', 1.0)
+
+        self.reward_function = cfg['reward_function']
+
+        # --- Composite reward weights --------------------------------
+        self._reward_weight_strehl = cfg['reward_weight_strehl']
+        self._reward_weight_dark_hole = cfg['reward_weight_dark_hole']
+        self._reward_weight_image_quality = cfg['reward_weight_image_quality']
+        self._reward_weight_centering = cfg['reward_weight_centering']
+        self._reward_weight_flux = cfg.get('reward_weight_flux', 0.0)
+        self._reward_weight_convex_flux = cfg.get('reward_weight_convex_flux', 0.0)
+        self._convex_flux_power = cfg.get('convex_flux_power', 2.0)
+        self._reward_weight_dist = cfg.get('reward_weight_dist', 0.0)
+        self._reward_weight_concentration = cfg.get('reward_weight_concentration', 0.0)
+        self._reward_weight_peak = cfg.get('reward_weight_peak', 0.0)
+        self._reward_weight_centered_strehl = cfg.get('reward_weight_centered_strehl', 0.0)
+        self._reward_weight_shape = cfg['reward_weight_shape']
+
         self.ao_loop_active = cfg['ao_loop_active']
         self.observation_mode = cfg['observation_mode']
+
+        # [v3-opt] Cache observation mode as booleans
         self._obs_image_only = (self.observation_mode == "image_only")
         self._obs_image_action = (self.observation_mode == "image_action")
 
+        # --- AO model flag -------------------------------------------
         if self.command_dm or self.ao_loop_active:
             cfg['model_ao'] = True
         else:
             cfg['model_ao'] = False
 
+        # --- DM physics (also stored at env level for AO loop) -------
         self.microns_opd_per_actuator_bit = cfg['microns_opd_per_actuator_bit']
         self.stroke_count_limit = cfg['stroke_count_limit']
         self.dm_gain = cfg['dm_gain']
         self.dm_leakage = cfg['dm_leakage']
+
+        # [v3-opt] Pre-compute stroke limit for AO loop
         self._dm_stroke_limit_m = (
             self.microns_opd_per_actuator_bit
             * self.stroke_count_limit * 1e-6 / 2.0)
 
-        # Detector constants (pre-computed)
+        # [v3-opt] Pre-compute detector constants (h*c / wavelength, frame_sec)
         _h = 6.62607015e-34
         _c = 2.99792458e8
         self._photon_energy = _h * _c / cfg['wavelength']
@@ -1190,65 +1748,109 @@ class OptomechEnv(gym.Env):
         self._det_max_dn = cfg['detector_max_dn']
         self._frame_sec = self.frame_interval_ms / 1000.0
 
-        _v4_section("Initializing OptomechEnv")
+        _v3_section("Initializing OptomechEnv")
 
+        # --- Internal state ------------------------------------------
         self.viewer = None
         self.state = None
         self.steps_beyond_done = None
         self._init_state_storage()
+
+        # --- Compute timing ratios -----------------------------------
         self._compute_timing_ratios()
 
+        # --- Print dark hole settings --------------------------------
         if cfg.get('dark_hole', False):
-            _v4_subsection("Dark Hole")
-            _v4_kv("angular location (deg)", cfg.get('dark_hole_angular_location_degrees', 'N/A'))
-            _v4_kv("location radius frac",   cfg.get('dark_hole_location_radius_fraction', 'N/A'))
-            _v4_kv("size radius",            cfg.get('dark_hole_size_radius', 'N/A'))
+            _v3_subsection("Dark Hole")
+            _v3_kv("angular location (deg)", cfg.get('dark_hole_angular_location_degrees', 'N/A'))
+            _v3_kv("location radius frac",   cfg.get('dark_hole_location_radius_fraction', 'N/A'))
+            _v3_kv("size radius",            cfg.get('dark_hole_size_radius', 'N/A'))
         else:
-            _v4("Dark hole: disabled")
+            _v3("Dark hole: disabled")
 
-        _v4_subsection("Actuator Noise")
+        _v3_subsection("Actuator Noise")
         if self._actuator_noise:
-            _v4_kv("enabled", "True")
-            _v4_kv("noise fraction", "%.2e" % self._actuator_noise_fraction)
+            _v3_kv("enabled", "True")
+            _v3_kv("noise fraction", "%.2e" % self._actuator_noise_fraction)
         else:
-            _v4("Actuator noise: disabled")
+            _v3("Actuator noise: disabled")
 
-        _v4_subsection("Action Penalty")
+        _v3_subsection("Action Penalty")
         if self._action_penalty:
-            _v4_kv("enabled", "True")
-            _v4_kv("weight", "%.4f" % self._action_penalty_weight)
+            _v3_kv("enabled", "True")
+            _v3_kv("weight", "%.4f" % self._action_penalty_weight)
         else:
-            _v4("Action penalty: disabled")
+            _v3("Action penalty: disabled")
 
-        _v4_subsection("OOB Penalty")
+        if self._minimum_absolute_action > 0.0:
+            _v3_kv("action deadzone", "%.4f" % self._minimum_absolute_action)
+        if self._action_scale != 1.0:
+            _v3_kv("env action scale", "%.4f" % self._action_scale)
+
+        _v3_subsection("Holding Bonus")
+        if self._holding_bonus_weight > 0:
+            _v3_kv("enabled", "True")
+            _v3_kv("weight", "%.4f" % self._holding_bonus_weight)
+            _v3_kv("min_reward", "%.4f" % self._holding_bonus_min_reward)
+            _v3_kv("threshold", "%.4f" % self._holding_bonus_threshold)
+        else:
+            _v3("Holding bonus: disabled")
+
+        _v3_subsection("OOB Penalty")
         if self._oob_penalty:
-            _v4_kv("enabled", "True")
-            _v4_kv("weight", "%.4f" % self._oob_penalty_weight)
+            _v3_kv("enabled", "True")
+            _v3_kv("weight", "%.4f" % self._oob_penalty_weight)
         else:
-            _v4("OOB penalty: disabled")
+            _v3("OOB penalty: disabled")
 
-        _v4_subsection("Reward")
-        _v4_kv("function", self.reward_function)
+        _v3_subsection("Reward")
+        _v3_kv("function", self.reward_function)
+        _v3_kv("reward_scale", "%.1f" % self._reward_scale)
         if self.reward_function == "composite":
-            _v4_kv("weight_strehl", "%.3f" % self._reward_weight_strehl)
-            _v4_kv("weight_dark_hole", "%.3f" % self._reward_weight_dark_hole)
-            _v4_kv("weight_image_quality", "%.3f" % self._reward_weight_image_quality)
+            _v3_kv("weight_strehl", "%.3f" % self._reward_weight_strehl)
+            _v3_kv("weight_centering", "%.3f" % self._reward_weight_centering)
+            _v3_kv("weight_dark_hole", "%.3f" % self._reward_weight_dark_hole)
+            _v3_kv("weight_image_quality", "%.3f" % self._reward_weight_image_quality)
+        if self.reward_function == "factored":
+            _v3_kv("weight_shape", "%.3f" % self._reward_weight_shape)
+            _v3_kv("weight_dark_hole", "%.3f" % self._reward_weight_dark_hole)
+            _v3_kv("weight_strehl", "%.3f" % self._reward_weight_strehl)
+            _v3_kv("weight_centering", "%.3f" % self._reward_weight_centering)
+            _v3_kv("weight_flux", "%.3f" % self._reward_weight_flux)
+            _v3_kv("weight_convex_flux", "%.3f" % self._reward_weight_convex_flux)
+            if self._reward_weight_convex_flux > 0:
+                _v3_kv("convex_flux_power", "%.1f" % self._convex_flux_power)
+            _v3_kv("weight_dist", "%.3f" % self._reward_weight_dist)
+            _v3_kv("weight_concentration", "%.3f" % self._reward_weight_concentration)
+            _v3_kv("weight_peak", "%.3f" % self._reward_weight_peak)
+            _v3_kv("weight_centered_strehl", "%.3f" % self._reward_weight_centered_strehl)
 
+        # --- Build optical system ------------------------------------
         self._build_optical_system()
+
+        # --- Episode clock -------------------------------------------
         self.episode_time_ms = 0.0
+
+        # --- Build action spaces -------------------------------------
         self._build_action_spaces()
+
+        # --- Build observation space ---------------------------------
         self._build_observation_space()
 
-        # Cache wavelengths
+        # --- Cache wavelengths (constant for env lifetime) -----------
+        # [v3-opt] Compute once instead of every AO step
         self._cached_wavelengths = self._compute_wavelengths()
 
-        # Cache reward images
+        # --- Cache normalized perfect image for reward functions -----
+        # [v3-opt] Computed once, reused across all reward calls
         self._cache_reward_images()
+
+        # --- Pre-compute center masks for align/dark_hole rewards ----
+        # [v3-opt] Vectorized with np.ogrid instead of Python double-loop
         self._cache_center_masks()
 
-        # Reward dispatch
+        # [v3-opt] Reward dispatch dict instead of if/elif chain
         self._reward_dispatch = {
-            "composite": self._reward_composite,
             "strehl": self._reward_strehl,
             "align": self._reward_align,
             "dark_hole": self._reward_dark_hole,
@@ -1259,314 +1861,33 @@ class OptomechEnv(gym.Env):
             "ao_rms_slope": self._reward_ao_rms_slope,
             "norm_ao_rms_slope": self._reward_norm_ao_rms_slope,
             "ao_closed": self._reward_ao_closed,
+            "composite": self._reward_composite,
+            "factored": self._reward_factored,
         }
         if self.reward_function not in self._reward_dispatch:
             raise ValueError("Unknown reward_function: '%s'" % self.reward_function)
         self._reward_fn = self._reward_dispatch[self.reward_function]
 
-        # [v4] Initialize the fast PyTorch pipeline
-        self._init_fast_pipeline()
-
+        # --- Environment-level state storage -------------------------
         self.state_content["wavelength"] = self.optical_system.wavelength
-        _v4_section("Environment Ready (device=%s)" % self._device)
+
+        _v3_section("Environment Ready")
 
     # ================================================================
-    # [v4] Fast PyTorch Pipeline
-    # ================================================================
-
-    def _init_fast_pipeline(self):
-        """Extract all HCIPy arrays into PyTorch tensors on self._device."""
-        os_obj = self.optical_system
-        dev = self._device
-
-        _v4_subsection("Fast Pipeline Init")
-
-        # 1. Aperture → complex64 tensor
-        self._t_aperture = torch.from_numpy(
-            np.array(os_obj.aperture, dtype=np.complex64)).to(dev)
-        N = self._t_aperture.shape[0]
-        _v4_kv("aperture pixels", "%d" % N)
-
-        # 2. Segmented mirror transformation matrix → dense float32
-        seg_tm = os_obj.segmented_mirror.influence_functions.transformation_matrix
-        if scipy.sparse.issparse(seg_tm):
-            seg_dense = np.asarray(seg_tm.todense(), dtype=np.float32)
-        else:
-            seg_dense = np.array(seg_tm, dtype=np.float32)
-        self._t_seg_transform = torch.from_numpy(seg_dense).to(dev)
-        _v4_kv("seg transform shape", str(self._t_seg_transform.shape))
-
-        # 3. DM transformation matrix (if AO)
-        if os_obj.model_ao:
-            dm_tm = os_obj.dm.influence_functions.transformation_matrix
-            if scipy.sparse.issparse(dm_tm):
-                dm_dense = np.asarray(dm_tm.todense(), dtype=np.float32)
-            else:
-                dm_dense = np.array(dm_tm, dtype=np.float32)
-            self._t_dm_transform = torch.from_numpy(dm_dense).to(dev)
-            _v4_kv("dm transform shape", str(self._t_dm_transform.shape))
-
-        # 4. Fraunhofer propagator internals (per wavelength)
-        #    HCIPy may select either FastFourierTransform or MatrixFourierTransform
-        #    depending on grid sizes.  We detect which and extract accordingly.
-        self._t_props = {}
-        self._ft_mode = None          # 'fft' or 'mft', set on first wl
-        for wl in self._cached_wavelengths:
-            # Force HCIPy to populate its internal cache
-            test_wf = hcipy.Wavefront(os_obj.aperture, wl)
-            os_obj.pupil_to_focal_propagator(os_obj.segmented_mirror(test_wf))
-            inst = os_obj.pupil_to_focal_propagator.get_instance_data(
-                os_obj.pupil_grid, None, wl)
-            ft = inst.fourier_transform
-
-            if isinstance(ft, FastFourierTransform):
-                if self._ft_mode is None:
-                    self._ft_mode = 'fft'
-                shift_in = np.array(ft.shift_input, dtype=np.complex64)
-                shift_out = (np.array(ft.shift_output, dtype=np.complex64)
-                             if ft.shift_output is not None else None)
-                self._t_props[wl] = {
-                    'norm_factor': torch.tensor(
-                        complex(inst.norm_factor), dtype=torch.complex64,
-                        device=dev),
-                    'shift_input': torch.from_numpy(shift_in).to(dev),
-                    'shift_output': (torch.from_numpy(shift_out).to(dev)
-                                     if shift_out is not None else None),
-                }
-
-            elif isinstance(ft, MatrixFourierTransform):
-                if self._ft_mode is None:
-                    self._ft_mode = 'mft'
-                # Force matrix computation so we can extract M1 / M2
-                ft._compute_matrices(np.complex64)
-                # Extract weights_input (scalar or array)
-                if np.isscalar(ft.weights_input):
-                    w_tensor = torch.tensor(
-                        float(ft.weights_input),
-                        dtype=torch.float32, device=dev)
-                else:
-                    w_tensor = torch.from_numpy(
-                        np.array(ft.weights_input, dtype=np.float32)).to(dev)
-                self._t_props[wl] = {
-                    'norm_factor': torch.tensor(
-                        complex(inst.norm_factor), dtype=torch.complex64,
-                        device=dev),
-                    'M1': torch.from_numpy(
-                        np.array(ft.M1, dtype=np.complex64)).to(dev),
-                    'M2': torch.from_numpy(
-                        np.array(ft.M2, dtype=np.complex64)).to(dev),
-                    'weights_input': w_tensor,
-                }
-            else:
-                raise TypeError(
-                    f"Unsupported Fourier transform type: {type(ft).__name__}")
-
-        # Grid-level params (same for all wavelengths, type-dependent)
-        if self._ft_mode == 'fft':
-            self._fp_shape_in = tuple(ft.shape_in)
-            self._fp_internal_shape = tuple(ft.internal_shape)
-            self._fp_cutout_input = ft.cutout_input
-            self._fp_cutout_output = ft.cutout_output
-            self._fp_emulate_fftshifts = ft.emulate_fftshifts
-            _v4_kv("transform mode", "FFT (FastFourierTransform)")
-            _v4_kv("FFT shape_in", str(self._fp_shape_in))
-            _v4_kv("FFT internal_shape", str(self._fp_internal_shape))
-        elif self._ft_mode == 'mft':
-            self._mft_shape_in = tuple(ft.shape_input)
-            self._mft_shape_out = tuple(ft.shape_output)
-            _v4_kv("transform mode", "MFT (MatrixFourierTransform)")
-            _v4_kv("MFT shape_in", str(self._mft_shape_in))
-            _v4_kv("MFT shape_out", str(self._mft_shape_out))
-
-        # 5. Focal grid weights
-        self._t_focal_weights = torch.from_numpy(
-            np.array(os_obj._focal_grid.weights, dtype=np.float32)).to(dev)
-
-        # 6. Object spectrum (constant per episode)
-        obj_spec = np.fft.fft2(os_obj.object_plane.array).astype(np.complex64)
-        self._t_object_spectrum = torch.from_numpy(obj_spec).to(dev)
-
-        # 7. Pre-allocated buffers on device
-        self._t_E_pupil = torch.zeros(N, dtype=torch.complex64, device=dev)
-        self._t_seg_surface = torch.zeros(N, dtype=torch.float32, device=dev)
-        self._t_dm_surface = torch.zeros(N, dtype=torch.float32, device=dev)
-        self._t_zero_phase = torch.zeros(N, dtype=torch.float32, device=dev)
-
-        if self._ft_mode == 'fft':
-            N_focal = N   # FFT preserves pixel count
-            self._t_E_focal = torch.zeros(
-                N_focal, dtype=torch.complex64, device=dev)
-            self._t_work = torch.zeros(
-                self._fp_internal_shape, dtype=torch.complex64, device=dev)
-        elif self._ft_mode == 'mft':
-            N_focal = int(np.prod(self._mft_shape_out))
-            self._t_E_focal = torch.zeros(
-                N_focal, dtype=torch.complex64, device=dev)
-            # Intermediate buffer for separable 2D MFT: shape (shape_in[0], M2_cols)
-            any_wl = self._cached_wavelengths[0]
-            M2_cols = self._t_props[any_wl]['M2'].shape[1]
-            self._t_mft_intermediate = torch.zeros(
-                (self._mft_shape_in[0], M2_cols),
-                dtype=torch.complex64, device=dev)
-
-        # Flag for atmosphere
-        self._has_atm = len(os_obj.atmosphere_layers) > 0
-
-        # 8. Pre-cached wavenumbers per wavelength (avoid repeated 2*pi/wl)
-        self._t_wavenumbers = {}
-        for wl in self._cached_wavelengths:
-            self._t_wavenumbers[wl] = 2.0 * math.pi / wl
-
-        # 9. Reusable atmosphere phase buffer on CPU (avoid alloc per iter)
-        self._atm_buf_np = np.zeros(N, dtype=np.float32)
-        # Reusable atmosphere achromatic screen tensor on device
-        self._t_atm_buf = torch.zeros(N, dtype=torch.float32, device=dev)
-        # Reusable phase accumulator on device (avoid alloc in _fuse_optics)
-        self._t_phase_buf = torch.zeros(N, dtype=torch.float32, device=dev)
-        # Reusable segment actuator tensor on device
-        n_seg_acts = self._t_seg_transform.shape[1]
-        self._t_seg_acts_buf = torch.zeros(
-            n_seg_acts, dtype=torch.float32, device=dev)
-        # Reusable DM actuator tensor on device
-        if os_obj.model_ao:
-            n_dm_acts = self._t_dm_transform.shape[1]
-            self._t_dm_acts_buf = torch.zeros(
-                n_dm_acts, dtype=torch.float32, device=dev)
-
-        _v4_kv("focal plane pixels", str(self._t_E_focal.shape[0]))
-        _v4_kv("fast pipeline", "ready (device=%s)" % dev)
-
-    # ================================================================
-    # [v4] PyTorch Optical Kernels
-    # ================================================================
-
-    def _fuse_optics(self, atm_phase_t, wavenumber, use_dm):
-        """Fused optics: E = aperture * exp(j*(atm + 2k*seg + 2k*dm)).
-
-        Single GPU kernel replaces 4 separate HCIPy operations.
-        All operations are in-place on pre-allocated buffers.
-        """
-        two_k = 2.0 * wavenumber
-        # phase = atm + 2k*seg  (in-place into pre-allocated buffer)
-        torch.mul(self._t_seg_surface, two_k, out=self._t_phase_buf)
-        self._t_phase_buf.add_(atm_phase_t)
-        if use_dm:
-            # phase += 2k * dm_surface
-            self._t_phase_buf.add_(self._t_dm_surface, alpha=two_k)
-        self._t_E_pupil[:] = self._t_aperture * torch.exp(
-            1j * self._t_phase_buf.to(torch.complex64))
-
-    def _fft_propagate(self, prop_data):
-        """Replicate HCIPy FastFourierTransform.forward() on device tensors.
-
-        Exact sequence: insert → shift_output → ifftshift → fftn → fftshift
-        → crop → shift_input → norm_factor.
-        """
-        work = self._t_work
-        shape_in = self._fp_shape_in
-
-        # Insert into work buffer (zero-pad if needed)
-        work.zero_()
-        E_reshaped = self._t_E_pupil.reshape(shape_in)
-        if self._fp_cutout_input is not None:
-            work[self._fp_cutout_input] = E_reshaped
-            if prop_data['shift_output'] is not None:
-                work[self._fp_cutout_input] *= prop_data['shift_output'].reshape(shape_in)
-        else:
-            work.copy_(E_reshaped)
-            if prop_data['shift_output'] is not None:
-                work *= prop_data['shift_output'].reshape(shape_in)
-
-        # FFT on device (MPS / CUDA / CPU)
-        if not self._fp_emulate_fftshifts:
-            work = torch.fft.ifftshift(work)
-        result = torch.fft.fftn(work)
-        if not self._fp_emulate_fftshifts:
-            result = torch.fft.fftshift(result)
-
-        # Extract and scale
-        if self._fp_cutout_output is not None:
-            self._t_E_focal[:] = (result[self._fp_cutout_output].reshape(-1)
-                                  * prop_data['shift_input']
-                                  * prop_data['norm_factor'])
-        else:
-            self._t_E_focal[:] = (result.reshape(-1)
-                                  * prop_data['shift_input']
-                                  * prop_data['norm_factor'])
-
-    def _mft_propagate(self, prop_data):
-        """Replicate HCIPy MatrixFourierTransform.forward() on device tensors.
-
-        HCIPy 2D MFT (Soummer 2007) — separable DFT via two matmuls:
-            M1: (Nv, Ny) = exp(-j * outer(v, y))
-            M2: (Nx, Nu) = exp(-j * outer(x, u))
-
-        HCIPy BLAS sequence (C-order equivalence):
-            inter = f_2d @ M2                       (Nx, Nu)
-            C     = alpha * inter.T @ M1.T          (Nu, Nv)
-            result = C.T.reshape(-1)                (Nv*Nu,)
-
-        alpha = scalar weights_input (or 1 if non-scalar, pre-applied).
-        Final result is multiplied by Fraunhofer norm_factor.
-        """
-        shape_in = self._mft_shape_in
-        w = prop_data['weights_input']
-        M1 = prop_data['M1']
-        M2 = prop_data['M2']
-        nf = prop_data['norm_factor']
-
-        # Apply weights and reshape to 2D grid
-        if w.dim() == 0:
-            # Scalar weight: defer to alpha multiplier
-            f_2d = self._t_E_pupil.reshape(shape_in)
-            alpha = w.to(torch.complex64)
-        else:
-            f_2d = (self._t_E_pupil * w.to(torch.complex64)).reshape(shape_in)
-            alpha = torch.tensor(1.0, dtype=torch.complex64, device=f_2d.device)
-
-        # Step 1: inter = f_2d @ M2,  shape (Nx, Nu)
-        torch.mm(f_2d, M2, out=self._t_mft_intermediate)
-
-        # Step 2: C = alpha * inter.T @ M1.T,  shape (Nu, Nv)
-        C = torch.mm(self._t_mft_intermediate.T, M1.T) * alpha
-
-        # Step 3: result = C.T.reshape(-1) * norm_factor
-        self._t_E_focal[:] = C.T.reshape(-1) * nf
-
-    def _propagate(self, prop_data):
-        """Dispatch to FFT or MFT propagation based on detected transform type."""
-        if self._ft_mode == 'fft':
-            self._fft_propagate(prop_data)
-        else:
-            self._mft_propagate(prop_data)
-
-    def _compute_science_image_torch(self, integration_sec):
-        """PSF → convolve with object → science image.  All on device.
-
-        Returns a 2D torch tensor on self._device.
-        """
-        # PSF = |E_focal|^2 * focal_weights * dt
-        psf = (torch.abs(self._t_E_focal) ** 2
-               * self._t_focal_weights * integration_sec)
-        psf_2d = psf.reshape(self.image_shape)
-
-        # Convolve with object: IFFT(FFT(PSF) * object_spectrum)
-        otf = torch.fft.fft2(psf_2d)
-        image = torch.abs(torch.fft.fftshift(
-            torch.fft.ifft2(self._t_object_spectrum * otf)))
-        return image
-
-    # ================================================================
-    # Cache helpers (from v3)
+    # Cache helpers
     # ================================================================
 
     def _cache_reward_images(self):
+        """Pre-compute normalized perfect image and target for rewards."""
         pi = self.optical_system.perfect_image
         pi_max = np.max(pi)
         self._norm_perfect_image = pi / pi_max if pi_max != 0 else pi
+
         ti = self.optical_system.target_image
         ti_max = np.max(ti)
         self._norm_target_image = ti / ti_max if ti_max != 0 else ti
+
+        # For dark_hole reward: mask where target is near-zero
         if self.cfg.get('dark_hole', False):
             self._target_zero_mask = self._norm_target_image < 1e-12
         else:
@@ -1574,23 +1895,52 @@ class OptomechEnv(gym.Env):
 
         # Use raw HCIPy intensity directly (no detector model).
         # The detector model saturates every pixel to max_dn because the raw
-        # power values are enormous.  Since MSE now normalizes by each image's
-        # own max, we just need the correct PSF *shape*.
+        # power values are enormous.  Since MSE and Strehl now normalize by
+        # each image's own max, we just need the correct PSF *shape*.
         _pi_2d = np.array(pi).reshape(self.image_shape)
         self._perfect_image_dn = _pi_2d
         self._perfect_image_max_dn = float(np.max(self._perfect_image_dn))
-        _v4_kv("perfect_image_max_dn", "%.4f" % self._perfect_image_max_dn)
+        # Peak-concentration of perfect PSF (unit-independent Strehl reference).
+        self._perfect_peak_over_sum = self._perfect_image_max_dn / float(np.sum(self._perfect_image_dn))
+        _v3_kv("perfect_image_max_dn", "%.4f" % self._perfect_image_max_dn)
 
     def _cache_center_masks(self):
+        """Pre-compute circular center masks for align/dark_hole rewards."""
         cfg = self.cfg
         num_px = cfg['focal_plane_image_size_pixels']
         ctr = num_px // 2
+
+        # Standard radius mask
         radius = cfg['align_radius']
         y, x = np.ogrid[:num_px, :num_px]
         dist_sq = (y - ctr) ** 2 + (x - ctr) ** 2
         self._center_mask_standard = dist_sq <= radius ** 2
+
+        # Expanded radius mask
         radius_max = cfg['align_radius_max_expand']
         self._center_mask_expanded = dist_sq <= radius_max ** 2
+
+        # Centering weight map for centering reward.
+        centering_mode = cfg.get('centering_mode', 'gaussian')
+        if centering_mode == 'circular':
+            # Flat top-hat: 1 inside circle, 0 outside.
+            # Radius is a fraction of the image size.
+            r_px = cfg.get('centering_radius_fraction', 0.25) * num_px
+            self._centering_weight = (dist_sq <= r_px ** 2).astype(np.float32)
+        else:
+            # Soft Gaussian: sigma is a fraction of the frame size so
+            # the weight falls off smoothly from center to edge.
+            sigma_px = cfg['centering_sigma_fraction'] * num_px
+            self._centering_weight = np.exp(
+                -dist_sq.astype(np.float64) / (2.0 * sigma_px ** 2)
+            ).astype(np.float32)
+
+        # L2 distance map for distance-penalty reward.
+        # Normalized to [0, 1] by dividing by the max possible distance
+        # (corner to center).
+        dist = np.sqrt(dist_sq.astype(np.float64))
+        max_dist = np.sqrt(2.0) * ctr  # corner distance
+        self._dist_weight = (dist / max_dist).astype(np.float32)
 
     def _compute_wavelengths(self):
         """Compute centered wavelength samples across the configured bandwidth."""
@@ -1604,11 +1954,14 @@ class OptomechEnv(gym.Env):
     # ================================================================
 
     def _compute_timing_ratios(self):
-        _v4_subsection("Timing Hierarchy")
-        _v4_kv("control  interval", "%.2f ms" % self.control_interval_ms)
-        _v4_kv("frame    interval", "%.2f ms" % self.frame_interval_ms)
-        _v4_kv("decision interval", "%.2f ms" % self.decision_interval_ms)
-        _v4_kv("AO       interval", "%.2f ms" % self.ao_interval_ms)
+        """Derive the multi-rate control hierarchy from intervals."""
+        cfg = self.cfg
+        _v3_subsection("Timing Hierarchy")
+        _v3_kv("control  interval", "%.2f ms" % self.control_interval_ms)
+        _v3_kv("frame    interval", "%.2f ms" % self.frame_interval_ms)
+        _v3_kv("decision interval", "%.2f ms" % self.decision_interval_ms)
+        _v3_kv("AO       interval", "%.2f ms" % self.ao_interval_ms)
+
         self.commands_per_decision = math.ceil(
             self.decision_interval_ms / self.control_interval_ms)
         self.commands_per_frame = math.ceil(
@@ -1619,28 +1972,37 @@ class OptomechEnv(gym.Env):
             self.control_interval_ms / self.ao_interval_ms)
         self.ao_steps_per_frame = (
             self.ao_steps_per_command * self.commands_per_frame)
+
         self.metadata['commands_per_decision'] = self.commands_per_decision
         self.metadata['commands_per_frame'] = self.commands_per_frame
         self.metadata['frames_per_decision'] = self.frames_per_decision
         self.metadata['ao_steps_per_command'] = self.ao_steps_per_command
         self.metadata['ao_steps_per_frame'] = self.ao_steps_per_frame
-        _v4_subsection("Derived Rates")
-        _v4_kv("commands / decision", "%d" % self.commands_per_decision)
-        _v4_kv("commands / frame",    "%d" % self.commands_per_frame)
-        _v4_kv("AO steps / frame",    "%d" % self.ao_steps_per_frame)
-        _v4_kv("frames / decision",   "%d" % self.frames_per_decision)
+
+        _v3_subsection("Derived Rates")
+        _v3_kv("commands / decision", "%d" % self.commands_per_decision)
+        _v3_kv("commands / frame",    "%d" % self.commands_per_frame)
+        _v3_kv("AO steps / frame",    "%d" % self.ao_steps_per_frame)
+        _v3_kv("frames / decision",   "%d" % self.frames_per_decision)
 
     # ================================================================
     # State storage
     # ================================================================
 
     def _init_state_storage(self):
+        """Initialize the state content dictionary."""
         self.state_content = {
-            "dm_surfaces": [], "atmos_layer_0_list": [], "action_times": [],
-            "object_fields": [], "pre_atmosphere_object_wavefronts": [],
-            "post_atmosphere_wavefronts": [], "segmented_mirror_surfaces": [],
-            "pupil_wavefronts": [], "post_dm_wavefronts": [],
-            "focal_plane_wavefronts": [], "readout_images": [],
+            "dm_surfaces": [],
+            "atmos_layer_0_list": [],
+            "action_times": [],
+            "object_fields": [],
+            "pre_atmosphere_object_wavefronts": [],
+            "post_atmosphere_wavefronts": [],
+            "segmented_mirror_surfaces": [],
+            "pupil_wavefronts": [],
+            "post_dm_wavefronts": [],
+            "focal_plane_wavefronts": [],
+            "readout_images": [],
             "instantaneous_psf": [],
         }
 
@@ -1649,35 +2011,55 @@ class OptomechEnv(gym.Env):
     # ================================================================
 
     def _build_optical_system(self):
+        """(Re-)create the OpticalSystem from the stored config."""
         self.optical_system = OpticalSystem(**self.cfg)
 
     def build_optical_system(self, **kwargs):
+        """Public interface matching v1 for compatibility."""
         merged = {**self.cfg, **kwargs}
         self.optical_system = OpticalSystem(**merged)
 
     # ================================================================
-    # Action spaces  (anytree-free, from v3)
+    # Action spaces  (anytree-free)
     # ================================================================
 
     def _build_action_spaces(self):
+        """Construct the hierarchical Tuple action space, then flatten.
+
+        [v3-opt] Replaces anytree with a simple list of index tuples.
+        """
         command_space_list = []
+
         if self.command_secondaries:
-            command_space_list.append(self._build_secondaries_space())
+            command_space_list.append(
+                self._build_secondaries_space())
+
         if self.command_tensioners:
-            command_space_list.append(self._build_tensioners_space())
+            command_space_list.append(
+                self._build_tensioners_space())
+
         if self.command_dm:
-            command_space_list.append(self._build_dm_space())
+            command_space_list.append(
+                self._build_dm_space())
+
         single_command_space = spaces.Tuple(tuple(command_space_list))
         self.dict_action_space = spaces.Tuple(
             [single_command_space] * self.commands_per_decision)
+
+        # [v3-opt] Build list-based index mapper instead of anytree
         self._linear_to_tree_indices = self._build_index_map(
             self.dict_action_space)
+
+        # Flatten to a simple Box or MultiDiscrete.
         if self.discrete_control:
-            self.action_space = spaces.MultiDiscrete(
+            flat = spaces.MultiDiscrete(
                 [1] * len(self._linear_to_tree_indices))
+            self.action_space = flat
         else:
             self.action_space = self._flatten(
                 self.dict_action_space, flat_space_low=-1.0, flat_space_high=1.0)
+
+        # Build the zero-action space (for reset steps).
         zero_cmd_list = []
         if self.command_secondaries:
             zero_cmd_list.append(self._build_secondaries_space(zero=True))
@@ -1685,6 +2067,7 @@ class OptomechEnv(gym.Env):
             zero_cmd_list.append(self._build_tensioners_space(zero=True))
         if self.command_dm:
             zero_cmd_list.append(self._build_dm_space(zero=True))
+
         zero_single = spaces.Tuple(tuple(zero_cmd_list))
         self.zero_dict_action_space = spaces.Tuple(
             [zero_single] * self.commands_per_decision)
@@ -1692,8 +2075,10 @@ class OptomechEnv(gym.Env):
             self.zero_dict_action_space, flat_space_low=0.0, flat_space_high=0.0)
 
     def _build_secondaries_space(self, zero=False):
+        """Build the secondaries Tuple(Tuple(Box|Discrete)) space."""
         lo = 0.0 if zero else -1.0
         hi = 0.0 if zero else 1.0
+
         if self.discrete_control and not zero:
             ptt_list = [spaces.Tuple((spaces.Discrete(1), spaces.Discrete(1)))]
             if self.command_tip_tilt:
@@ -1704,11 +2089,13 @@ class OptomechEnv(gym.Env):
             if self.command_tip_tilt:
                 ptt_list.append(spaces.Box(low=lo, high=hi, shape=(1,), dtype=np.float32))
                 ptt_list.append(spaces.Box(low=lo, high=hi, shape=(1,), dtype=np.float32))
+
         ptt_space = spaces.Tuple(tuple(ptt_list))
         return spaces.Tuple(
             tuple([ptt_space] * self.optical_system.num_apertures))
 
     def _build_tensioners_space(self, zero=False):
+        """Build the tensioners Tuple(Box) space."""
         lo = 0.0 if zero else -1.0
         hi = 0.0 if zero else 1.0
         t_space = spaces.Box(low=lo, high=hi, shape=(1,), dtype=np.float32)
@@ -1716,6 +2103,7 @@ class OptomechEnv(gym.Env):
             tuple([t_space] * self.optical_system.num_tensioners))
 
     def _build_dm_space(self, zero=False):
+        """Build the DM Tuple(Box) space."""
         lo = 0.0 if zero else -1.0
         hi = 0.0 if zero else 1.0
         if zero:
@@ -1729,7 +2117,12 @@ class OptomechEnv(gym.Env):
             return spaces.Tuple(
                 tuple([act_space] * len(self.optical_system.dm.actuators)))
 
+    # ================================================================
+    # Observation space
+    # ================================================================
+
     def _build_observation_space(self):
+        """Define the observation space (image stack +/- prior action)."""
         cfg = self.cfg
         self.image_shape = (cfg['focal_plane_image_size_pixels'],
                             cfg['focal_plane_image_size_pixels'])
@@ -1737,25 +2130,32 @@ class OptomechEnv(gym.Env):
                              self.image_shape[0], self.image_shape[1])
         self.image_space = spaces.Box(
             low=0.0, high=1.0, shape=image_stack_shape, dtype=np.float32)
+
         if self._obs_image_only:
             self.observation_space = self.image_space
         elif self._obs_image_action:
             self.observation_space = spaces.Dict(
                 {"image": self.image_space,
-                 "prior_action": self.action_space}, seed=42)
+                 "prior_action": self.action_space},
+                seed=42)
         else:
             raise ValueError(
-                "Invalid observation_mode: '%s'." % self.observation_mode)
+                "Invalid observation_mode: '%s'. Use 'image_only' or "
+                "'image_action'." % self.observation_mode)
 
-    # --- Action helpers (anytree-free) ---
+    # ================================================================
+    # Action space helpers  (anytree-free)
+    # ================================================================
 
     def _flatten(self, dict_space, flat_space_high=1.0, flat_space_low=0.0):
+        """Flatten a hierarchical Tuple space to a Box."""
         return spaces.Box(
             low=flat_space_low, high=flat_space_high,
             shape=(len(self._build_index_map(dict_space)),),
             dtype=np.float32)
 
     def _flat_to_dict(self, flat_action, dict_space):
+        """Convert a flat action vector to the hierarchical Tuple."""
         return self._encode_action_from_vector(dict_space, flat_action)
 
     @staticmethod
@@ -1772,7 +2172,13 @@ class OptomechEnv(gym.Env):
 
     @staticmethod
     def _build_index_map(action_space):
+        """Build a list of index tuples mapping linear address -> tree path.
+
+        [v3-opt] Replaces anytree entirely. Each entry is a tuple of ints
+        that indexes into the nested list structure.
+        """
         index_map = []
+
         for step_num, step in enumerate(action_space):
             for stage_num, stage in enumerate(step):
                 for comp_num, comp in enumerate(stage):
@@ -1788,9 +2194,14 @@ class OptomechEnv(gym.Env):
                     else:
                         index_map.append(
                             (step_num, stage_num, comp_num, 0))
+
         return index_map
 
     def _encode_action_from_vector(self, action_space, action_vector):
+        """Map a flat action vector into the hierarchical Tuple structure.
+
+        [v3-opt] Uses pre-computed index tuples instead of anytree + string ops.
+        """
         index_map = self._linear_to_tree_indices
         action_list = self._tuple_to_list(action_space.sample())
         for n, val in enumerate(action_vector):
@@ -1802,6 +2213,7 @@ class OptomechEnv(gym.Env):
         return self._list_to_tuple(action_list)
 
     def _get_vector_action_size(self, hierarchical_space):
+        """Return the total number of leaf nodes (flat action size)."""
         return len(self._linear_to_tree_indices)
 
     # ================================================================
@@ -1817,16 +2229,14 @@ class OptomechEnv(gym.Env):
     # ================================================================
 
     def reset(self, seed=None, options=None):
-        _v4_section("Episode Reset")
-        _v4("Rebuilding optical system...")
+        _v3_section("Episode Reset")
+        _v3("Rebuilding optical system...")
         self._build_optical_system()
 
+        # Refresh caches that depend on the optical system
         self._cached_wavelengths = self._compute_wavelengths()
         self._cache_reward_images()
         self._cache_center_masks()
-
-        # Re-extract PyTorch tensors from rebuilt optical system
-        self._init_fast_pipeline()
 
         if self.command_dm or self.ao_loop_active:
             self.optical_system.calibrate_dm_interaction_matrix(self.uuid)
@@ -1836,21 +2246,23 @@ class OptomechEnv(gym.Env):
                 rcond=rcond)
             self.episode_time_ms = 0.0
 
-        _v4("Seeding initial action...")
+        _v3("Seeding initial action...")
+
         if self.cfg['init_differential_motion']:
-            _v4("Applying initial differential motion...")
+            _v3("Applying initial differential motion...")
             self.optical_system._init_natural_diff_motion()
         self.optical_system._store_baseline_segment_displacements()
 
-        _v4("Warm-up: %d initial frame(s)..." % self.frames_per_decision)
+        _v3("Warm-up: %d initial frame(s)..." % self.frames_per_decision)
         for _ in range(self.frames_per_decision):
             (initial_state, _, _, _, info) = self.step(
                 action=self.action_space.sample(),
-                noisy_command=False, reset=True)
+                noisy_command=False,
+                reset=True)
 
         self.state = initial_state
         self.steps_beyond_done = None
-        _v4_section("Reset Complete")
+        _v3_section("Reset Complete")
         return self.state, info
 
     # ================================================================
@@ -1858,50 +2270,58 @@ class OptomechEnv(gym.Env):
     # ================================================================
 
     def save_state(self):
+        """Deepcopy and store all optical-system state variables."""
         if self.report_time:
             t0 = time.time()
+
         if self.optical_system.model_ao:
             self.state_content["dm_surfaces"].append(
                 copy.deepcopy(self.optical_system.dm.surface))
+
         if len(self.optical_system.atmosphere_layers) > 0:
             self.state_content["atmos_layer_0_list"].append(
                 copy.deepcopy(self.optical_system.atmosphere_layers[0]))
         else:
             self.state_content["atmos_layer_0_list"].append(None)
+
         self.state_content["object_fields"].append(
             copy.deepcopy(self.optical_system.object_plane))
         self.state_content["pre_atmosphere_object_wavefronts"].append(
-            copy.deepcopy(getattr(self.optical_system, 'pre_atmosphere_object_wavefront', None)))
+            copy.deepcopy(self.optical_system.pre_atmosphere_object_wavefront))
         self.state_content["post_atmosphere_wavefronts"].append(
-            copy.deepcopy(getattr(self.optical_system, 'post_atmosphere_wavefront', None)))
+            copy.deepcopy(self.optical_system.post_atmosphere_wavefront))
         self.state_content["segmented_mirror_surfaces"].append(
             copy.deepcopy(self.optical_system.segmented_mirror.surface))
         self.state_content["pupil_wavefronts"].append(
-            copy.deepcopy(getattr(self.optical_system, 'pupil_wavefront', None)))
+            copy.deepcopy(self.optical_system.pupil_wavefront))
         self.state_content["post_dm_wavefronts"].append(
-            copy.deepcopy(getattr(self.optical_system, 'post_dm_wavefront', None)))
+            copy.deepcopy(self.optical_system.post_dm_wavefront))
         self.state_content["focal_plane_wavefronts"].append(
-            copy.deepcopy(getattr(self.optical_system, 'focal_plane_wavefront', None)))
+            copy.deepcopy(self.optical_system.focal_plane_wavefront))
         self.state_content["instantaneous_psf"].append(
-            copy.deepcopy(getattr(self.optical_system, 'instantaneous_psf', None)))
+            copy.deepcopy(self.optical_system.instantaneous_psf))
         self.state_content["readout_images"].append(
             copy.deepcopy(self.science_readout_raster))
+
         if self.report_time:
-            _v4_timer("State deepcopy", time.time() - t0)
+            _v3_timer("State deepcopy", time.time() - t0)
 
     # ================================================================
-    # Step  (PyTorch fast path)
+    # Step
     # ================================================================
 
     def step(self, action, noisy_command=False, reset=False):
-        """Execute one decision interval with GPU-accelerated optical sim."""
-        # Local aliases
+        """Execute one decision interval of the environment.
+
+        [v3-opt] Uses local aliases to minimize attribute lookups in
+        the hot inner loops.
+        """
+        # [v3-opt] Local aliases for hot-path attributes
         _report = self.report_time
         _frames_per_decision = self.frames_per_decision
         _cmds_per_frame = self.commands_per_frame
         _ao_steps_per_cmd = self.ao_steps_per_command
         _wavelengths = self._cached_wavelengths
-        _n_wl = float(len(_wavelengths))
         _ao_active = self.ao_loop_active
         _record = self.record_env_state_info
         _image_shape = self.image_shape
@@ -1909,15 +2329,28 @@ class OptomechEnv(gym.Env):
         _ao_steps_per_frame = self.ao_steps_per_frame
         _frame_sec = self._frame_sec
         _optical_sys = self.optical_system
-        _has_atm = self._has_atm
-        _use_dm = _optical_sys.model_ao
-        _dev = self._device
 
         if _report:
             step_t0 = time.time()
 
         assert self.action_space.contains(action), \
             "%r (%s) invalid" % (action, type(action))
+
+        # Work on a copy so caller's array is not mutated.
+        action = action.copy()
+
+        # Deadzone: zero out action dimensions below threshold.
+        # Applied in raw [-1, 1] policy space so the threshold is
+        # meaningful regardless of action_scale.
+        _min_abs = self._minimum_absolute_action
+        if _min_abs > 0.0:
+            action[np.abs(action) < _min_abs] = 0.0
+
+        # Stash the raw (pre-scale) action for the L1 penalty later.
+        self._raw_action = action
+
+        # Scale to physical command range.
+        action = action * self._action_scale
 
         if _record:
             for key in self.state_content:
@@ -1926,131 +2359,61 @@ class OptomechEnv(gym.Env):
             self.state_content["shwfs_slopes"] = []
 
         self.action = self._flat_to_dict(action, self.dict_action_space)
+
         self.focal_plane_images = []
         self.shwfs_slopes_list = []
-        _optical_sys._clipped_dof_count = 0
-        _optical_sys._total_dof_count = 0
 
+        self.optical_system._clipped_dof_count = 0
+        self.optical_system._total_dof_count = 0
+
+        # [v3-opt] Pre-compute integration time (constant across step)
         integration_sec = _frame_sec / _ao_steps_per_frame
 
-        # --- Main simulation loop ------------------------------------
-        # Local refs to pre-allocated buffers (avoid dict/attr lookup)
-        _atm_buf_np = self._atm_buf_np
-        _t_atm_buf = self._t_atm_buf
-        _t_seg_acts_buf = self._t_seg_acts_buf
-        _t_seg_transform = self._t_seg_transform
-        _t_dm_transform = getattr(self, '_t_dm_transform', None) if _use_dm else None
-        _t_dm_acts_buf = getattr(self, '_t_dm_acts_buf', None) if _use_dm else None
-        _t_zero_phase = self._t_zero_phase
-        _t_props = self._t_props
-        _wavenumbers = self._t_wavenumbers
-        _inv_n_wl = 1.0 / _n_wl
+        # --- Main simulation loop (V4: GPU tensors) -------------------
+        _dev = _optical_sys._torch_device
+        _n_wl_inv = 1.0 / float(len(_wavelengths))
 
         for frame_num in range(_frames_per_decision):
-            # Accumulate frame on device
-            frame_t = torch.zeros(_image_shape, dtype=torch.float32, device=_dev)
+            frame_t = torch.zeros(_image_shape, dtype=torch.float32,
+                                  device=_dev)
 
             for command_num in range(_cmds_per_frame):
                 self.episode_time_ms += _control_interval
 
-                # Atmosphere evolution (HCIPy -- cannot bypass)
-                if _report:
-                    t0 = time.time()
+                t0 = time.time()
                 _optical_sys.evolve_atmosphere_to(self.episode_time_ms)
                 if _report:
-                    _v4_timer("Atmosphere evolve", time.time() - t0)
+                    _v3_timer("Atmosphere evolve", time.time() - t0)
 
-                # Command dispatch (identical to v3)
                 command = self.action[command_num]
                 self._apply_commands(command)
-
-                # Mirror actuators → GPU (once per command, not per wl)
-                _t_seg_acts_buf.copy_(torch.from_numpy(
-                    np.asarray(_optical_sys.segmented_mirror.actuators,
-                               dtype=np.float32)))
-                torch.mv(_t_seg_transform, _t_seg_acts_buf,
-                         out=self._t_seg_surface)
-
-                if _use_dm:
-                    _t_dm_acts_buf.copy_(torch.from_numpy(
-                        np.asarray(_optical_sys.dm.actuators,
-                                   dtype=np.float32)))
-                    torch.mv(_t_dm_transform, _t_dm_acts_buf,
-                             out=self._t_dm_surface)
-
-                # Atmosphere achromatic screen → GPU once per command
-                # (phase_for(wl) = achromatic_screen / wl, so we transfer
-                #  the achromatic screen once and scale by 1/wl on device)
-                if _has_atm:
-                    _atm_buf_np[:] = 0.0
-                    for layer in _optical_sys.atmosphere_layers:
-                        _atm_buf_np += np.asarray(
-                            layer._shifted_achromatic_screen,
-                            dtype=np.float32)
-                    _t_atm_buf.copy_(torch.from_numpy(_atm_buf_np))
 
                 for ao_step in range(_ao_steps_per_cmd):
                     for wl in _wavelengths:
                         if _report:
                             sim_t0 = time.time()
 
-                        k = _wavenumbers[wl]
-                        prop = _t_props[wl]
-
-                        # --- FAST PATH: PyTorch on device ---
-
-                        # 1. Atmosphere phase = achromatic / wl (on device)
-                        if _has_atm:
-                            atm_t = _t_atm_buf * (1.0 / wl)
-                        else:
-                            atm_t = _t_zero_phase
-
-                        # 2. Fused optics (surfaces already on device)
-                        self._fuse_optics(atm_t, k, _use_dm)
-
-                        # 3. Propagation: pupil → focal (FFT or MFT)
-                        self._propagate(prop)
-
-                        # 4. PSF + science image (all on device)
-                        image_t = self._compute_science_image_torch(
-                            integration_sec)
+                        _optical_sys.simulate(wl)
+                        if _report:
+                            _v3_timer("Optical sim", time.time() - sim_t0, indent=2)
 
                         if _report:
-                            _v4_timer("Fast sim+image", time.time() - sim_t0,
-                                      indent=2)
-
-                        # 5. Accumulate
-                        frame_t += image_t * _inv_n_wl
-
-                        # AO correction (still HCIPy for SHWFS)
+                            ao_t0 = time.time()
                         if _ao_active and not reset:
-                            if _report:
-                                ao_t0 = time.time()
-                            # Reconstruct HCIPy wavefront for SHWFS
-                            E_np = self._t_E_pupil.cpu().numpy().astype(
-                                np.complex128)
-                            wf = hcipy.Wavefront(
-                                hcipy.Field(E_np, _optical_sys.pupil_grid), wl)
-                            _optical_sys.post_dm_wavefront = wf
                             self._run_ao_correction(integration_sec)
-                            if _report:
-                                _v4_timer("AO correction",
-                                          time.time() - ao_t0, indent=2)
+                        if _report:
+                            _v3_timer("AO correction", time.time() - ao_t0, indent=2)
 
-                    # State recording
-                    if _record and not reset:
-                        # Transfer readout raster to CPU only when recording
-                        self.science_readout_raster = image_t.cpu().numpy()
-                        # Run full HCIPy sim to populate state objects
-                        _optical_sys.simulate(wl)
-                        _optical_sys.get_science_frame(
+                        science_t = _optical_sys.get_science_frame(
                             integration_seconds=integration_sec)
+                        # science_t is a GPU tensor (num_px, num_px)
+                        frame_t += science_t * _n_wl_inv
+
+                    if _record and not reset:
                         self.save_state()
 
-            # --- Transfer frame to CPU for detector model + observation ---
-            frame_np = frame_t.cpu().numpy()
-            frame_np = self._apply_detector_model(frame_np)
-            self.focal_plane_images.append(frame_np)
+            frame_t = self._apply_detector_model_gpu(frame_t, _dev)
+            self.focal_plane_images.append(frame_t.cpu().numpy())
 
         # --- Encode observation --------------------------------------
         if self._obs_image_only:
@@ -2064,17 +2427,50 @@ class OptomechEnv(gym.Env):
         # --- Compute reward ------------------------------------------
         reward = self._reward_fn()
 
-        # L2 action penalty: reward -= w * |reward| * mean(a^2).
-        # With actions in [-1, 1], mean(a^2) ∈ [0, 1].
-        # Default w = 0.03 → 3% worse at full-magnitude action,
-        # 0% at zero action. Works for both positive and negative rewards.
-        if self._action_penalty:
-            action_sq_mean = float(np.mean(np.square(action)))
-            reward = reward - self._action_penalty_weight * abs(reward) * action_sq_mean
+        # Holding bonus: reward stillness proportional to state quality.
+        # quality ∈ [0, 1]: linearly maps reward from [min_reward, 0] → [0, 1].
+        # stillness ∈ [0, 1] (1 = no movement, 0 = full action).
+        # Bonus = weight × quality × stillness.
+        #
+        # Configurable parameters:
+        #   min_reward (default -1.0): reward value that maps to quality=0.
+        #     Determines the denominator for normalisation. With a single
+        #     reward factor in [-1, 0], use -1.0; adjust if the raw reward
+        #     has a different range.
+        #   threshold (default 0.0): raw reward below this → no bonus.
+        #     With threshold=0.0: bonus ∝ quality (original behavior).
+        #     With threshold=-0.8: only rewards > -0.8 get bonuses,
+        #       ramping linearly from 0 at -0.8 to full at 0.
+        if self._holding_bonus_weight > 0:
+            min_r = self._holding_bonus_min_reward  # e.g. -1.0
+            thresh = self._holding_bonus_threshold   # e.g. 0.0 or -0.8
+            # Map reward from [min_r, 0] → [0, 1]
+            span = -min_r if min_r != 0 else 1.0
+            raw_quality = float(np.clip((reward - min_r) / span, 0.0, 1.0))
+            # Apply threshold: remap [thresh, 0] → [0, 1] in reward-space
+            if thresh < 0:
+                # Convert threshold to quality-space: (thresh - min_r) / span
+                q_thresh = max((thresh - min_r) / span, 0.0)
+                if raw_quality > q_thresh:
+                    quality = (raw_quality - q_thresh) / (1.0 - q_thresh)
+                else:
+                    quality = 0.0
+            else:
+                quality = raw_quality
+            action_l1_mean = float(np.mean(np.abs(self._raw_action)))
+            stillness = 1.0 - action_l1_mean
+            reward = reward + self._holding_bonus_weight * quality * stillness
 
-        # Out-of-bounds penalty: penalize when actuator commands hit
-        # physical clipping limits.  oob_frac = fraction of DOFs that
-        # were clipped during this step's command_secondaries() calls.
+        # Absolute L1 action penalty on raw (pre-scale) action.
+        # Computed in [-1, 1] policy space so the penalty is independent
+        # of action_scale.  L1 encourages exact-zero outputs (sparsity),
+        # pairing with the deadzone to produce clean "hold" behavior.
+        if self._action_penalty:
+            action_l1_mean = float(np.mean(np.abs(self._raw_action)))
+            reward = reward - self._action_penalty_weight * action_l1_mean
+
+        # Out-of-bounds penalty: penalize actuator clipping at physical rails.
+        # Fraction of DOFs that were clipped, times penalty weight.
         oob_frac = 0.0
         if self._oob_penalty and self.optical_system._total_dof_count > 0:
             oob_frac = float(self.optical_system._clipped_dof_count) / float(self.optical_system._total_dof_count)
@@ -2083,52 +2479,31 @@ class OptomechEnv(gym.Env):
         terminated = False
         truncated = False
 
-        # --- Debug render: compare perfect vs observed (once) ---------
-        if not getattr(self, '_debug_rendered', False):
-            self._debug_rendered = True
-            fpi0 = self.focal_plane_images[0]
-            pdn = self._perfect_image_dn
-            fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-            im0 = axes[0].imshow(pdn, origin='lower')
-            axes[0].set_title("perfect_image_dn\nmax=%.4f" % np.max(pdn))
-            plt.colorbar(im0, ax=axes[0])
-            im1 = axes[1].imshow(fpi0, origin='lower')
-            axes[1].set_title("focal_plane_image\nmax=%.4f" % np.max(fpi0))
-            plt.colorbar(im1, ax=axes[1])
-            diff = fpi0 - pdn
-            im2 = axes[2].imshow(diff, origin='lower', cmap='RdBu_r')
-            axes[2].set_title("diff (obs - perfect)\nrange=[%.4f, %.4f]"
-                              % (np.min(diff), np.max(diff)))
-            plt.colorbar(im2, ax=axes[2])
-            fig.suptitle("MSE=%.6f  Strehl=%.6f" % (
-                float(np.mean((fpi0.flatten() - pdn.flatten()) ** 2))
-                / (self._perfect_image_max_dn ** 2),
-                float(np.max(fpi0)) / self._perfect_image_max_dn))
-            plt.tight_layout()
-            _dbg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "tmp", "optomech_debug_reward.png")
-            plt.savefig(_dbg_path, dpi=150)
-            plt.close(fig)
-            print("[DEBUG] Saved %s" % _dbg_path)
-
         # --- Diagnostic metrics (always reported) --------------------
         strehls = [self._absolute_strehl(fpi)
                    for fpi in self.focal_plane_images]
-        _max_dn = self._perfect_image_max_dn
-        _perfect_flat = self._perfect_image_dn.flatten()
-        mses = [float(np.mean((fpi.flatten() - _perfect_flat) ** 2)) / (_max_dn ** 2)
-                for fpi in self.focal_plane_images]
+        _norm_perfect_flat = (self._perfect_image_dn / self._perfect_image_max_dn).flatten()
+        def _norm_mse(fpi):
+            fpi_max = float(np.max(fpi))
+            norm_fpi = fpi / fpi_max if fpi_max > 0 else fpi
+            return float(np.mean((norm_fpi.flatten() - _norm_perfect_flat) ** 2))
+        mses = [_norm_mse(fpi) for fpi in self.focal_plane_images]
 
         info = {}
         info["strehl"] = float(np.mean(strehls))
         info["mse"] = float(np.mean(mses))
         info["reward_raw"] = float(reward)
         info["oob_frac"] = oob_frac
+        if self._reward_weight_centering > 0:
+            cens = [self._centering_energy(fpi)
+                    for fpi in self.focal_plane_images]
+            info["centering"] = float(np.mean(cens))
         if _record:
             info["state_content"] = self.state_content
             info["state"] = self.state
 
         if _report:
-            _v4_timer("STEP TOTAL", time.time() - step_t0)
+            _v3_timer("STEP TOTAL", time.time() - step_t0)
 
         reward = np.float32(reward)
         return self.state, reward, terminated, truncated, info
@@ -2138,14 +2513,24 @@ class OptomechEnv(gym.Env):
     # ================================================================
 
     def _apply_commands(self, command):
+        """Dispatch the hierarchical command tuple to the optical system.
+
+        Execution order matches v1: tensioners first, then secondaries,
+        then dm.  Index into command tuple determined by construction order.
+        """
         idx = 0
         sec_idx = ten_idx = dm_idx = None
         if self.command_secondaries:
-            sec_idx = idx; idx += 1
+            sec_idx = idx
+            idx += 1
         if self.command_tensioners:
-            ten_idx = idx; idx += 1
+            ten_idx = idx
+            idx += 1
         if self.command_dm:
-            dm_idx = idx; idx += 1
+            dm_idx = idx
+            idx += 1
+
+        # Execute in v1 order: tensioners, secondaries, dm.
         if self.command_tensioners:
             self.optical_system.command_tensioners(command[ten_idx])
         if self.command_secondaries:
@@ -2158,15 +2543,22 @@ class OptomechEnv(gym.Env):
     # ================================================================
 
     def _run_ao_correction(self, integration_seconds):
+        """One iteration of closed-loop Shack-Hartmann AO.
+
+        [v3-opt] Uses pre-computed stroke limit.
+        """
         shwfs_vec = self.optical_system.get_shwfs_frame(
             integration_seconds=integration_seconds)
         slopes = self.optical_system.shwfse.estimate([shwfs_vec + 1e-10])
         slopes -= self.optical_system.reference_slopes
         self.shwfs_slopes = slopes.ravel()
         self.shwfs_slopes_list.append(self.shwfs_slopes)
+
         self.optical_system.dm.actuators = (
             (1 - self.dm_leakage) * self.optical_system.dm.actuators
             - self.dm_gain * self.reconstruction_matrix.dot(self.shwfs_slopes))
+
+        # [v3-opt] Use pre-computed stroke limit
         self.optical_system.dm.actuators = np.clip(
             self.optical_system.dm.actuators,
             -self._dm_stroke_limit_m, self._dm_stroke_limit_m)
@@ -2176,135 +2568,349 @@ class OptomechEnv(gym.Env):
     # ================================================================
 
     def _apply_detector_model(self, frame):
+        """Convert power-per-pixel frame to digital numbers (DN).
+
+        [v3-opt] Uses pre-computed photon_energy, qe, gain, max_dn, frame_sec.
+        """
         energy_joules = frame * self._frame_sec
         n_photons = energy_joules / self._photon_energy
         n_electrons = n_photons * self._det_qe
         dn = n_electrons / self._det_gain
         return np.clip(dn, 0, self._det_max_dn)
 
+    def _apply_detector_model_gpu(self, frame_t, device):
+        """GPU version of _apply_detector_model."""
+        os = self.optical_system
+        energy = frame_t * self._frame_sec
+        n_photons = energy / os._photon_energy
+        n_electrons = n_photons * os._det_qe
+        dn = n_electrons / os._det_gain
+        return torch.clamp(dn, 0, os._det_max_dn)
+
     # ================================================================
     # Reward computation
     # ================================================================
-    #
-    # All Strehl-based rewards use ABSOLUTE Strehl:
-    #   Strehl = max(observed_dn) / max(perfect_dn)
-    # Both images in detector DN units.  No self-normalization.
 
     def _compute_reward(self):
+        """Dispatch to the configured reward function."""
         return self._reward_fn()
 
+    # --- Individual reward methods -----------------------------------
+
     def _absolute_strehl(self, fpi):
-        """Absolute Strehl ratio: peak of observed / peak of perfect (both DN)."""
-        return float(np.max(fpi)) / self._perfect_image_max_dn
+        """Flux-corrected Strehl: raw peak-concentration ratio scaled by
+        the fraction of total flux that actually landed on the detector.
+
+        Raw ratio:  (max/sum)_obs  /  (max/sum)_perfect
+        Flux frac:  sum(obs)       /  sum(reference)
+
+        where *reference* is the total DN measured with perfectly aligned
+        segments (computed once per episode by _compute_reference_flux).
+
+        When all light is captured, flux_frac ≈ 1 and the result equals
+        the raw ratio — no change from the original metric.  When
+        tip/tilt pushes the PSF off the detector, sum(obs) drops, the
+        flux fraction falls below 1, and the Strehl is scaled down
+        instead of being artificially inflated.
+        """
+        fpi_sum = float(np.sum(fpi))
+        if fpi_sum <= 0:
+            return 0.0
+        obs_peak_over_sum = float(np.max(fpi)) / fpi_sum
+        raw_strehl = obs_peak_over_sum / self._perfect_peak_over_sum
+
+        # Flux fraction: 1.0 when all light is on detector, < 1 when
+        # tip/tilt has displaced the PSF off the focal plane.
+        ref_sum = self.optical_system._reference_fpi_sum
+        if ref_sum > 0:
+            flux_frac = min(fpi_sum / ref_sum, 1.0)
+        else:
+            flux_frac = 1.0
+
+        return raw_strehl * flux_frac
+
+    def _centering_energy(self, fpi):
+        """Encircled energy fraction within the centering weight map.
+
+        Measures what fraction of the *reference* weighted flux is present
+        in the current observation.  Two modes:
+
+        - ``centering_mode='gaussian'``: Gaussian weight map with sigma set
+          by ``centering_sigma_fraction`` × frame size.
+        - ``centering_mode='circular'``: flat top-hat mask with radius set
+          by ``centering_radius_fraction`` × frame size.  Rewards both
+          keeping flux on the detector and centering it within the circle.
+
+        Returns a value in [0, 1]:
+          ≈ 1  when the PSF is centred and all flux is on the detector
+          ≈ 0  when the PSF is completely off the detector or outside circle
+        """
+        ref_csum = self.optical_system._reference_centering_sum
+        if ref_csum <= 0:
+            return 0.0
+        weighted_sum = float(np.sum(fpi * self._centering_weight))
+        return min(weighted_sum / ref_csum, 1.0)
 
     def _reward_composite(self):
-        """Weighted multi-factor reward: Strehl + dark_hole + image_quality."""
+        """Weighted multi-factor reward: Strehl + centering + dark_hole + image_quality."""
         total = 0.0
         w_s = self._reward_weight_strehl
+        w_cen = self._reward_weight_centering
         w_dh = self._reward_weight_dark_hole
         w_iq = self._reward_weight_image_quality
-
         if w_s > 0:
-            strehls = [self._absolute_strehl(fpi)
-                       for fpi in self.focal_plane_images]
+            strehls = [self._absolute_strehl(fpi) for fpi in self.focal_plane_images]
             total += w_s * np.mean(strehls, dtype=np.float32)
-
+        if w_cen > 0:
+            cens = [self._centering_energy(fpi) for fpi in self.focal_plane_images]
+            total += w_cen * np.mean(cens, dtype=np.float32)
         if w_dh > 0 and self._target_zero_mask is not None:
             dh_vals = []
             for fpi in self.focal_plane_images:
                 dh_intensity = float(np.mean(fpi[self._target_zero_mask]))
                 dh_vals.append(-dh_intensity / self._perfect_image_max_dn)
             total += w_dh * np.mean(dh_vals, dtype=np.float32)
-
         if w_iq > 0:
-            perfect_dn_flat = self._perfect_image_dn.flatten()
-            max_dn_sq = self._perfect_image_max_dn ** 2
+            norm_perfect_flat = (self._perfect_image_dn / self._perfect_image_max_dn).flatten()
             iq_vals = []
             for fpi in self.focal_plane_images:
-                mse = -float(np.mean((fpi.flatten() - perfect_dn_flat) ** 2))
-                iq_vals.append(mse / max_dn_sq)
+                fpi_max = float(np.max(fpi))
+                norm_fpi = fpi / fpi_max if fpi_max > 0 else fpi
+                mse = -float(np.mean((norm_fpi.flatten() - norm_perfect_flat) ** 2))
+                iq_vals.append(mse)
             total += w_iq * np.mean(iq_vals, dtype=np.float32)
-
         return np.float32(total)
 
     def _reward_strehl(self):
-        """Absolute Strehl ratio (no self-normalization)."""
-        strehls = [self._absolute_strehl(fpi)
-                   for fpi in self.focal_plane_images]
+        """Strehl ratio computed from absolute Strehl."""
+        strehls = [self._absolute_strehl(fpi) for fpi in self.focal_plane_images]
         return np.mean(strehls, dtype=np.float32)
 
     def _reward_negastrehl(self):
-        strehls = [self._absolute_strehl(fpi)
-                   for fpi in self.focal_plane_images]
-        return np.float32(np.mean(strehls) - 1.0)
+        strehls = [self._absolute_strehl(fpi) for fpi in self.focal_plane_images]
+        return np.mean(strehls) - 1.0
 
     def _reward_negaexpstrehl(self):
-        strehls = [self._absolute_strehl(fpi)
-                   for fpi in self.focal_plane_images]
-        return np.float32(np.mean(strehls) ** 10 - 1.0)
+        strehls = [self._absolute_strehl(fpi) for fpi in self.focal_plane_images]
+        return (np.mean(strehls) ** 10) - 1.0
 
     def _reward_strehl_closed(self):
-        strehls = [self._absolute_strehl(fpi)
-                   for fpi in self.focal_plane_images]
+        strehls = [self._absolute_strehl(fpi) for fpi in self.focal_plane_images]
         return 1.0 if np.mean(strehls) >= 0.8 else 0.0
 
     def _reward_image_mse(self):
-        """Negative MSE vs perfect image (both normalised by perfect max)."""
-        _max_dn = self._perfect_image_max_dn
-        norm_ideal = self._perfect_image_dn.flatten() / _max_dn
+        norm_perfect = self._perfect_image_dn / self._perfect_image_max_dn
+        norm_perfect_flat = norm_perfect.flatten()
         mses = []
         for fpi in self.focal_plane_images:
-            norm_img = fpi.flatten() / _max_dn
-            mses.append(float(np.mean((norm_img - norm_ideal) ** 2)))
+            fpi_max = float(np.max(fpi))
+            norm_fpi = fpi / fpi_max if fpi_max > 0 else fpi
+            mses.append(float(np.mean((norm_fpi.flatten() - norm_perfect_flat) ** 2)))
         return -np.mean(mses, dtype=np.float32)
 
+    def _reward_factored(self):
+        """Multi-factor reward: shape + dark_hole + strehl + centering.
+
+        Each component is negative, approaching 0 as system improves.
+        Weights of 0 disable a component entirely.
+        """
+        total = 0.0
+
+        # --- Shape: log-MSE of normalized images, excluding dark hole ---
+        if self._reward_weight_shape > 0:
+            norm_perfect = self._perfect_image_dn / self._perfect_image_max_dn
+            log_perfect = np.log(norm_perfect + 1e-10)
+            shape_vals = []
+            for fpi in self.focal_plane_images:
+                fpi_max = float(np.max(fpi))
+                norm_fpi = fpi / fpi_max if fpi_max > 0 else fpi
+                log_fpi = np.log(norm_fpi + 1e-10)
+                if self._target_zero_mask is not None:
+                    mask = ~self._target_zero_mask
+                    mse = float(np.mean((log_fpi[mask] - log_perfect[mask]) ** 2))
+                else:
+                    mse = float(np.mean((log_fpi - log_perfect) ** 2))
+                shape_vals.append(-mse)
+            total += self._reward_weight_shape * np.mean(shape_vals, dtype=np.float32)
+
+        # --- Dark hole: mean normalized intensity in zero-target region ---
+        if self._reward_weight_dark_hole > 0 and self._target_zero_mask is not None:
+            dh_vals = []
+            for fpi in self.focal_plane_images:
+                fpi_max = float(np.max(fpi))
+                norm_fpi = fpi / fpi_max if fpi_max > 0 else fpi
+                dh_vals.append(-float(np.mean(norm_fpi[self._target_zero_mask])))
+            total += self._reward_weight_dark_hole * np.mean(dh_vals, dtype=np.float32)
+
+        # --- Strehl: -(1 - strehl), zero when perfect ---
+        if self._reward_weight_strehl > 0:
+            strehls = [self._absolute_strehl(fpi) for fpi in self.focal_plane_images]
+            total += self._reward_weight_strehl * (-(1.0 - float(np.mean(strehls))))
+
+        # --- Centering: -(1 - centering), zero when centred ---
+        if self._reward_weight_centering > 0:
+            cens = [self._centering_energy(fpi) for fpi in self.focal_plane_images]
+            total += self._reward_weight_centering * (-(1.0 - float(np.mean(cens))))
+
+        # --- Flux: -(1 - flux_frac), zero when all light on detector ---
+        if self._reward_weight_flux > 0:
+            ref_sum = self.optical_system._reference_fpi_sum
+            if ref_sum > 0:
+                flux_fracs = [min(float(np.sum(fpi)) / ref_sum, 1.0)
+                              for fpi in self.focal_plane_images]
+                total += self._reward_weight_flux * (-(1.0 - float(np.mean(flux_fracs))))
+
+        # --- Convex flux: -(1 - flux_frac^N), zero when all light on detector ---
+        # Superlinear in flux so the second mirror is worth much more than
+        # the first (e.g. N=2: one mirror ≈ 0.25, both ≈ 1.0).
+        if self._reward_weight_convex_flux > 0:
+            ref_sum = self.optical_system._reference_fpi_sum
+            if ref_sum > 0:
+                N = self._convex_flux_power
+                conv_vals = [min(float(np.sum(fpi)) / ref_sum, 1.0) ** N
+                             for fpi in self.focal_plane_images]
+                total += self._reward_weight_convex_flux * (-(1.0 - float(np.mean(conv_vals))))
+
+        # --- Dist: -( dist_score - ref_dist_score ), zero when centred ---
+        # dist_score = flux-weighted mean normalised L2 distance to centre.
+        # Higher means light is farther from centre.  We subtract the
+        # reference (perfect-PSF) baseline so the term is 0 when perfect.
+        # When the PSF is off-detector (fpi_sum=0), dist_score is set to 1
+        # (maximum penalty).
+        if self._reward_weight_dist > 0:
+            ref_sum = self.optical_system._reference_fpi_sum
+            ref_ds = self.optical_system._reference_dist_score
+            dist_scores = []
+            for fpi in self.focal_plane_images:
+                fpi_sum = float(np.sum(fpi))
+                if fpi_sum > 0:
+                    ds = float(np.sum(fpi * self._dist_weight)) / fpi_sum
+                else:
+                    ds = 1.0  # worst case: no light on detector
+                dist_scores.append(ds)
+            mean_ds = float(np.mean(dist_scores))
+            total += self._reward_weight_dist * (-(mean_ds - ref_ds))
+
+        # --- Concentration: -(1 - C/C_ref), zero when perfectly merged ---
+        # C = sum(I²)/sum(I)² (inverse participation ratio).
+        # Higher when light is concentrated; no spatial bias.
+        # Normalised by reference so the term is in [−1, 0].
+        if self._reward_weight_concentration > 0:
+            ref_c = self.optical_system._reference_concentration
+            if ref_c > 0:
+                conc_vals = []
+                for fpi in self.focal_plane_images:
+                    fpi_f64 = fpi.astype(np.float64)
+                    fpi_sum = float(np.sum(fpi_f64))
+                    if fpi_sum > 0:
+                        c = float(np.sum(fpi_f64 ** 2)) / (fpi_sum ** 2)
+                    else:
+                        c = 0.0
+                    conc_vals.append(c)
+                mean_c = float(np.mean(conc_vals))
+                total += self._reward_weight_concentration * (-(1.0 - min(mean_c / ref_c, 1.0)))
+
+        # --- Centered Strehl: -(1 - S × centering) ---
+        # S × centering is only high when both Strehl and centering are good.
+        # centering = 1 - dist/max_dist ∈ [0, 1] (1 = centered, 0 = corner).
+        # Result is in [-1, 0], zero only when perfectly aligned and centered.
+        if self._reward_weight_centered_strehl > 0:
+            cs_vals = []
+            for fpi in self.focal_plane_images:
+                s = self._absolute_strehl(fpi)
+                h, w = fpi.shape[-2], fpi.shape[-1]
+                cy, cx = h / 2.0, w / 2.0
+                max_dist = (cy ** 2 + cx ** 2) ** 0.5
+                peak_idx = np.argmax(fpi)
+                py, px = np.unravel_index(peak_idx, fpi.shape[-2:])
+                dist = ((py - cy) ** 2 + (px - cx) ** 2) ** 0.5
+                centering = 1.0 - dist / max_dist
+                cs_vals.append(-(1.0 - s * centering))
+            total += self._reward_weight_centered_strehl * float(np.mean(cs_vals))
+
+        # --- Peak pixel: -(1 - max(I)/max(I_ref)), zero when merged ---
+        # Constructive interference when spots merge ~quadruples peak.
+        # No spatial bias — purely rewards the brightest pixel.
+        if self._reward_weight_peak > 0:
+            ref_max = self.optical_system._reference_fpi_max
+            if ref_max > 0:
+                peak_vals = [min(float(np.max(fpi)) / ref_max, 1.0)
+                             for fpi in self.focal_plane_images]
+                total += self._reward_weight_peak * (-(1.0 - float(np.mean(peak_vals))))
+
+        return np.float32(total)
+
     def _reward_align(self):
-        """Log-MSE alignment reward using absolute normalization."""
-        _max_dn = self._perfect_image_max_dn
-        norm_target = self._perfect_image_dn / _max_dn
+        """Log-MSE within a circular centre mask.
+
+        [v3-opt] Uses pre-computed center masks (np.ogrid vectorized).
+        Radius set once before loop (v1 behavior preserved).
+        """
+        perfect_dn = self._perfect_image_dn
+        max_dn = self._perfect_image_max_dn
         radius_max = None
+
+        # Radius is evaluated once before the frame loop (v1 behavior).
         if not radius_max:
             center_mask = self._center_mask_standard
         else:
             center_mask = self._center_mask_expanded
+
         rewards = []
         for fpi in self.focal_plane_images:
-            norm_img = fpi / _max_dn
+            norm_img = fpi / max_dn
+            norm_tgt = perfect_dn / max_dn
             loss_img = np.round(65534.0 * norm_img) + 1
-            loss_tgt = np.round(65534.0 * norm_target) + 1
+            loss_tgt = np.round(65534.0 * norm_tgt) + 1
+
             mse = np.power(
                 np.log(loss_img[center_mask]) - np.log(loss_tgt[center_mask]), 2)
             mse = -np.mean(mse.flatten())
+
             if mse < self.cfg['align_mse_expand_threshold']:
                 radius_max = self.cfg['align_radius_max_expand']
+
             rewards.append(mse)
+
         return np.mean(rewards, dtype=np.float32)
 
     def _reward_dark_hole(self):
-        """Dark hole reward using absolute normalization."""
-        _max_dn = self._perfect_image_max_dn
-        norm_target = self._perfect_image_dn / _max_dn
+        """Log-MSE within centre mask + dark-hole penalty.
+
+        [v3-opt] Uses pre-computed center masks and target zero mask.
+        """
+        perfect_dn = self._perfect_image_dn
+        max_dn = self._perfect_image_max_dn
         target_mask = self._target_zero_mask
         radius_max = None
         alpha_hole = self.cfg['dark_hole_alpha']
+
+        # Radius is evaluated once before the frame loop (v1 behavior).
         if not radius_max:
             center_mask = self._center_mask_standard
         else:
             center_mask = self._center_mask_expanded
+
         rewards = []
         for fpi in self.focal_plane_images:
-            norm_img = fpi / _max_dn
+            norm_img = fpi / max_dn
+            norm_tgt = perfect_dn / max_dn
             loss_img = np.round(65534.0 * norm_img) + 1
-            loss_tgt = np.round(65534.0 * norm_target) + 1
+            loss_tgt = np.round(65534.0 * norm_tgt) + 1
+
             mse = -np.mean(np.power(
                 np.log(loss_img[center_mask]) - np.log(loss_tgt[center_mask]),
                 2).flatten())
+
             if mse < self.cfg['align_mse_expand_threshold']:
                 radius_max = self.cfg['align_radius_max_expand']
+
             dh_mse = -np.mean(
                 np.power(np.log(fpi[target_mask] + 1e-30), 2).flatten())
+
             reward = alpha_hole * dh_mse + (1.0 - alpha_hole) * mse
             rewards.append(reward)
+
         return np.mean(rewards, dtype=np.float32)
 
     def _reward_ao_rms_slope(self):
@@ -2323,7 +2929,8 @@ class OptomechEnv(gym.Env):
         return reward
 
     def _reward_ao_closed(self):
-        threshold = self.cfg['ao_closed_inv_slope_threshold']
+        cfg = self.cfg
+        threshold = cfg['ao_closed_inv_slope_threshold']
         inv_rms = 0.0
         if self.ao_loop_active:
             for slopes in self.shwfs_slopes_list:
