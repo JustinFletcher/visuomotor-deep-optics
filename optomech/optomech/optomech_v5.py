@@ -649,6 +649,7 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # --- 8. Auto-reset done envs ---
         infos = {
             "strehl": strehl_np,
+            "mse": np.zeros(N, dtype=np.float32),  # placeholder (not computed in V5)
             "oob_frac": oob_np,
             "reward_raw": raw_reward_np,
         }
