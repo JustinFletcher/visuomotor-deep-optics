@@ -1246,12 +1246,13 @@ def run_ppo_training(config: dict, run_dir: str):
             running_prior_reward = torch.from_numpy(rewards_np.astype(np.float32))
             running_episode_start = next_done.clone()
 
-            for env_idx in range(num_envs):
-                if dones_step[env_idx]:
-                    lstm_h[:, env_idx, :] = 0.0
-                    lstm_c[:, env_idx, :] = 0.0
-                    running_prior_action[env_idx] = 0.0
-                    running_prior_reward[env_idx] = 0.0
+            # Reset LSTM hidden states for done envs (vectorized)
+            done_mask_t = next_done.bool()
+            if done_mask_t.any():
+                lstm_h[:, done_mask_t, :] = 0.0
+                lstm_c[:, done_mask_t, :] = 0.0
+                running_prior_action[done_mask_t] = 0.0
+                running_prior_reward[done_mask_t] = 0.0
 
             if "final_info" in infos:
                 for info in infos["final_info"]:
@@ -1272,29 +1273,28 @@ def run_ppo_training(config: dict, run_dir: str):
             step_sps = num_envs / step_dt if step_dt > 0 else 0
             writer.add_scalar("performance/step_SPS", step_sps, global_step)
 
-            # Per-step diagnostic metrics from env info dict
+            # Per-step diagnostic metrics from env info dict (mean across envs)
             if "strehl" in infos:
-                for env_idx in range(num_envs):
-                    writer.add_scalar(
-                        "train/step_strehl",
-                        float(infos["strehl"][env_idx]), global_step,
-                    )
-                    writer.add_scalar(
-                        "train/step_mse",
-                        float(infos["mse"][env_idx]), global_step,
-                    )
-                    writer.add_scalar(
-                        "train/step_oob_frac",
-                        float(infos["oob_frac"][env_idx]), global_step,
-                    )
-                    writer.add_scalar(
-                        "train/step_reward",
-                        float(rewards_np[env_idx]), global_step,
-                    )
-                    writer.add_scalar(
-                        "train/step_reward_raw",
-                        float(infos["reward_raw"][env_idx]), global_step,
-                    )
+                writer.add_scalar(
+                    "train/step_strehl",
+                    float(np.mean(infos["strehl"])), global_step,
+                )
+                writer.add_scalar(
+                    "train/step_mse",
+                    float(np.mean(infos["mse"])), global_step,
+                )
+                writer.add_scalar(
+                    "train/step_oob_frac",
+                    float(np.mean(infos["oob_frac"])), global_step,
+                )
+                writer.add_scalar(
+                    "train/step_reward",
+                    float(np.mean(rewards_np)), global_step,
+                )
+                writer.add_scalar(
+                    "train/step_reward_raw",
+                    float(np.mean(infos["reward_raw"])), global_step,
+                )
 
         rollout_end_time = time.time()
         rollout_dt = rollout_end_time - rollout_start_time
