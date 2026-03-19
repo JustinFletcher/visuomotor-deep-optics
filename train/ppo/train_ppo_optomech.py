@@ -198,36 +198,108 @@ def evaluate_with_visualization(
     Run deterministic evaluation episodes with fixed seeds and produce
     matplotlib summary figures for TensorBoard.
 
-    For each fixed-seed episode, also runs a zero-action baseline on the
-    same seed and logs:
-      - Per-seed agent return vs zero-action baseline
-      - Relative improvement (agent_return / zero_baseline)
-      - Reward at step 0 vs step T
-      - Mean improvement gap across all seeds
+    Uses a vectorized SyncVectorEnv to run all episodes in parallel:
+    3 per seed (zero-action, random-action, agent) x num_episodes seeds.
     """
     agent.eval()
     wrapper = PPOActorWrapper(agent)
 
     env_kwargs = dict(config["env_kwargs"])
     env_kwargs["max_episode_steps"] = config["max_episode_steps"]
-    eval_env = gym.make(_ENV_ID, **env_kwargs)
-    eval_env = gym.wrappers.RecordEpisodeStatistics(eval_env)
-
-    # Extract reference max for fixed normalization if not provided
-    if obs_ref_max is None:
-        base_env = eval_env.unwrapped
-        if hasattr(base_env, 'optical_system') and hasattr(base_env.optical_system, '_reference_fpi_max'):
-            obs_ref_max = base_env.optical_system._reference_fpi_max
-        else:
-            obs_ref_max = 1.0  # fallback to no-op normalization
+    max_steps = config["max_episode_steps"]
 
     eval_seeds = config.get("eval_seeds")
     if eval_seeds is None:
         eval_seeds = list(range(num_episodes))
-
-    # Use the requested number of episodes (may be fewer than seeds available)
     seeds_to_use = eval_seeds[:num_episodes]
+    N = len(seeds_to_use)
+    total_envs = 3 * N  # zero + random + agent per seed
 
+    # Index helpers: env[i*3+0]=zero, env[i*3+1]=random, env[i*3+2]=agent
+    zero_idx = list(range(0, total_envs, 3))
+    rand_idx = list(range(1, total_envs, 3))
+    agnt_idx = list(range(2, total_envs, 3))
+
+    # --- Create vectorized eval env --------------------------------
+    eval_envs = gym.vector.SyncVectorEnv([
+        make_optomech_env(env_kwargs, max_episode_steps=max_steps, idx=i)
+        for i in range(total_envs)
+    ])
+    action_space = eval_envs.single_action_space
+    action_dim = action_space.shape[0]
+
+    # Extract reference max for fixed normalization if not provided
+    if obs_ref_max is None:
+        _tmp = gym.make(_ENV_ID, **env_kwargs)
+        _b = _tmp.unwrapped
+        if hasattr(_b, 'optical_system') and hasattr(_b.optical_system, '_reference_fpi_max'):
+            obs_ref_max = _b.optical_system._reference_fpi_max
+        else:
+            obs_ref_max = 1.0
+        _tmp.close()
+
+    # --- Reset all envs with per-env seeds -------------------------
+    reset_seeds = []
+    for seed in seeds_to_use:
+        reset_seeds.extend([seed, seed, seed])
+    obs_all, _ = eval_envs.reset(seed=reset_seeds)
+
+    # --- Initialize agent state (batched across N seeds) -----------
+    h = torch.zeros(agent.lstm_num_layers, N, agent.lstm_hidden_dim, device=device)
+    c = torch.zeros(agent.lstm_num_layers, N, agent.lstm_hidden_dim, device=device)
+    prior_action = torch.zeros(N, action_dim, device=device)
+    prior_reward = torch.zeros(N, device=device)
+
+    # --- Pre-allocate per-step storage -----------------------------
+    all_step_rewards = np.zeros((max_steps, total_envs), dtype=np.float32)
+    agnt_step_actions = np.zeros((max_steps, N, action_dim), dtype=np.float32)
+    agnt_step_strehls = np.zeros((max_steps, N), dtype=np.float32)
+    agnt_step_mses = np.zeros((max_steps, N), dtype=np.float32)
+    agnt_step_oobs = np.zeros((max_steps, N), dtype=np.float32)
+    agnt_obs_raw = [[obs_all[agnt_idx[i]].copy()] for i in range(N)]
+
+    # --- Main stepping loop ----------------------------------------
+    for step in range(max_steps):
+        actions = np.zeros((total_envs, action_dim), dtype=np.float32)
+        # Zero-action slots: already zeros
+        # Random-action slots
+        for idx in rand_idx:
+            actions[idx] = action_space.sample()
+        # Agent slots: batched inference
+        agent_obs = obs_all[agnt_idx]
+        obs_norm = normalize_obs_fixed(agent_obs, obs_ref_max)
+        obs_t = torch.from_numpy(obs_norm).float().to(device)
+        with torch.no_grad():
+            action_t, (h, c) = wrapper(obs_t, prior_action, prior_reward, (h, c))
+        act_np = action_t.cpu().numpy()
+        for i, idx in enumerate(agnt_idx):
+            actions[idx] = act_np[i]
+
+        obs_all, rewards, terms, truncs, infos = eval_envs.step(actions)
+
+        all_step_rewards[step] = rewards
+        agnt_step_actions[step] = act_np
+        for i in range(N):
+            agnt_obs_raw[i].append(obs_all[agnt_idx[i]].copy())
+
+        if isinstance(infos, dict):
+            _s = infos.get("strehl", None)
+            _m = infos.get("mse", None)
+            _o = infos.get("oob_frac", None)
+            for i, idx in enumerate(agnt_idx):
+                if _s is not None:
+                    agnt_step_strehls[step, i] = float(_s[idx])
+                if _m is not None:
+                    agnt_step_mses[step, i] = float(_m[idx])
+                if _o is not None:
+                    agnt_step_oobs[step, i] = float(_o[idx])
+
+        prior_action = action_t.clone()
+        prior_reward = torch.from_numpy(rewards[agnt_idx]).float().to(device)
+
+    eval_envs.close()
+
+    # --- Reassemble per-seed data ----------------------------------
     all_returns = []
     all_lengths = []
     all_zero_returns = []
@@ -237,67 +309,29 @@ def evaluate_with_visualization(
     all_last_rewards = []
     all_final_strehls = []
     all_final_mses = []
-
-    # Per-step traces for aggregate plots
     all_agent_reward_traces = []
     all_zero_reward_traces = []
     all_random_reward_traces = []
     all_agent_strehl_traces = []
     all_agent_mse_traces = []
-
     all_episode_data = []
 
-    for ep, seed in enumerate(seeds_to_use):
-        # --- Zero-action baseline for this seed ----------------------
-        zero_return, zero_first_reward, zero_rewards = _run_zero_action_episode(
-            eval_env, seed)
+    for i, seed in enumerate(seeds_to_use):
+        zero_rewards = all_step_rewards[:, zero_idx[i]].tolist()
+        random_rewards = all_step_rewards[:, rand_idx[i]].tolist()
+        ep_rewards = all_step_rewards[:, agnt_idx[i]].tolist()
+        ep_strehls = agnt_step_strehls[:, i].tolist()
+        ep_mses = agnt_step_mses[:, i].tolist()
+        ep_oob_fracs = agnt_step_oobs[:, i].tolist()
+        ep_actions = [agnt_step_actions[t, i].copy() for t in range(max_steps)]
+
+        zero_return = sum(zero_rewards)
+        ep_return = sum(ep_rewards)
+        ep_length = max_steps
+
         all_zero_returns.append(zero_return)
         all_zero_reward_traces.append(zero_rewards)
-
-        # --- Random-action baseline for this seed --------------------
-        random_return, random_rewards = _run_random_action_episode(eval_env, seed)
         all_random_reward_traces.append(random_rewards)
-
-        # --- Agent rollout on the SAME seed --------------------------
-        obs_raw, _ = eval_env.reset(seed=seed)
-        obs_np = normalize_obs_fixed(obs_raw[np.newaxis], obs_ref_max)  # add batch dim
-
-        hidden = wrapper.get_zero_hidden()
-        hidden = (hidden[0].to(device), hidden[1].to(device))
-
-        prior_action = torch.zeros(1, agent.action_dim, device=device)
-        prior_reward = torch.zeros(1, device=device)
-
-        ep_rewards = []
-        ep_actions = []
-        ep_obs_raw = [obs_raw.copy()]
-        ep_strehls = []
-        ep_mses = []
-        ep_oob_fracs = []
-
-        done = False
-        while not done:
-            obs_t = torch.from_numpy(obs_np).float().to(device)
-            with torch.no_grad():
-                action_t, hidden = wrapper(obs_t, prior_action, prior_reward, hidden)
-            action = action_t.cpu().numpy()[0]
-
-            next_obs_raw, reward, terminated, truncated, info = eval_env.step(action)
-            done = terminated or truncated
-
-            ep_rewards.append(float(reward))
-            ep_actions.append(action.copy())
-            ep_obs_raw.append(next_obs_raw.copy())
-            ep_strehls.append(float(info.get("strehl", 0.0)))
-            ep_mses.append(float(info.get("mse", 0.0)))
-            ep_oob_fracs.append(float(info.get("oob_frac", 0.0)))
-
-            obs_np = normalize_obs_fixed(next_obs_raw[np.newaxis], obs_ref_max)
-            prior_action = action_t.clone()
-            prior_reward = torch.tensor([reward], dtype=torch.float32, device=device)
-
-        ep_return = sum(ep_rewards)
-        ep_length = len(ep_rewards)
         all_returns.append(ep_return)
         all_lengths.append(ep_length)
         all_agent_reward_traces.append(ep_rewards)
@@ -306,52 +340,33 @@ def evaluate_with_visualization(
         all_final_strehls.append(ep_strehls[-1] if ep_strehls else 0.0)
         all_final_mses.append(ep_mses[-1] if ep_mses else 0.0)
 
-        # Relative improvement: how much better than zero-action?
         improvement_gap = ep_return - zero_return
         all_improvement_gaps.append(improvement_gap)
-
-        # Ratio of agent vs zero-action (avoid div-by-zero)
         if abs(zero_return) > 1e-10:
             relative_improvement = ep_return / zero_return
         else:
             relative_improvement = 1.0
         all_relative_improvements.append(relative_improvement)
 
-        # First vs last step reward (item #2)
         first_reward = ep_rewards[0] if ep_rewards else 0.0
         last_reward = ep_rewards[-1] if ep_rewards else 0.0
         all_first_rewards.append(first_reward)
         all_last_rewards.append(last_reward)
 
-        # Per-seed TensorBoard logging
-        writer.add_scalar(
-            f"{tag_prefix}/seed_{seed}/agent_return", ep_return, global_step
-        )
-        writer.add_scalar(
-            f"{tag_prefix}/seed_{seed}/zero_return", zero_return, global_step
-        )
-        writer.add_scalar(
-            f"{tag_prefix}/seed_{seed}/improvement_gap", improvement_gap, global_step
-        )
-        writer.add_scalar(
-            f"{tag_prefix}/seed_{seed}/first_reward", first_reward, global_step
-        )
-        writer.add_scalar(
-            f"{tag_prefix}/seed_{seed}/last_reward", last_reward, global_step
-        )
+        writer.add_scalar(f"{tag_prefix}/seed_{seed}/agent_return", ep_return, global_step)
+        writer.add_scalar(f"{tag_prefix}/seed_{seed}/zero_return", zero_return, global_step)
+        writer.add_scalar(f"{tag_prefix}/seed_{seed}/improvement_gap", improvement_gap, global_step)
+        writer.add_scalar(f"{tag_prefix}/seed_{seed}/first_reward", first_reward, global_step)
+        writer.add_scalar(f"{tag_prefix}/seed_{seed}/last_reward", last_reward, global_step)
         final_strehl = ep_strehls[-1] if ep_strehls else 0.0
         final_mse = ep_mses[-1] if ep_mses else 0.0
-        writer.add_scalar(
-            f"{tag_prefix}/seed_{seed}/final_strehl", final_strehl, global_step
-        )
-        writer.add_scalar(
-            f"{tag_prefix}/seed_{seed}/final_mse", final_mse, global_step
-        )
+        writer.add_scalar(f"{tag_prefix}/seed_{seed}/final_strehl", final_strehl, global_step)
+        writer.add_scalar(f"{tag_prefix}/seed_{seed}/final_mse", final_mse, global_step)
 
         all_episode_data.append({
             "rewards": ep_rewards,
             "actions": ep_actions,
-            "obs_raw": ep_obs_raw,
+            "obs_raw": agnt_obs_raw[i],
             "strehls": ep_strehls,
             "mses": ep_mses,
             "oob_fracs": ep_oob_fracs,
@@ -361,8 +376,6 @@ def evaluate_with_visualization(
             "zero_return": zero_return,
             "improvement_gap": improvement_gap,
         })
-
-    eval_env.close()
 
     # Select best / worst / median episodes by return
     all_episode_data.sort(key=lambda d: d["return"])
