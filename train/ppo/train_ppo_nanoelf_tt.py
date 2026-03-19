@@ -250,7 +250,7 @@ HPC_CONFIG = dict(
     # --- Environment ---
     max_episode_steps=256,
     env_version="v5",
-    no_eval=True,
+    # no_eval: use --no-eval CLI flag, not config
     # --- Evaluation ---
     eval_interval=100,
     eval_episodes=8,
