@@ -1217,15 +1217,18 @@ def run_ppo_training(config: dict, run_dir: str):
         if curriculum_cfg:
             progress = min(global_step / _cur_steps, 1.0)
             cur_std = _cur_start + progress * (_cur_end - _cur_start)
-            if hasattr(envs, 'envs'):
-                # SyncVectorEnv: direct access
+            if hasattr(envs, '_init_tip_std'):
+                # V5 BatchedOptomechEnv: direct attribute update
+                envs._init_tip_std = cur_std
+                envs._init_tilt_std = cur_std
+            elif hasattr(envs, 'envs'):
+                # SyncVectorEnv: direct access to wrapped envs
                 for env_wrapper in envs.envs:
                     base_env = env_wrapper.unwrapped
                     base_env.cfg["init_wind_tip_arcsec_std_tt"] = cur_std
                     base_env.cfg["init_wind_tilt_arcsec_std_tt"] = cur_std
             else:
                 # AsyncVectorEnv: not yet supported for curriculum.
-                # Curriculum requires num_envs=1 or SyncVectorEnv.
                 if update == 1:
                     print("  WARNING: Curriculum annealing is not supported "
                           "with AsyncVectorEnv. Ignoring curriculum config.")
