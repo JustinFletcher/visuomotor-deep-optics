@@ -1622,7 +1622,7 @@ def run_main(full_config: dict, fast_config: dict):
         "--env-version",
         type=str,
         default="v4",
-        choices=["v1", "v2", "v3", "v4"],
+        choices=["v1", "v2", "v3", "v4", "v5"],
         help="Optomech environment version (default: v4)",
     )
     parser.add_argument(
@@ -1733,8 +1733,9 @@ def run_main(full_config: dict, fast_config: dict):
     print(f"Using environment: {_ENV_ID}")
     print(f"Fixed eval seeds:  {config['eval_seeds']}")
 
-    # Register environment
-    register_optomech(_ENV_ID, max_episode_steps=config["max_episode_steps"])
+    # Register environment (V5 bypasses gym.make, no registration needed)
+    if _ENV_ID in _ENTRY_POINTS:
+        register_optomech(_ENV_ID, max_episode_steps=config["max_episode_steps"])
 
     # Output directory
     if cli.run_dir:
