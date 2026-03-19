@@ -221,22 +221,28 @@ def evaluate_with_visualization(
     agnt_idx = list(range(2, total_envs, 3))
 
     # --- Create vectorized eval env --------------------------------
-    eval_envs = gym.vector.SyncVectorEnv([
-        make_optomech_env(env_kwargs, max_episode_steps=max_steps, idx=i)
-        for i in range(total_envs)
-    ])
+    env_version = config.get("env_version", "v3")
+    if env_version == "v5":
+        from optomech.optomech.optomech_v5 import BatchedOptomechEnv
+        eval_envs = BatchedOptomechEnv(
+            num_envs=total_envs, device="auto", **env_kwargs)
+        if obs_ref_max is None:
+            obs_ref_max = eval_envs._reference_fpi_max
+    else:
+        eval_envs = gym.vector.SyncVectorEnv([
+            make_optomech_env(env_kwargs, max_episode_steps=max_steps, idx=i)
+            for i in range(total_envs)
+        ])
+        if obs_ref_max is None:
+            _tmp = gym.make(_ENV_ID, **env_kwargs)
+            _b = _tmp.unwrapped
+            if hasattr(_b, 'optical_system') and hasattr(_b.optical_system, '_reference_fpi_max'):
+                obs_ref_max = _b.optical_system._reference_fpi_max
+            else:
+                obs_ref_max = 1.0
+            _tmp.close()
     action_space = eval_envs.single_action_space
     action_dim = action_space.shape[0]
-
-    # Extract reference max for fixed normalization if not provided
-    if obs_ref_max is None:
-        _tmp = gym.make(_ENV_ID, **env_kwargs)
-        _b = _tmp.unwrapped
-        if hasattr(_b, 'optical_system') and hasattr(_b.optical_system, '_reference_fpi_max'):
-            obs_ref_max = _b.optical_system._reference_fpi_max
-        else:
-            obs_ref_max = 1.0
-        _tmp.close()
 
     # --- Reset all envs with per-env seeds -------------------------
     reset_seeds = []
@@ -889,12 +895,33 @@ def _log_aggregate_reward_figure(
 # ============================================================================
 
 
-def evaluate_zero_policy(config: dict, num_episodes: int = 5) -> float:
-    """Roll out a zero-action policy and return mean episodic return."""
+def _make_eval_env(config):
+    """Create a single eval env, handling V5 (BatchedOptomechEnv) vs V3/V4."""
     env_kwargs = dict(config["env_kwargs"])
     env_kwargs["max_episode_steps"] = config["max_episode_steps"]
-    env = gym.make(_ENV_ID, **env_kwargs)
-    env = gym.wrappers.RecordEpisodeStatistics(env)
+    env_version = config.get("env_version", "v3")
+    if env_version == "v5":
+        from optomech.optomech.optomech_v5 import BatchedOptomechEnv
+        return BatchedOptomechEnv(num_envs=1, device="auto", **env_kwargs)
+    else:
+        env = gym.make(_ENV_ID, **env_kwargs)
+        return gym.wrappers.RecordEpisodeStatistics(env)
+
+
+def _eval_step_action(env, action):
+    """Step a single action through eval env, handling V5 vectorized API."""
+    obs, reward, terminated, truncated, info = env.step(action)
+    # V5 returns batched arrays (dim 0 = num_envs=1); squeeze them.
+    if hasattr(env, '_is_v5'):
+        return (obs[0], float(reward[0]), bool(terminated[0]),
+                bool(truncated[0]), {k: v[0] if hasattr(v, '__getitem__') else v
+                                     for k, v in info.items()})
+    return obs, float(reward), bool(terminated), bool(truncated), info
+
+
+def evaluate_zero_policy(config: dict, num_episodes: int = 5) -> float:
+    """Roll out a zero-action policy and return mean episodic return."""
+    env = _make_eval_env(config)
 
     returns = []
     for _ in range(num_episodes):
@@ -902,8 +929,15 @@ def evaluate_zero_policy(config: dict, num_episodes: int = 5) -> float:
         done = False
         ep_return = 0.0
         while not done:
-            action = np.zeros(env.action_space.shape, dtype=np.float32)
+            action = np.zeros(env.single_action_space.shape if hasattr(env, 'single_action_space')
+                              else env.action_space.shape, dtype=np.float32)
+            if hasattr(env, 'single_action_space'):
+                action = action[np.newaxis]  # V5 expects [N, action_dim]
             obs, reward, terminated, truncated, info = env.step(action)
+            if hasattr(env, 'single_action_space'):
+                reward = float(reward[0])
+                terminated = bool(terminated[0])
+                truncated = bool(truncated[0])
             done = terminated or truncated
             ep_return += reward
         returns.append(ep_return)
@@ -913,10 +947,7 @@ def evaluate_zero_policy(config: dict, num_episodes: int = 5) -> float:
 
 def evaluate_random_policy(config: dict, num_episodes: int = 5) -> float:
     """Roll out a uniform-random policy and return mean episodic return."""
-    env_kwargs = dict(config["env_kwargs"])
-    env_kwargs["max_episode_steps"] = config["max_episode_steps"]
-    env = gym.make(_ENV_ID, **env_kwargs)
-    env = gym.wrappers.RecordEpisodeStatistics(env)
+    env = _make_eval_env(config)
 
     returns = []
     for _ in range(num_episodes):
@@ -926,6 +957,10 @@ def evaluate_random_policy(config: dict, num_episodes: int = 5) -> float:
         while not done:
             action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
+            if hasattr(env, 'single_action_space'):
+                reward = float(reward[0])
+                terminated = bool(terminated[0])
+                truncated = bool(truncated[0])
             done = terminated or truncated
             ep_return += reward
         returns.append(ep_return)
