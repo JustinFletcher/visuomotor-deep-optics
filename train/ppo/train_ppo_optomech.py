@@ -1204,8 +1204,14 @@ def run_ppo_training(config: dict, run_dir: str):
         _cur_start = curriculum_cfg["tip_tilt_start"]
         _cur_end = curriculum_cfg["tip_tilt_end"]
         _cur_steps = curriculum_cfg["anneal_timesteps"]
-        print(f"  Curriculum: tip/tilt {_cur_start:.2f} → {_cur_end:.2f} "
-              f"over {_cur_steps:,} steps")
+        _cur_warmup = curriculum_cfg.get("warmup_timesteps", 0)
+        if _cur_warmup > 0:
+            print(f"  Curriculum: tip/tilt hold at {_cur_start:.2f} for "
+                  f"{_cur_warmup:,} steps, then ramp to {_cur_end:.2f} "
+                  f"over {_cur_steps:,} steps")
+        else:
+            print(f"  Curriculum: tip/tilt {_cur_start:.2f} -> {_cur_end:.2f} "
+                  f"over {_cur_steps:,} steps")
 
     for update in range(start_update, num_updates + 1):
         # LR annealing
@@ -1215,8 +1221,11 @@ def run_ppo_training(config: dict, run_dir: str):
 
         # Curriculum annealing: linearly interpolate tip/tilt init error
         if curriculum_cfg:
-            progress = min(global_step / _cur_steps, 1.0)
-            cur_std = _cur_start + progress * (_cur_end - _cur_start)
+            if global_step < _cur_warmup:
+                cur_std = _cur_start
+            else:
+                progress = min((global_step - _cur_warmup) / _cur_steps, 1.0)
+                cur_std = _cur_start + progress * (_cur_end - _cur_start)
             if hasattr(envs, '_init_tip_std'):
                 # V5 BatchedOptomechEnv: direct attribute update
                 envs._init_tip_std = cur_std

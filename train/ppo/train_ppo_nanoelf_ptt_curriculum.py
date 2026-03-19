@@ -28,7 +28,8 @@ CURRICULUM_ENV_KWARGS = {
 CURRICULUM = dict(
     tip_tilt_start=0.0,          # start aligned (easy)
     tip_tilt_end=2.0,            # ramp to 2.0 arcsec (hard)
-    anneal_timesteps=50_000_000, # ramp over first half of training
+    warmup_timesteps=20_000_000, # hold at start for first 20M steps
+    anneal_timesteps=50_000_000, # then ramp over next 50M steps
 )
 
 # ============================================================================
