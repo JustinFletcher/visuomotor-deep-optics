@@ -9,7 +9,7 @@ here.
 
 Exported API
 ------------
-- ``run_main(full_config, fast_config)`` — CLI entry point
+- ``run_main(local_config, hpc_config)`` — CLI entry point
 - ``run_ppo_training(config, run_dir)`` — training loop
 - ``evaluate_with_visualization(...)`` — eval with TensorBoard figures
 - ``evaluate_zero_policy / evaluate_random_policy`` — baselines
@@ -1594,23 +1594,23 @@ def run_ppo_training(config: dict, run_dir: str):
 # ============================================================================
 
 
-def run_main(full_config: dict, fast_config: dict):
+def run_main(local_config: dict, hpc_config: dict):
     """Parse CLI arguments and run PPO training.
 
     Parameters
     ----------
-    full_config : dict
-        Full-length training configuration (used by default).
-    fast_config : dict
-        Smoke-test configuration (used with ``--fast``).
+    local_config : dict
+        Local/laptop training configuration (used by default).
+    hpc_config : dict
+        HPC configuration with V5 batched env defaults (used with ``--hpc``).
     """
     global _ENV_ID
 
     parser = argparse.ArgumentParser(description="PPO Optomech Training")
     parser.add_argument(
-        "--fast",
+        "--hpc",
         action="store_true",
-        help="Quick smoke test with fewer timesteps",
+        help="Use HPC configuration (V5 batched env, large num_envs)",
     )
     parser.add_argument(
         "--run-dir",
@@ -1621,9 +1621,9 @@ def run_main(full_config: dict, fast_config: dict):
     parser.add_argument(
         "--env-version",
         type=str,
-        default="v4",
+        default=None,
         choices=["v1", "v2", "v3", "v4", "v5"],
-        help="Optomech environment version (default: v4)",
+        help="Optomech environment version (default: from config, or v4)",
     )
     parser.add_argument(
         "--action-penalty-weight",
@@ -1701,8 +1701,13 @@ def run_main(full_config: dict, fast_config: dict):
     )
     cli = parser.parse_args()
 
-    _ENV_ID = f"optomech-{cli.env_version}"
-    config = dict(fast_config if cli.fast else full_config)
+    config = dict(hpc_config if cli.hpc else local_config)
+
+    # env_version: CLI flag overrides config, config overrides default
+    env_version = cli.env_version
+    if env_version is None:
+        env_version = config.get("env_version", "v4")
+    _ENV_ID = f"optomech-{env_version}"
 
     # Override action penalty weight if specified on command line
     if cli.action_penalty_weight is not None:
@@ -1728,8 +1733,8 @@ def run_main(full_config: dict, fast_config: dict):
     # Async env parallelism
     config["async_envs"] = cli.async_envs
 
-    # No-eval mode
-    config["no_eval"] = cli.no_eval
+    # No-eval mode: CLI flag OR config value
+    config["no_eval"] = cli.no_eval or config.get("no_eval", False)
 
     # Override num_steps and num_minibatches if specified
     if cli.num_steps is not None:

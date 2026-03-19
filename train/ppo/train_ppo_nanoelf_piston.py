@@ -8,8 +8,8 @@ All hyperparameters are embedded in this file so that a training run
 is fully reproducible from this single artifact.
 
 Usage:
-    python train/ppo/train_ppo_nanoelf_piston.py                          # full run (v4)
-    python train/ppo/train_ppo_nanoelf_piston.py --fast                   # smoke test
+    python train/ppo/train_ppo_nanoelf_piston.py                          # local run (v4, 8 envs)
+    python train/ppo/train_ppo_nanoelf_piston.py --hpc                    # HPC run (v5, 64 envs, no eval)
     python train/ppo/train_ppo_nanoelf_piston.py --env-version v3         # use optomech-v3
     python train/ppo/train_ppo_nanoelf_piston.py --model-save-interval 50 # checkpoint every 50 updates
 """
@@ -167,7 +167,7 @@ NANOELF_PISTON_ENV_KWARGS = {
 # PPO hyperparameters
 # ============================================================================
 
-FULL_CONFIG = dict(
+LOCAL_CONFIG = dict(
     # --- PPO algorithm ---
     total_timesteps=100_000_000,
     num_envs=8,
@@ -206,39 +206,47 @@ FULL_CONFIG = dict(
     env_kwargs=NANOELF_PISTON_ENV_KWARGS,
 )
 
-FAST_CONFIG = dict(
-    total_timesteps=2_000,
-    num_envs=1,
-    num_steps=100,
-    num_minibatches=2,
-    update_epochs=2,
-    seq_len=10,
-    learning_rate=3e-4,
+HPC_CONFIG = dict(
+    # --- PPO algorithm (tuned for V5 batched GPU env on H100) ---
+    total_timesteps=100_000_000,
+    num_envs=64,
+    num_steps=128,
+    num_minibatches=4,
+    update_epochs=4,
+    seq_len=32,
+    learning_rate=1e-3,
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
     ent_coef=0.05,
     vf_coef=0.5,
-    max_grad_norm=0.5,
+    max_grad_norm=1.0,
     anneal_lr=True,
     norm_adv=True,
     clip_vloss=True,
     reward_scale=1.0,
-    lstm_hidden_dim=64,
-    channel_scale=8,
-    fc_scale=32,
+    # --- Model architecture ---
+    lstm_hidden_dim=128,
+    channel_scale=16,
+    fc_scale=128,
     init_log_std=-0.5,
     action_scale=1.0,
-    max_episode_steps=100,
-    eval_interval=3,
-    eval_episodes=4,
+    # --- Environment ---
+    max_episode_steps=256,
+    env_version="v5",
+    no_eval=True,
+    # --- Evaluation ---
+    eval_interval=100,
+    eval_episodes=8,
     eval_seeds=None,
-    pass_threshold_ratio=None,
-    seed=42,
-    model_save_interval=0,
+    pass_threshold_ratio=1.1,
+    seed=1,
+    # --- Model saving ---
+    model_save_interval=100,
+    # --- Env kwargs ---
     env_kwargs=NANOELF_PISTON_ENV_KWARGS,
 )
 
 
 if __name__ == "__main__":
-    run_main(FULL_CONFIG, FAST_CONFIG)
+    run_main(LOCAL_CONFIG, HPC_CONFIG)
