@@ -573,10 +573,19 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._episode_lengths[env_mask] = 0
 
     def reset(self, seed=None, options=None):
-        """Reset all environments."""
+        """Reset all environments.
+
+        seed can be an int (seeds all envs identically) or a list of ints
+        (one per env, used for reproducible per-env resets).  Per-env seeds
+        are applied via numpy only (torch global seed uses the first).
+        """
         if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
+            if isinstance(seed, (list, tuple)):
+                torch.manual_seed(seed[0])
+                np.random.seed(seed[0])
+            else:
+                torch.manual_seed(seed)
+                np.random.seed(seed)
 
         self._init_actuators(env_mask=None)
 
