@@ -955,7 +955,7 @@ def run_ppo_training(config: dict, run_dir: str):
     torch.manual_seed(seed)
 
     # Vectorized environments
-    env_version = config["env_kwargs"].get("optomech_version", "v3")
+    env_version = _ENV_ID.split("-")[-1]  # "optomech-v5" → "v5"
 
     if env_version == "v5":
         # V5: batched GPU env — IS the VectorEnv, no wrapper needed.
