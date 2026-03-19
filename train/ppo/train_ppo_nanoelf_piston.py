@@ -1,22 +1,17 @@
 """
-PPO training: nanoelf centering-only reward (6 DOF).
+PPO training: nanoelf piston-only alignment (2 DOF).
 
-Trains a recurrent PPO agent to center the PSF using piston + tip + tilt
-corrections (6 DOF, same as full PTT). Reward is purely centering-based —
-no Strehl component. The action penalty naturally discourages unnecessary
-piston movement.
-
-This isolates the centering problem from Strehl optimization, which the
-full PTT agent struggled to learn simultaneously.
+Trains a recurrent PPO agent to align piston offsets on the nanoelf
+distributed-aperture telescope (2 segments, 1 piston DOF each).
 
 All hyperparameters are embedded in this file so that a training run
 is fully reproducible from this single artifact.
 
 Usage:
-    python train/ppo/train_ppo_nanoelf_ptt.py                          # local run (v4, 8 envs)
-    python train/ppo/train_ppo_nanoelf_ptt.py --hpc                    # HPC run (v5, 64 envs, no eval)
-    python train/ppo/train_ppo_nanoelf_ptt.py --env-version v3         # use optomech-v3
-    python train/ppo/train_ppo_nanoelf_ptt.py --model-save-interval 50 # checkpoint every 50 updates
+    python train/ppo/train_ppo_nanoelf_piston.py                          # local run (v4, 8 envs)
+    python train/ppo/train_ppo_nanoelf_piston.py --hpc                    # HPC run (v5, 64 envs, no eval)
+    python train/ppo/train_ppo_nanoelf_piston.py --env-version v3         # use optomech-v3
+    python train/ppo/train_ppo_nanoelf_piston.py --model-save-interval 50 # checkpoint every 50 updates
 """
 
 from train.ppo.train_ppo_optomech import run_main
@@ -25,7 +20,7 @@ from train.ppo.train_ppo_optomech import run_main
 # Environment kwargs — every key the OptomechEnv requires
 # ============================================================================
 
-NANOELF_TT_ENV_KWARGS = {
+NANOELF_PISTON_ENV_KWARGS = {
     # --- Object / aperture -----------------------------------------------
     "object_type": "single",
     "aperture_type": "nanoelf",
@@ -54,8 +49,8 @@ NANOELF_TT_ENV_KWARGS = {
     "max_episode_steps": 100,
 
     # --- Control ----------------------------------------------------------
-    "command_secondaries": True,      # <<< PISTON REQUIRED for tip/tilt
-    "command_tip_tilt": True,         # <<< TIP/TILT ONLY (4 DOF)
+    "command_secondaries": True,
+    "command_tip_tilt": False,       # <<< PISTON ONLY
     "command_tensioners": False,
     "command_dm": False,
     "ao_loop_active": False,
@@ -70,8 +65,8 @@ NANOELF_TT_ENV_KWARGS = {
 
     # --- Correction ranges ------------------------------------------------
     "max_piston_correction_micron": 10.0,
-    "max_tip_correction_arcsec": 10.0,
-    "max_tilt_correction_arcsec": 10.0,
+    "max_tip_correction_arcsec": 20.0,
+    "max_tilt_correction_arcsec": 20.0,
     "get_disp_corr_max_piston_micron": 3.0,
     "get_disp_corr_max_tip_arcsec": 20.0,
     "get_disp_corr_max_tilt_arcsec": 20.0,
@@ -92,29 +87,20 @@ NANOELF_TT_ENV_KWARGS = {
     "gravity_normal_ms_sampled_std": 0.0,
     "init_wind_piston_micron_std": 3.0,
     "init_wind_piston_clip_m": 4e-6,
-    "init_wind_tip_arcsec_std_tt": 0.0,      # zero tip/tilt error: piston-only problem
-    "init_wind_tilt_arcsec_std_tt": 0.0,      # zero tip/tilt error: piston-only problem
+    "init_wind_tip_arcsec_std_tt": 0.05,
+    "init_wind_tilt_arcsec_std_tt": 0.05,
     "runtime_wind_piston_micron_factor": 1.0 / 8.0,
     "runtime_wind_tip_arcsec_factor": 1.0 / 32.0,
     "runtime_wind_tilt_arcsec_factor": 1.0 / 32.0,
     "runtime_wind_incremental_factor": 0.01,
     "init_gravity_piston_micron_std": 300.0,
-    "init_gravity_tip_arcsec_std_tt": 5.0,
-    "init_gravity_tilt_arcsec_std_tt": 5.0,
+    "init_gravity_tip_arcsec_std_tt": 15.0,
+    "init_gravity_tilt_arcsec_std_tt": 15.0,
 
     # --- Reward -----------------------------------------------------------
     "reward_function": "factored",
-    "reward_weight_strehl": 0.0,
-    "reward_weight_centering": 0.0,
-    "reward_weight_flux": 0.0,
-    "reward_weight_convex_flux": 0.0,
-    "convex_flux_power": 2.0,
-    "reward_weight_dist": 0.0,
-    "reward_weight_concentration": 0.0,
-    "reward_weight_peak": 0.0,
-    "reward_weight_centered_strehl": 1.0,  # center-weighted Strehl: only active reward
-    "centering_mode": "circular",
-    "centering_radius_fraction": 0.25,
+    "reward_weight_strehl": 1.0,
+    "reward_weight_centering": 0.0,  # <<< no centering for piston
     "centering_sigma_fraction": 0.25,
     "reward_weight_dark_hole": 0.0,
     "reward_weight_image_quality": 0.0,
@@ -130,8 +116,6 @@ NANOELF_TT_ENV_KWARGS = {
     "oob_penalty": False,
     "oob_penalty_weight": 0.0,
     "holding_bonus_weight": 1.0,
-    "holding_bonus_min_reward": -1.0,
-    "holding_bonus_threshold": -0.7,
 
     # --- Dark hole --------------------------------------------------------
     "dark_hole": False,
@@ -180,7 +164,7 @@ NANOELF_TT_ENV_KWARGS = {
 
 
 # ============================================================================
-# PPO hyperparameters (based on known-good piston config)
+# PPO hyperparameters
 # ============================================================================
 
 LOCAL_CONFIG = dict(
@@ -191,11 +175,11 @@ LOCAL_CONFIG = dict(
     num_minibatches=4,
     update_epochs=4,
     seq_len=32,
-    learning_rate=3e-4,
+    learning_rate=1e-3,
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.005,
+    ent_coef=0.05,
     vf_coef=0.5,
     max_grad_norm=1.0,
     anneal_lr=True,
@@ -203,10 +187,10 @@ LOCAL_CONFIG = dict(
     clip_vloss=True,
     reward_scale=1.0,
     # --- Model architecture ---
-    lstm_hidden_dim=256,
-    channel_scale=32,
-    fc_scale=256,
-    init_log_std=-2.0,
+    lstm_hidden_dim=128,
+    channel_scale=16,
+    fc_scale=128,
+    init_log_std=-0.5,
     action_scale=1.0,
     # --- Environment ---
     max_episode_steps=256,
@@ -219,7 +203,7 @@ LOCAL_CONFIG = dict(
     # --- Model saving ---
     model_save_interval=100,
     # --- Env kwargs ---
-    env_kwargs=NANOELF_TT_ENV_KWARGS,
+    env_kwargs=NANOELF_PISTON_ENV_KWARGS,
 )
 
 HPC_CONFIG = dict(
@@ -230,11 +214,11 @@ HPC_CONFIG = dict(
     num_minibatches=4,
     update_epochs=4,
     seq_len=32,
-    learning_rate=3e-4,
+    learning_rate=1e-3,
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.005,
+    ent_coef=0.05,
     vf_coef=0.5,
     max_grad_norm=1.0,
     anneal_lr=True,
@@ -242,10 +226,10 @@ HPC_CONFIG = dict(
     clip_vloss=True,
     reward_scale=1.0,
     # --- Model architecture ---
-    lstm_hidden_dim=256,
-    channel_scale=32,
-    fc_scale=256,
-    init_log_std=-2.0,
+    lstm_hidden_dim=128,
+    channel_scale=16,
+    fc_scale=128,
+    init_log_std=-0.5,
     action_scale=1.0,
     # --- Environment ---
     max_episode_steps=256,
@@ -260,7 +244,7 @@ HPC_CONFIG = dict(
     # --- Model saving ---
     model_save_interval=100,
     # --- Env kwargs ---
-    env_kwargs=NANOELF_TT_ENV_KWARGS,
+    env_kwargs=NANOELF_PISTON_ENV_KWARGS,
 )
 
 
