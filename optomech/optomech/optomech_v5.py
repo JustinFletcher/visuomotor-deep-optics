@@ -370,14 +370,19 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Remap action (per-segment: [p0,t0,tl0, p1,t1,tl1, ...]) to
         # actuator (per-DOF: [p0,p1,..., t0,t1,..., tl0,tl1,...])
         action_reshaped = actions_t.reshape(N, n_seg, n_dof)  # [N, n_seg, n_dof]
-        # Transpose to [N, n_dof, n_seg] then flatten to [N, n_modes]
+        # Transpose to [N, n_dof, n_seg] then flatten to [N, n_active]
         action_reordered = action_reshaped.permute(0, 2, 1).reshape(N, -1)
 
-        # Scale action to physical units
-        delta = action_reordered * self._max_corr_t.unsqueeze(0)
+        # Build full-mode delta (zero for inactive DOFs like tip/tilt in piston-only)
+        n_active = n_seg * n_dof
+        if n_active < self._n_modes:
+            delta_full = torch.zeros(N, self._n_modes, dtype=torch.float32, device=self.dev)
+            delta_full[:, :n_active] = action_reordered * self._max_corr_t[:n_active].unsqueeze(0)
+        else:
+            delta_full = action_reordered * self._max_corr_t.unsqueeze(0)
 
         # Incremental: actuators += delta
-        pre_clip = self._actuators_t + delta
+        pre_clip = self._actuators_t + delta_full
 
         # Clip to [baseline - max, baseline + max]
         low = self._baselines_t - self._max_corr_t.unsqueeze(0)
