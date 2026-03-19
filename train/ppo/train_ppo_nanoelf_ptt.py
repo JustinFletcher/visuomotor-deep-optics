@@ -1,15 +1,16 @@
 """
 PPO training: nanoelf piston + tip + tilt alignment (6 DOF).
 
-Trains a recurrent PPO agent to align piston, tip, and tilt on the
-nanoelf distributed-aperture telescope (2 segments, 3 DOF each).
+Trains a recurrent PPO agent to align the nanoelf distributed-aperture
+telescope using all 6 DOF (piston, tip, tilt per segment). Uses
+center-weighted Strehl reward with holding bonus.
 
 All hyperparameters are embedded in this file so that a training run
 is fully reproducible from this single artifact.
 
 Usage:
-    python train/ppo/train_ppo_nanoelf_ptt.py                          # full run (v4)
-    python train/ppo/train_ppo_nanoelf_ptt.py --fast                   # smoke test
+    python train/ppo/train_ppo_nanoelf_ptt.py                          # local run (v4, 8 envs)
+    python train/ppo/train_ppo_nanoelf_ptt.py --hpc                    # HPC run (v5, 64 envs, no eval)
     python train/ppo/train_ppo_nanoelf_ptt.py --env-version v3         # use optomech-v3
     python train/ppo/train_ppo_nanoelf_ptt.py --model-save-interval 50 # checkpoint every 50 updates
 """
@@ -20,7 +21,7 @@ from train.ppo.train_ppo_optomech import run_main
 # Environment kwargs — every key the OptomechEnv requires
 # ============================================================================
 
-NANOELF_PTT_ENV_KWARGS = {
+NANOELF_TT_ENV_KWARGS = {
     # --- Object / aperture -----------------------------------------------
     "object_type": "single",
     "aperture_type": "nanoelf",
@@ -49,8 +50,8 @@ NANOELF_PTT_ENV_KWARGS = {
     "max_episode_steps": 100,
 
     # --- Control ----------------------------------------------------------
-    "command_secondaries": True,
-    "command_tip_tilt": True,        # <<< PTT ENABLED
+    "command_secondaries": True,      # <<< PISTON REQUIRED for tip/tilt
+    "command_tip_tilt": True,         # <<< TIP/TILT ONLY (4 DOF)
     "command_tensioners": False,
     "command_dm": False,
     "ao_loop_active": False,
@@ -65,8 +66,8 @@ NANOELF_PTT_ENV_KWARGS = {
 
     # --- Correction ranges ------------------------------------------------
     "max_piston_correction_micron": 10.0,
-    "max_tip_correction_arcsec": 10.0,   # <<< reduced from 20 for PTT
-    "max_tilt_correction_arcsec": 10.0,  # <<< reduced from 20 for PTT
+    "max_tip_correction_arcsec": 10.0,
+    "max_tilt_correction_arcsec": 10.0,
     "get_disp_corr_max_piston_micron": 3.0,
     "get_disp_corr_max_tip_arcsec": 20.0,
     "get_disp_corr_max_tilt_arcsec": 20.0,
@@ -87,20 +88,29 @@ NANOELF_PTT_ENV_KWARGS = {
     "gravity_normal_ms_sampled_std": 0.0,
     "init_wind_piston_micron_std": 3.0,
     "init_wind_piston_clip_m": 4e-6,
-    "init_wind_tip_arcsec_std_tt": 0.05,
-    "init_wind_tilt_arcsec_std_tt": 0.05,
+    "init_wind_tip_arcsec_std_tt": 0.0,      # zero tip/tilt error: piston-only problem
+    "init_wind_tilt_arcsec_std_tt": 0.0,      # zero tip/tilt error: piston-only problem
     "runtime_wind_piston_micron_factor": 1.0 / 8.0,
     "runtime_wind_tip_arcsec_factor": 1.0 / 32.0,
     "runtime_wind_tilt_arcsec_factor": 1.0 / 32.0,
     "runtime_wind_incremental_factor": 0.01,
     "init_gravity_piston_micron_std": 300.0,
-    "init_gravity_tip_arcsec_std_tt": 5.0,   # <<< reduced for PTT
-    "init_gravity_tilt_arcsec_std_tt": 5.0,  # <<< reduced for PTT
+    "init_gravity_tip_arcsec_std_tt": 5.0,
+    "init_gravity_tilt_arcsec_std_tt": 5.0,
 
     # --- Reward -----------------------------------------------------------
     "reward_function": "factored",
-    "reward_weight_strehl": 1.0,
-    "reward_weight_centering": 2.0,      # <<< centering reward active
+    "reward_weight_strehl": 0.0,
+    "reward_weight_centering": 0.0,
+    "reward_weight_flux": 0.0,
+    "reward_weight_convex_flux": 0.0,
+    "convex_flux_power": 2.0,
+    "reward_weight_dist": 0.0,
+    "reward_weight_concentration": 0.0,
+    "reward_weight_peak": 0.0,
+    "reward_weight_centered_strehl": 1.0,  # center-weighted Strehl: only active reward
+    "centering_mode": "circular",
+    "centering_radius_fraction": 0.25,
     "centering_sigma_fraction": 0.25,
     "reward_weight_dark_hole": 0.0,
     "reward_weight_image_quality": 0.0,
@@ -112,10 +122,12 @@ NANOELF_PTT_ENV_KWARGS = {
     "ao_closed_inv_slope_threshold": 2e6,
     "dark_hole_alpha": 0.0,
     "action_penalty": True,
-    "action_penalty_weight": 0.05,       # <<< tuned for PTT
+    "action_penalty_weight": 0.5,
     "oob_penalty": False,
     "oob_penalty_weight": 0.0,
     "holding_bonus_weight": 1.0,
+    "holding_bonus_min_reward": -1.0,
+    "holding_bonus_threshold": -0.7,
 
     # --- Dark hole --------------------------------------------------------
     "dark_hole": False,
@@ -164,34 +176,34 @@ NANOELF_PTT_ENV_KWARGS = {
 
 
 # ============================================================================
-# PPO hyperparameters
+# PPO hyperparameters (based on known-good piston config)
 # ============================================================================
 
 LOCAL_CONFIG = dict(
     # --- PPO algorithm ---
-    total_timesteps=20_000_000,
-    num_envs=4,
+    total_timesteps=100_000_000,
+    num_envs=8,
     num_steps=128,
     num_minibatches=4,
     update_epochs=4,
     seq_len=32,
-    learning_rate=1e-3,
+    learning_rate=3e-4,
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.001,              # <<< low ent_coef to prevent random drift
+    ent_coef=0.005,
     vf_coef=0.5,
-    max_grad_norm=0.5,
+    max_grad_norm=1.0,
     anneal_lr=True,
     norm_adv=True,
     clip_vloss=True,
     reward_scale=1.0,
     # --- Model architecture ---
-    lstm_hidden_dim=128,
-    channel_scale=16,
-    fc_scale=128,
-    init_log_std=-0.5,
-    action_scale=0.1,
+    lstm_hidden_dim=256,
+    channel_scale=32,
+    fc_scale=256,
+    init_log_std=-2.0,
+    action_scale=1.0,
     # --- Environment ---
     max_episode_steps=256,
     # --- Evaluation ---
@@ -199,52 +211,52 @@ LOCAL_CONFIG = dict(
     eval_episodes=8,
     eval_seeds=None,
     pass_threshold_ratio=1.1,
-    seed=42,
+    seed=1,
     # --- Model saving ---
     model_save_interval=100,
     # --- Env kwargs ---
-    env_kwargs=NANOELF_PTT_ENV_KWARGS,
+    env_kwargs=NANOELF_TT_ENV_KWARGS,
 )
 
 HPC_CONFIG = dict(
     # --- PPO algorithm (tuned for V5 batched GPU env on H100) ---
-    total_timesteps=20_000_000,
+    total_timesteps=100_000_000,
     num_envs=64,
     num_steps=128,
     num_minibatches=4,
     update_epochs=4,
     seq_len=32,
-    learning_rate=1e-3,
+    learning_rate=3e-4,
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.001,
+    ent_coef=0.005,
     vf_coef=0.5,
-    max_grad_norm=0.5,
+    max_grad_norm=1.0,
     anneal_lr=True,
     norm_adv=True,
     clip_vloss=True,
     reward_scale=1.0,
     # --- Model architecture ---
-    lstm_hidden_dim=128,
-    channel_scale=16,
-    fc_scale=128,
-    init_log_std=-0.5,
-    action_scale=0.1,
+    lstm_hidden_dim=256,
+    channel_scale=32,
+    fc_scale=256,
+    init_log_std=-2.0,
+    action_scale=1.0,
     # --- Environment ---
     max_episode_steps=256,
     env_version="v5",
-    no_eval=True,
+    # no_eval: use --no-eval CLI flag, not config
     # --- Evaluation ---
     eval_interval=100,
     eval_episodes=8,
     eval_seeds=None,
     pass_threshold_ratio=1.1,
-    seed=42,
+    seed=1,
     # --- Model saving ---
     model_save_interval=100,
     # --- Env kwargs ---
-    env_kwargs=NANOELF_PTT_ENV_KWARGS,
+    env_kwargs=NANOELF_TT_ENV_KWARGS,
 )
 
 
