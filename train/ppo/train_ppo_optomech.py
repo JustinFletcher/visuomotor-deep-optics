@@ -1259,7 +1259,7 @@ def run_ppo_training(config: dict, run_dir: str):
             # Per-step instantaneous SPS
             step_dt = time.time() - step_start_time
             step_sps = num_envs / step_dt if step_dt > 0 else 0
-            writer.add_scalar("charts/step_SPS", step_sps, global_step)
+            writer.add_scalar("performance/step_SPS", step_sps, global_step)
 
             # Per-step diagnostic metrics from env info dict
             if "strehl" in infos:
@@ -1432,7 +1432,7 @@ def run_ppo_training(config: dict, run_dir: str):
             global_step,
         )
         writer.add_scalar(
-            "charts/SPS",
+            "performance/avg_SPS",
             int(global_step / (time.time() - start_time)),
             global_step,
         )
@@ -1441,11 +1441,41 @@ def run_ppo_training(config: dict, run_dir: str):
         update_dt = time.time() - update_start_time
         optimize_dt = update_dt - rollout_dt
         current_sps = (num_steps * num_envs) / update_dt if update_dt > 0 else 0
-        writer.add_scalar("charts/current_SPS", current_sps, global_step)
-        writer.add_scalar("charts/rollout_SPS", rollout_sps, global_step)
-        writer.add_scalar("timing/rollout_s", rollout_dt, global_step)
-        writer.add_scalar("timing/optimize_s", optimize_dt, global_step)
-        writer.add_scalar("timing/update_total_s", update_dt, global_step)
+        batch_size = num_steps * num_envs
+        rollout_pct = (rollout_dt / update_dt * 100) if update_dt > 0 else 0
+        optimize_pct = (optimize_dt / update_dt * 100) if update_dt > 0 else 0
+        avg_step_ms = (rollout_dt / num_steps * 1000) if num_steps > 0 else 0
+        elapsed_total = time.time() - start_time
+
+        writer.add_scalar("performance/current_SPS", current_sps, global_step)
+        writer.add_scalar("performance/rollout_SPS", rollout_sps, global_step)
+        writer.add_scalar("performance/rollout_s", rollout_dt, global_step)
+        writer.add_scalar("performance/optimize_s", optimize_dt, global_step)
+        writer.add_scalar("performance/update_total_s", update_dt, global_step)
+        writer.add_scalar("performance/rollout_pct", rollout_pct, global_step)
+        writer.add_scalar("performance/optimize_pct", optimize_pct, global_step)
+        writer.add_scalar("performance/avg_step_ms", avg_step_ms, global_step)
+
+        # Text summary for easy copy-paste to diagnose bottlenecks
+        if update % 10 == 0 or update == 1:
+            perf_text = (
+                f"**Performance Summary — Update {update}, Step {global_step:,}**\n\n"
+                f"| Metric | Value |\n|---|---|\n"
+                f"| num_envs | {num_envs} |\n"
+                f"| num_steps (per update) | {num_steps} |\n"
+                f"| batch_size (steps×envs) | {batch_size} |\n"
+                f"| device | {device} |\n"
+                f"| env_version | {_ENV_ID} |\n"
+                f"| elapsed_total | {elapsed_total:.1f}s |\n"
+                f"| **current_SPS** | **{current_sps:.0f}** |\n"
+                f"| rollout_SPS | {rollout_sps:.0f} |\n"
+                f"| rollout_s | {rollout_dt:.2f}s ({rollout_pct:.0f}%) |\n"
+                f"| optimize_s | {optimize_dt:.2f}s ({optimize_pct:.0f}%) |\n"
+                f"| update_total_s | {update_dt:.2f}s |\n"
+                f"| avg_step_ms | {avg_step_ms:.1f}ms |\n"
+                f"| avg_SPS (lifetime) | {global_step / elapsed_total:.0f} |\n"
+            )
+            writer.add_text("performance/summary", perf_text, global_step)
 
         if len(recent_train_returns) > 0:
             writer.add_scalar(
