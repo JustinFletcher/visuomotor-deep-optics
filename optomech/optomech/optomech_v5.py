@@ -248,8 +248,9 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._init_tilt_std = cfg.get("init_wind_tilt_arcsec_std_tt", 0.0) if self._command_tip_tilt else 0.0
         self._wl = os4.wavelength
 
-        # Observation window size (for stacking frames)
-        self._obs_window = cfg.get("observation_window_size", 1)
+        # Observation shape: frames_per_decision (matches V4 behavior).
+        # observation_window_size is deprecated and ignored.
+        self._obs_window = 1  # frames_per_decision is always 1 for V5
 
         # --- Gymnasium VectorEnv setup ---
         single_obs_space = spaces.Box(
