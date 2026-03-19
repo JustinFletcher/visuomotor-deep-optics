@@ -233,12 +233,24 @@ DEFAULT_CONFIG = {
 # ---------------------------------------------------------------------------
 
 def _resolve_device(cfg_device):
-    """Resolve 'auto' to the best available torch device."""
+    """Resolve 'auto' to the best available torch device.
+
+    Falls back to CPU if running inside a forked subprocess (e.g.
+    AsyncVectorEnv workers) since CUDA cannot be re-initialized
+    after fork().
+    """
+    import multiprocessing as _mp
+    _is_fork = _mp.current_process().name != "MainProcess"
+
     if cfg_device == "auto":
+        if _is_fork:
+            return torch.device("cpu")
         if torch.cuda.is_available():
             return torch.device("cuda")
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return torch.device("mps")
+        return torch.device("cpu")
+    if _is_fork and cfg_device in ("cuda", "mps"):
         return torch.device("cpu")
     return torch.device(cfg_device)
 
