@@ -1490,7 +1490,7 @@ def run_ppo_training(config: dict, run_dir: str):
         # ==============================================================
         # PERIODIC EVALUATION WITH VISUALISATION
         # ==============================================================
-        if update == 1 or update % config["eval_interval"] == 0 or update == num_updates:
+        if not config.get("no_eval", False) and (update == 1 or update % config["eval_interval"] == 0 or update == num_updates):
             print(
                 f"\n  --- Evaluation at update {update} (step {global_step:,}) ---"
             )
@@ -1640,6 +1640,12 @@ def run_main(full_config: dict, fast_config: dict):
         default=False,
         help="Use AsyncVectorEnv (multiprocess) instead of SyncVectorEnv",
     )
+    parser.add_argument(
+        "--no-eval",
+        action="store_true",
+        default=False,
+        help="Disable all evaluation (baselines + periodic eval) for max throughput",
+    )
     cli = parser.parse_args()
 
     _ENV_ID = f"optomech-{cli.env_version}"
@@ -1669,6 +1675,9 @@ def run_main(full_config: dict, fast_config: dict):
     # Async env parallelism
     config["async_envs"] = cli.async_envs
 
+    # No-eval mode
+    config["no_eval"] = cli.no_eval
+
     # Full model resume / init
     config["resume_from"] = cli.resume_from
     config["init_from"] = cli.init_from
@@ -1697,13 +1706,18 @@ def run_main(full_config: dict, fast_config: dict):
     print(f"Output directory: {run_dir}")
 
     # Baselines
-    print("\nEvaluating zero-action baseline...")
-    zero_return = evaluate_zero_policy(config, num_episodes=3)
-    print(f"Zero-action policy mean return: {zero_return:.4f}")
+    if config.get("no_eval", False):
+        print("\n  --no-eval: skipping baselines and periodic evaluation")
+        zero_return = float("nan")
+        random_return = float("nan")
+    else:
+        print("\nEvaluating zero-action baseline...")
+        zero_return = evaluate_zero_policy(config, num_episodes=3)
+        print(f"Zero-action policy mean return: {zero_return:.4f}")
 
-    print("Evaluating random baseline...")
-    random_return = evaluate_random_policy(config, num_episodes=3)
-    print(f"Random policy mean return: {random_return:.4f}")
+        print("Evaluating random baseline...")
+        random_return = evaluate_random_policy(config, num_episodes=3)
+        print(f"Random policy mean return: {random_return:.4f}")
 
     # Train
     best_eval_return, this_run_dir = run_ppo_training(config, run_dir)
