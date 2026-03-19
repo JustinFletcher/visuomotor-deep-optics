@@ -955,39 +955,50 @@ def run_ppo_training(config: dict, run_dir: str):
     torch.manual_seed(seed)
 
     # Vectorized environments
-    # Default: SyncVectorEnv (lower overhead for moderate env counts).
-    # Use --async-envs to enable AsyncVectorEnv for true multiprocess parallelism.
-    env_fns = [
-        make_optomech_env(
-            config["env_kwargs"],
-            max_episode_steps=config["max_episode_steps"],
-            idx=i,
+    env_version = config["env_kwargs"].get("optomech_version", "v3")
+
+    if env_version == "v5":
+        # V5: batched GPU env — IS the VectorEnv, no wrapper needed.
+        from optomech.optomech.optomech_v5 import BatchedOptomechEnv
+        v5_kwargs = dict(config["env_kwargs"])
+        v5_kwargs["max_episode_steps"] = config["max_episode_steps"]
+        envs = BatchedOptomechEnv(
+            num_envs=config["num_envs"],
+            device="auto",
+            **v5_kwargs,
         )
-        for i in range(config["num_envs"])
-    ]
-    use_async = config.get("async_envs", False)
-    VecEnvCls = gym.vector.AsyncVectorEnv if use_async else gym.vector.SyncVectorEnv
-    print(f"  Creating {config['num_envs']} envs with {VecEnvCls.__name__}")
-    envs = VecEnvCls(env_fns)
+        obs_ref_max = envs._reference_fpi_max
+        print(f"  Created BatchedOptomechEnv (v5): {config['num_envs']} envs on {envs.dev}")
+    else:
+        # V3/V4: individual envs wrapped in Sync/AsyncVectorEnv.
+        env_fns = [
+            make_optomech_env(
+                config["env_kwargs"],
+                max_episode_steps=config["max_episode_steps"],
+                idx=i,
+            )
+            for i in range(config["num_envs"])
+        ]
+        use_async = config.get("async_envs", False)
+        VecEnvCls = gym.vector.AsyncVectorEnv if use_async else gym.vector.SyncVectorEnv
+        print(f"  Creating {config['num_envs']} envs with {VecEnvCls.__name__}")
+        envs = VecEnvCls(env_fns)
+
+        # Extract reference max for fixed-reference normalization.
+        _tmp_env = gym.make(
+            _ENV_ID,
+            **config["env_kwargs"],
+        )
+        _base_env = _tmp_env.unwrapped
+        if hasattr(_base_env, 'optical_system') and hasattr(_base_env.optical_system, '_reference_fpi_max'):
+            obs_ref_max = _base_env.optical_system._reference_fpi_max
+        else:
+            obs_ref_max = 1.0  # fallback
+        _tmp_env.close()
+        del _tmp_env, _base_env
 
     obs_shape = envs.single_observation_space.shape
     action_shape = envs.single_action_space.shape
-
-    # Extract reference max for fixed-reference normalization.
-    # This preserves flux information when the PSF moves off the detector.
-    # Create a temporary single env to read the reference value, since
-    # AsyncVectorEnv does not expose .envs directly.
-    _tmp_env = gym.make(
-        _ENV_ID,
-        **config["env_kwargs"],
-    )
-    _base_env = _tmp_env.unwrapped
-    if hasattr(_base_env, 'optical_system') and hasattr(_base_env.optical_system, '_reference_fpi_max'):
-        obs_ref_max = _base_env.optical_system._reference_fpi_max
-    else:
-        obs_ref_max = 1.0  # fallback
-    _tmp_env.close()
-    del _tmp_env, _base_env
     print(f"  Obs ref max (DN):  {obs_ref_max:.1f}")
 
     # --- Load pretrained encoder if provided ---
