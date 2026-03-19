@@ -1687,6 +1687,18 @@ def run_main(full_config: dict, fast_config: dict):
         default=False,
         help="Disable all evaluation (baselines + periodic eval) for max throughput",
     )
+    parser.add_argument(
+        "--num-steps",
+        type=int,
+        default=None,
+        help="Override rollout length per env (default: from config)",
+    )
+    parser.add_argument(
+        "--num-minibatches",
+        type=int,
+        default=None,
+        help="Override number of minibatches per update (default: from config)",
+    )
     cli = parser.parse_args()
 
     _ENV_ID = f"optomech-{cli.env_version}"
@@ -1718,6 +1730,12 @@ def run_main(full_config: dict, fast_config: dict):
 
     # No-eval mode
     config["no_eval"] = cli.no_eval
+
+    # Override num_steps and num_minibatches if specified
+    if cli.num_steps is not None:
+        config["num_steps"] = cli.num_steps
+    if cli.num_minibatches is not None:
+        config["num_minibatches"] = cli.num_minibatches
 
     # Full model resume / init
     config["resume_from"] = cli.resume_from
