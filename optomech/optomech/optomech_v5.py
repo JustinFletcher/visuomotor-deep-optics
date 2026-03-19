@@ -389,25 +389,23 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         high = self._baselines_t + self._max_corr_t.unsqueeze(0)
         post_clip = torch.clamp(pre_clip, low, high)
 
-        # Track OOB fraction
-        clipped_mask = (pre_clip != post_clip)  # [N, n_modes]
+        # Track OOB fraction (only count active DOFs)
+        clipped_full = (pre_clip != post_clip)  # [N, n_modes]
         if self._command_tip_tilt:
-            n_active = self._n_modes  # all DOFs active
+            n_active = self._n_modes
         else:
             n_active = self._num_apertures  # piston only
-            clipped_mask = clipped_mask[:, :n_active]
-        self._oob_frac = clipped_mask.float().mean(dim=1)  # [N]
-        self._clipped_count = clipped_mask.sum(dim=1)  # [N]
-        self._total_dof = n_active
+        self._oob_frac = clipped_full[:, :n_active].float().mean(dim=1)  # [N]
 
-        # Rail noise: add noise where clipped
-        if self._actuator_noise or True:  # rail noise always applies to clipped DOFs
-            noise = torch.randn_like(post_clip) * self._noise_std_t.unsqueeze(0)
-            post_clip = torch.where(clipped_mask, post_clip + noise, post_clip)
+        # Rail noise: add noise where clipped (full tensor)
+        noise = torch.randn_like(post_clip) * self._noise_std_t.unsqueeze(0)
+        post_clip = torch.where(clipped_full, post_clip + noise, post_clip)
 
         # Actuator repeatability noise on non-zero commands
         if self._actuator_noise:
-            cmd_nonzero = (action_reordered != 0.0)
+            # Build full-size nonzero mask
+            cmd_nonzero = torch.zeros(N, self._n_modes, dtype=torch.bool, device=self.dev)
+            cmd_nonzero[:, :n_active] = (action_reordered != 0.0)
             rep_noise = torch.randn_like(post_clip) * self._noise_std_t.unsqueeze(0)
             post_clip = torch.where(cmd_nonzero, post_clip + rep_noise, post_clip)
 
