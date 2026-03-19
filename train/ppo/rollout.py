@@ -61,8 +61,8 @@ from train.ppo.train_ppo_optomech import (
     _ENV_ID,
 )
 
-# Default env kwargs matching train_ppo_nanoelf_tt.py
-from train.ppo.train_ppo_nanoelf_tt import NANOELF_TT_ENV_KWARGS
+# Default env kwargs matching train_ppo_nanoelf_ptt.py
+from train.ppo.train_ppo_nanoelf_ptt import NANOELF_TT_ENV_KWARGS
 
 _DEFAULT_OUTPUT_DIR = os.path.join(_REPO_ROOT, "test_output")
 
