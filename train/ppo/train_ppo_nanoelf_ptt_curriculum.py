@@ -38,7 +38,7 @@ CURRICULUM = dict(
 
 LOCAL_CONFIG = dict(
     # --- PPO algorithm ---
-    total_timesteps=100_000_000,
+    total_timesteps=200_000_000,
     num_envs=8,
     num_steps=128,
     num_minibatches=4,
@@ -51,7 +51,7 @@ LOCAL_CONFIG = dict(
     ent_coef=0.005,
     vf_coef=0.5,
     max_grad_norm=1.0,
-    anneal_lr=True,
+    anneal_lr=False,
     norm_adv=True,
     clip_vloss=True,
     reward_scale=1.0,
@@ -79,7 +79,7 @@ LOCAL_CONFIG = dict(
 
 HPC_CONFIG = dict(
     # --- PPO algorithm (tuned for V5 batched GPU env on H100) ---
-    total_timesteps=100_000_000,
+    total_timesteps=200_000_000,
     num_envs=64,
     num_steps=128,
     num_minibatches=4,
@@ -92,7 +92,7 @@ HPC_CONFIG = dict(
     ent_coef=0.005,
     vf_coef=0.5,
     max_grad_norm=1.0,
-    anneal_lr=True,
+    anneal_lr=False,
     norm_adv=True,
     clip_vloss=True,
     reward_scale=1.0,
