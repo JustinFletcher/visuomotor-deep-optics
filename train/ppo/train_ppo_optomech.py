@@ -1214,6 +1214,17 @@ def run_ppo_training(config: dict, run_dir: str):
             print(f"  Curriculum: tip/tilt {_cur_start:.2f} -> {_cur_end:.2f} "
                   f"over {_cur_steps:,} steps")
 
+    # --- Holding bonus annealing ---
+    hb_anneal_cfg = config.get("holding_bonus_anneal")
+    if hb_anneal_cfg:
+        _hb_start = hb_anneal_cfg["start_value"]
+        _hb_end = hb_anneal_cfg["end_value"]
+        _hb_warmup = hb_anneal_cfg.get("warmup_timesteps", 0)
+        _hb_anneal_steps = hb_anneal_cfg["anneal_timesteps"]
+        print(f"  Holding bonus anneal: hold at {_hb_start:.2f} for "
+              f"{_hb_warmup:,} steps, then ramp to {_hb_end:.2f} "
+              f"over {_hb_anneal_steps:,} steps")
+
     for update in range(start_update, num_updates + 1):
         # LR annealing
         if config["anneal_lr"]:
@@ -1244,6 +1255,24 @@ def run_ppo_training(config: dict, run_dir: str):
                           "with AsyncVectorEnv. Ignoring curriculum config.")
             if update % 100 == 1:
                 writer.add_scalar("curriculum/tip_tilt_std", cur_std, global_step)
+
+        # Holding bonus annealing
+        if hb_anneal_cfg:
+            if global_step < _hb_warmup:
+                cur_hb = _hb_start
+            else:
+                progress = min((global_step - _hb_warmup) / _hb_anneal_steps, 1.0)
+                cur_hb = _hb_start + progress * (_hb_end - _hb_start)
+            if hasattr(envs, '_holding_bonus_weight'):
+                # V5 BatchedOptomechEnv: direct attribute update
+                envs._holding_bonus_weight = cur_hb
+            elif hasattr(envs, 'envs'):
+                # SyncVectorEnv: update wrapped envs
+                for env_wrapper in envs.envs:
+                    base_env = env_wrapper.unwrapped
+                    base_env._holding_bonus_weight = cur_hb
+            if update % 100 == 1:
+                writer.add_scalar("curriculum/holding_bonus_weight", cur_hb, global_step)
 
         # ==============================================================
         # ROLLOUT PHASE

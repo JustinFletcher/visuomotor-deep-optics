@@ -1,46 +1,29 @@
 """
-PPO training: nanoelf PTT with progressive tip/tilt curriculum (6 DOF).
+PPO training: nanoelf PTT, no TT curriculum, holding bonus annealed down.
 
-Identical to train_ppo_nanoelf_ptt.py except initial tip/tilt error
-ramps linearly from 0.0 (aligned) to 2.0 arcsec. Holding bonus is ON
-throughout to stabilize early learning.
-
-Curriculum: hold at 0.0 TT for 100M steps, then ramp to 2.0 over 200M steps.
-Exploration: slightly higher ent_coef (0.01) and init_log_std (-1.5) to
-encourage broader action sampling early in training.
+Full tip/tilt error (2.0 arcsec) from step 0. Holding bonus starts at 1.0
+for the first 50M steps (learn to hold still when aligned), then anneals
+linearly to 0.0 over the next 100M steps (force active correction without
+the crutch of holding-still reward).
 
 Usage:
-    python train/ppo/train_ppo_nanoelf_ptt_curriculum.py                  # local run
-    python train/ppo/train_ppo_nanoelf_ptt_curriculum.py --hpc            # HPC run (v5, 64 envs)
-    python train/ppo/train_ppo_nanoelf_ptt_curriculum.py --hpc --no-eval  # HPC, skip eval
+    python train/ppo/train_ppo_nanoelf_ptt_nocurr_hbanneal.py                  # local
+    python train/ppo/train_ppo_nanoelf_ptt_nocurr_hbanneal.py --hpc --no-eval  # HPC
 """
 
 from train.ppo.train_ppo_optomech import run_main
-from train.ppo.train_ppo_nanoelf_ptt import NANOELF_TT_ENV_KWARGS
+from train.ppo.train_ppo_nanoelf_ptt_nocurr import NOCURR_ENV_KWARGS
 
-# Start with zero tip/tilt error — curriculum will ramp it up.
-# Holding bonus ON throughout.
-CURRICULUM_ENV_KWARGS = {
-    **NANOELF_TT_ENV_KWARGS,
-    "init_wind_tip_arcsec_std_tt": 0.0,
-    "init_wind_tilt_arcsec_std_tt": 0.0,
+# Override: start with holding bonus ON — the annealing config will ramp it down
+HBANNEAL_ENV_KWARGS = {
+    **NOCURR_ENV_KWARGS,
     "holding_bonus_weight": 1.0,
     "holding_bonus_min_reward": -1.0,
     "holding_bonus_threshold": -0.7,
 }
 
 # ============================================================================
-# Curriculum schedule
-# ============================================================================
-CURRICULUM = dict(
-    tip_tilt_start=0.0,           # start aligned (easy)
-    tip_tilt_end=2.0,             # ramp to 2.0 arcsec (hard)
-    warmup_timesteps=100_000_000, # hold at 0.0 for first 100M steps
-    anneal_timesteps=200_000_000, # then ramp over next 200M steps
-)
-
-# ============================================================================
-# PPO hyperparameters — slightly more exploration via ent_coef and init_log_std
+# PPO hyperparameters
 # ============================================================================
 
 LOCAL_CONFIG = dict(
@@ -55,7 +38,7 @@ LOCAL_CONFIG = dict(
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.01,
+    ent_coef=0.005,
     vf_coef=0.5,
     max_grad_norm=1.0,
     anneal_lr=False,
@@ -66,7 +49,7 @@ LOCAL_CONFIG = dict(
     lstm_hidden_dim=256,
     channel_scale=32,
     fc_scale=256,
-    init_log_std=-1.5,
+    init_log_std=-2.0,
     action_scale=1.0,
     # --- Environment ---
     max_episode_steps=256,
@@ -79,9 +62,14 @@ LOCAL_CONFIG = dict(
     # --- Model saving ---
     model_save_interval=100,
     # --- Env kwargs ---
-    env_kwargs=CURRICULUM_ENV_KWARGS,
-    # --- Curriculum ---
-    curriculum=CURRICULUM,
+    env_kwargs=HBANNEAL_ENV_KWARGS,
+    # --- Holding bonus annealing ---
+    holding_bonus_anneal=dict(
+        start_value=1.0,
+        end_value=0.0,
+        warmup_timesteps=50_000_000,
+        anneal_timesteps=100_000_000,
+    ),
 )
 
 HPC_CONFIG = dict(
@@ -96,7 +84,7 @@ HPC_CONFIG = dict(
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.01,
+    ent_coef=0.005,
     vf_coef=0.5,
     max_grad_norm=1.0,
     anneal_lr=False,
@@ -107,7 +95,7 @@ HPC_CONFIG = dict(
     lstm_hidden_dim=256,
     channel_scale=32,
     fc_scale=256,
-    init_log_std=-1.5,
+    init_log_std=-2.0,
     action_scale=1.0,
     # --- Environment ---
     max_episode_steps=256,
@@ -121,9 +109,14 @@ HPC_CONFIG = dict(
     # --- Model saving ---
     model_save_interval=100,
     # --- Env kwargs ---
-    env_kwargs=CURRICULUM_ENV_KWARGS,
-    # --- Curriculum ---
-    curriculum=CURRICULUM,
+    env_kwargs=HBANNEAL_ENV_KWARGS,
+    # --- Holding bonus annealing ---
+    holding_bonus_anneal=dict(
+        start_value=1.0,
+        end_value=0.0,
+        warmup_timesteps=50_000_000,
+        anneal_timesteps=100_000_000,
+    ),
 )
 
 
