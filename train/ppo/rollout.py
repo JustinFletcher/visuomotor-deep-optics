@@ -96,6 +96,7 @@ def load_agent(checkpoint_path, env, device="cpu"):
         fc_scale=config.get("fc_scale", 256),
         action_scale=config.get("action_scale", 1.0),
         init_log_std=config.get("init_log_std", -0.5),
+        model_type=config.get("model_type", "small"),
     ).to(device)
 
     agent.load_state_dict(ckpt["model_state_dict"])

@@ -25,8 +25,12 @@ import torch.nn.functional as F
 import numpy as np
 from torch.distributions import Normal
 from typing import Tuple, Optional
+from torchvision.models import resnet18
 
 from models.td3_models import layer_init, conv_init, init_lstm_weights
+
+# Valid model types: "small" (3-layer CNN), "medium" (ResNet18 encoder)
+VALID_MODEL_TYPES = ("small", "medium")
 
 
 class RecurrentActorCritic(nn.Module):
@@ -51,9 +55,13 @@ class RecurrentActorCritic(nn.Module):
         action_scale: float = 1.0,
         init_log_std: float = -0.5,
         freeze_encoder: bool = False,
+        model_type: str = "small",
     ):
         super().__init__()
+        assert model_type in VALID_MODEL_TYPES, \
+            f"model_type must be one of {VALID_MODEL_TYPES}, got '{model_type}'"
         self.device = device
+        self.model_type = model_type
         self.lstm_hidden_dim = lstm_hidden_dim
         self.lstm_num_layers = lstm_num_layers
 
@@ -74,7 +82,10 @@ class RecurrentActorCritic(nn.Module):
             if freeze_encoder:
                 for param in self.visual_encoder.parameters():
                     param.requires_grad = False
+        elif model_type == "medium":
+            self.visual_encoder = self._build_resnet18_encoder(input_channels)
         else:
+            # "small": lightweight 3-layer CNN
             self.visual_encoder = nn.Sequential(
                 conv_init(nn.Conv2d(input_channels, channel_scale, kernel_size=8, stride=4)),
                 nn.ReLU(),
@@ -140,6 +151,42 @@ class RecurrentActorCritic(nn.Module):
         action_high = torch.tensor(envs.single_action_space.high, dtype=torch.float32)
         self.register_buffer("action_low", action_low)
         self.register_buffer("action_high", action_high)
+
+    # ------------------------------------------------------------------
+    # Encoder builders
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_resnet18_encoder(input_channels: int) -> nn.Module:
+        """ResNet18 encoder for the 'medium' model variant.
+
+        Takes a ResNet18 pretrained on ImageNet, replaces the first conv
+        to accept the observation's channel count (e.g. 1 or 2 instead of 3),
+        and strips the final FC + avgpool so it outputs a spatial feature map.
+        Output: [B, 512, H', W'] where H', W' depend on input resolution.
+        For 128x128 input -> 4x4 spatial -> 512*4*4 = 8192 features after flatten.
+        """
+        backbone = resnet18(weights=None)
+
+        # Replace first conv to match input channels (no pretrained weights
+        # since channel count differs from ImageNet's 3)
+        if input_channels != 3:
+            backbone.conv1 = nn.Conv2d(
+                input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
+            )
+
+        # Strip avgpool and fc — we just want the conv feature map
+        encoder = nn.Sequential(
+            backbone.conv1,
+            backbone.bn1,
+            backbone.relu,
+            backbone.maxpool,
+            backbone.layer1,
+            backbone.layer2,
+            backbone.layer3,
+            backbone.layer4,
+        )
+        return encoder
 
     # ------------------------------------------------------------------
     # Hidden state management

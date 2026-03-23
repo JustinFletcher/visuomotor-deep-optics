@@ -1068,6 +1068,7 @@ def run_ppo_training(config: dict, run_dir: str):
         action_scale=config["action_scale"],
         init_log_std=config["init_log_std"],
         freeze_encoder=freeze_encoder,
+        model_type=config.get("model_type", "small"),
     ).to(device)
 
     # Load bottleneck weights into the MLP layer if available
