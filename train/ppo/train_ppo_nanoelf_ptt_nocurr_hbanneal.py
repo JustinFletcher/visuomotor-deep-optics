@@ -1,10 +1,11 @@
 """
-PPO training: nanoelf PTT, no TT curriculum, holding bonus annealed down.
+PPO training: nanoelf PTT, zero TT error, holding bonus annealed down.
 
-Full tip/tilt error (2.0 arcsec) from step 0. Holding bonus starts at 1.0
-for the first 50M steps (learn to hold still when aligned), then anneals
-linearly to 0.0 over the next 100M steps (force active correction without
-the crutch of holding-still reward).
+No tip/tilt error injected — the agent must learn to maximize Strehl from
+a near-perfect starting point. Holding bonus starts at 1.0 for 50M steps
+(learn to hold still), then anneals to 0.0 over 100M steps. As the holding
+bonus fades, the agent's own exploration causes TT perturbations that it
+must learn to correct — a self-generated curriculum for TT correction.
 
 Usage:
     python train/ppo/train_ppo_nanoelf_ptt_nocurr_hbanneal.py                  # local
@@ -12,11 +13,13 @@ Usage:
 """
 
 from train.ppo.train_ppo_optomech import run_main
-from train.ppo.train_ppo_nanoelf_ptt_nocurr import NOCURR_ENV_KWARGS
+from train.ppo.train_ppo_nanoelf_ptt import NANOELF_TT_ENV_KWARGS
 
-# Override: start with holding bonus ON — the annealing config will ramp it down
+# Zero TT error + holding bonus ON — agent learns from its own exploration
 HBANNEAL_ENV_KWARGS = {
-    **NOCURR_ENV_KWARGS,
+    **NANOELF_TT_ENV_KWARGS,
+    "init_wind_tip_arcsec_std_tt": 0.0,
+    "init_wind_tilt_arcsec_std_tt": 0.0,
     "holding_bonus_weight": 1.0,
     "holding_bonus_min_reward": -1.0,
     "holding_bonus_threshold": -0.7,
