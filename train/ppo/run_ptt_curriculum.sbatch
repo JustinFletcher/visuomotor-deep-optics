@@ -3,7 +3,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --account=MHPCC38870258
 #SBATCH --partition=standard
-#SBATCH --nodelist=cn05
+#SBATCH --nodes=1
 #SBATCH --gres=gpu
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
