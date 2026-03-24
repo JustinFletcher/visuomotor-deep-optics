@@ -218,6 +218,24 @@ def make_env(env_id, flags):
             env = gym.wrappers.RecordEpisodeStatistics(env)
             return env
         return thunk
+    elif env_id == "optomech-v2":
+        def thunk():
+            env = gym.make(env_id, **vars(flags))
+            env = gym.wrappers.RecordEpisodeStatistics(env)
+            return env
+        return thunk
+    elif env_id == "optomech-v3":
+        def thunk():
+            env = gym.make(env_id, **vars(flags))
+            env = gym.wrappers.RecordEpisodeStatistics(env)
+            return env
+        return thunk
+    elif env_id == "optomech-v4":
+        def thunk():
+            env = gym.make(env_id, **vars(flags))
+            env = gym.wrappers.RecordEpisodeStatistics(env)
+            return env
+        return thunk
     else:
         def thunk():
             env = gym.make(env_id)
@@ -280,6 +298,10 @@ class Args:
     observation_mode: str = "image_only"
     focal_plane_image_size_pixels: int = 256
     observation_window_size: int = 2**1
+    dark_hole: bool = False
+    dark_hole_angular_location_degrees: float = 45
+    dark_hole_location_radius_fraction: float = 0.3
+    dark_hole_size_radius: float = 0.05
     num_tensioners: int = 0
     num_atmosphere_layers: int = 0
     optomech_version: str = "test"
@@ -452,6 +474,21 @@ def build_sa_dataset(args):
         entry_point='optomech.optomech:OptomechEnv',
         max_episode_steps=args.max_episode_steps,
     )
+    gym.envs.registration.register(
+        id='optomech-v2',
+        entry_point='optomech.optomech_v2:OptomechEnv',
+        max_episode_steps=args.max_episode_steps,
+    )
+    gym.envs.registration.register(
+        id='optomech-v3',
+        entry_point='optomech.optomech_v3:OptomechEnv',
+        max_episode_steps=args.max_episode_steps,
+    )
+    gym.envs.registration.register(
+        id='optomech-v4',
+        entry_point='optomech.optomech_v4:OptomechEnv',
+        max_episode_steps=args.max_episode_steps,
+    )
 
     # Select device
     if torch.cuda.is_available():
@@ -514,9 +551,9 @@ def build_sa_dataset(args):
         # Convert to numpy arrays for efficient storage
         observations = np.array([pair['observation'] for pair in sample_pairs], dtype=np.uint16)
         sa_actions = np.array([pair['sa_action'] for pair in sample_pairs], dtype=np.float32)
-        perfect_actions = np.array([pair['perfect_action'] for pair in sample_pairs], dtype=np.float32)
+        # perfect_actions = np.array([pair['perfect_action'] for pair in sample_pairs], dtype=np.float32)
         sa_incremental_actions = np.array([pair['sa_incremental_action'] for pair in sample_pairs], dtype=np.float32)
-        perfect_incremental_actions = np.array([pair['perfect_incremental_action'] for pair in sample_pairs], dtype=np.float32)
+        # perfect_incremental_actions = np.array([pair['perfect_incremental_action'] for pair in sample_pairs], dtype=np.float32)
         rewards = np.array([pair['reward'] for pair in sample_pairs], dtype=np.float32)
         next_observations = np.array([pair['next_observation'] for pair in sample_pairs], dtype=np.uint16)
         temperatures = np.array([pair['temperature'] for pair in sample_pairs], dtype=np.float32)
@@ -537,9 +574,9 @@ def build_sa_dataset(args):
                 # Store data with compression
                 f.create_dataset('observations', data=observations, compression='gzip', compression_opts=6)
                 f.create_dataset('sa_actions', data=sa_actions, compression='gzip', compression_opts=6)
-                f.create_dataset('perfect_actions', data=perfect_actions, compression='gzip', compression_opts=6)
+                # f.create_dataset('perfect_actions', data=perfect_actions, compression='gzip', compression_opts=6)
                 f.create_dataset('sa_incremental_actions', data=sa_incremental_actions, compression='gzip', compression_opts=6)
-                f.create_dataset('perfect_incremental_actions', data=perfect_incremental_actions, compression='gzip', compression_opts=6)
+                # f.create_dataset('perfect_incremental_actions', data=perfect_incremental_actions, compression='gzip', compression_opts=6)
                 f.create_dataset('rewards', data=rewards, compression='gzip', compression_opts=6)
                 f.create_dataset('next_observations', data=next_observations, compression='gzip', compression_opts=6)
                 f.create_dataset('temperatures', data=temperatures, compression='gzip', compression_opts=6)
@@ -577,9 +614,9 @@ def build_sa_dataset(args):
                 batch_path,
                 observations=observations,
                 sa_actions=sa_actions,
-                perfect_actions=perfect_actions,
+                # perfect_actions=perfect_actions,
                 sa_incremental_actions=sa_incremental_actions,
-                perfect_incremental_actions=perfect_incremental_actions,
+                # perfect_incremental_actions=perfect_incremental_actions,
                 rewards=rewards,
                 next_observations=next_observations,
                 temperatures=temperatures,
@@ -716,7 +753,7 @@ def build_sa_dataset(args):
             std_dev = std_dev * current_scale
 
             # Action perturbation strategy selection
-            fsa = False  # Use Cauchy for fast simulated annealing
+            fsa = True  # Use Cauchy for fast simulated annealing
             gsa = False  # Set True to use q-Gaussian for generalized simulated annealing
 
             if gsa:
@@ -774,11 +811,11 @@ def build_sa_dataset(args):
                 # Compute incremental actions (difference from previous accepted action)
                 if previous_accepted_action is not None:
                     sa_incremental_action = candidate_actions - previous_accepted_action
-                    perfect_incremental_action = perfect_action - previous_accepted_action
+                    # perfect_incremental_action = perfect_action - previous_accepted_action
                 else:
                     # For the first accepted action, incremental is the action itself (no previous reference)
                     sa_incremental_action = candidate_actions.copy()
-                    perfect_incremental_action = perfect_action.copy()
+                    # perfect_incremental_action = perfect_action.copy()
                 
                 # Store accepted transition with both SA action and perfect action
                 obs_uint16 = np.clip(obs, 0, 65535).astype(np.uint16)
@@ -787,8 +824,8 @@ def build_sa_dataset(args):
                     'observation': obs_uint16.tolist(),                        # Observation PRIOR TO SA action - this is the state the
                     'sa_action': candidate_actions.tolist(),                  # Action chosen by SA (behavior cloning target)
                     'sa_incremental_action': sa_incremental_action.tolist(),  # SA action increment from previous
-                    'perfect_incremental_action': perfect_incremental_action.tolist(),  # Perfect action increment from previous
-                    'perfect_action': perfect_action.tolist(),                # Perfect correcting action (correction learning target)
+                    # 'perfect_incremental_action': perfect_incremental_action.tolist(),  # Perfect action increment from previous
+                    # 'perfect_action': perfect_action.tolist(),                # Perfect correcting action (correction learning target)
                     'reward': float(candidate_rewards),                       # Reward achieved
                     'next_observation': next_obs_uint16.tolist(),            # Observation AFTER SA action
                     'temperature': float(temperature),                        # SA temperature at acceptance
@@ -843,7 +880,8 @@ def build_sa_dataset(args):
                 time_since_last_print = current_time - last_print_time
                 steps_since_last_print = total_steps - last_print_steps
                 steps_per_sec_interval = steps_since_last_print / time_since_last_print if time_since_last_print > 0 else 0
-                
+                sec_per_step = time_since_last_print / steps_since_last_print if steps_since_last_print > 0 else 0
+
                 # Compute cost delta statistics for recent steps
                 if recent_cost_deltas:
                     max_delta = max(recent_cost_deltas)
@@ -856,7 +894,7 @@ def build_sa_dataset(args):
                 print(f"Progress: {current_total_samples}/{args.num_samples} ({progress:.1f}%) | "
                       f"Accepted: {accepted_samples}/{samples_needed} | Steps: {total_steps} | "
                       f"Accept: {acceptance_rate:.1f}% | Rate: {samples_per_sec:.2f} accepted/s | "
-                      f"Steps/s: {steps_per_sec_interval:.1f} | "
+                      f"Steps/s: {steps_per_sec_interval:.1f} | s/step: {sec_per_step:.3f} | "
                       f"T: {temperature:.3f} | Best R: {best_reward:.4f} | {delta_stats} | ETA: {eta_str}")
                 
                 # Update tracking variables for next interval

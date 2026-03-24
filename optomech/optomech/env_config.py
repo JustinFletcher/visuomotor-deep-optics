@@ -64,6 +64,16 @@ class OptomechEnvConfig:
     """The size of the focal plane image in pixels."""
     observation_window_size: int = 2**1
     """The size of the observation window."""
+
+    # Dark hole settings
+    dark_hole: bool = False
+    """Whether to enable dark hole in target image."""
+    dark_hole_angular_location_degrees: float = 45
+    """Angular location of dark hole center in degrees, measured counterclockwise from positive x-axis."""
+    dark_hole_location_radius_fraction: float = 0.3
+    """Radius of dark hole location in units of maximum focal grid radius."""
+    dark_hole_size_radius: float = 0.05
+    """Radius of dark hole size in units of maximum focal grid radius."""
     
     # Adaptive optics settings
     ao_loop_active: bool = False

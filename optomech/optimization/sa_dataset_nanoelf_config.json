@@ -14,7 +14,7 @@
     "run",
     "python",
     "./optomech/optimization/build_sa_dataset.py",
-    "--env-id=optomech-v1",
+    "--env-id=optomech-v2",
     "--object_type=single",
     "--ao_interval_ms=100.0",
     "--control_interval_ms=100.0",

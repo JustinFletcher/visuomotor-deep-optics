@@ -2,7 +2,8 @@
 #SBATCH --job-name=wm           # Job name
 #SBATCH --partition=standard          # Partition or queue name
 #SBATCH --nodes=1                     # Number of nodes
-#SBATCH --ntasks-per-node=28          # Number of tasks per node
+#SBATCH --ntasks=1              # <-- ONE task
+#SBATCH --cpus-per-task=28      # <-- 28 CPUs for that one task
 #SBATCH --account=MHPCC96650DAS       # Account/project name
 #SBATCH --output=./wm_training.out
 #SBATCH --error=./wm_training.err
@@ -22,7 +23,7 @@ VARIANTS=(
 for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
-    poetry run python optomech/world_models/train_world_model.py \
+    srun poetry run python optomech/world_models/train_world_model.py \
         --runs-dir /wdata/scratch/fletch/runs \
         --config optomech/world_models/world_model_config.json \
         $VARIANT &  # Run in background

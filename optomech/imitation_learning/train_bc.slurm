@@ -15,10 +15,7 @@
 cd ~/visuomotor-deep-optics/
 
 VARIANTS=(
-    "--freeze-encoder --target-action perfect_incremental_actions --run-name frozen_perfect_100"
-    "--freeze-encoder --target-action sa_incremental_actions --run-name frozen_sa_100"
-    "--target-action perfect_incremental_actions --run-name finetune_perfect_100"
-    "--target-action sa_incremental_actions --run-name finetune_sa_100"
+    "--run-name bc_episode"
 )
 
 # Run all variants in parallel
@@ -26,16 +23,7 @@ for VARIANT in "${VARIANTS[@]}"; do
 
     # Launch autoencoder training
     poetry run python optomech/imitation_learning/train_behavior_cloning.py \
-        --dataset-path $WORKDIR/datasets/sa_dataset_100k \
-        --pretrained-encoder $WORKDIR/models/trained_autoencoder.pth \
-        --num-epochs 200 \
-        --batch-size 1024 \
-        --learning-rate 1e-4 \
-        --enable-rollouts \
-        --rollout-seeds 5 \
-        --rollout-steps 100 \
-        --rollout-episode-steps 100 \
-        --no-dataparallel \
+        --config optomech/imitation_learning/bc_config_sa_1m.json \
         --seed 42 \
        $VARIANT &  # Run in background
 done

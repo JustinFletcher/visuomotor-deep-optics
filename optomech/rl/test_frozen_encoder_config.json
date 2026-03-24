@@ -45,6 +45,7 @@
   "target_smoothing": true,
   "policy_noise": 0.1,
   "model_save_interval": 10000,
+  "save_model": true,
   "writer_interval": 100,
   "num_eval_rollouts": 0,
   "use_q_bias": false,

@@ -35,6 +35,18 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from torchinfo import summary
 
+# Import unified dataset utilities
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils.datasets import LazyDataset, SupervisedDataset
+from utils.transforms import center_crop_transform, normalize_transform
+
+# Import rollout instrumentation
+try:
+    from ..eval.rollout_instrumentation import perform_rollout_instrumentation
+except ImportError:
+    # Fallback import for direct execution
+    from optomech.eval.rollout_instrumentation import perform_rollout_instrumentation
+
 
 def center_crop_transform(tensor, crop_size):
     """
@@ -278,7 +290,7 @@ class SMLResNetGN(nn.Module):
         super().__init__()
         self.input_crop_size = input_crop_size
         # Input group default
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=7, stride=1, padding=3, bias=False)
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, stride=1, padding=3, bias=False)
         self.gn1 = nn.GroupNorm(num_groups=8, num_channels=32)  # Use 16 groups for 32 channels
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
@@ -1298,39 +1310,27 @@ def load_dataset_config(dataset_path: str) -> Dict:
     raise FileNotFoundError(f"No job config found for dataset: {dataset_path}")
 
 
-def perform_rollout_instrumentation(
-    model_path: str = None,
-    num_seeds: int = 32,
-    rollout_steps: int = 250,
-    runs_dir: str = "runs",
-    save_results: bool = True,
-    output_dir: str = None
-) -> Tuple[np.ndarray, np.ndarray, Dict]:
+def perform_rollout_instrumentation(*args, **kwargs):
     """
-    Perform rollout instrumentation using the most recent model.
-    
-    Args:
-        model_path: Path to model (if None, finds most recent)
-        num_seeds: Number of random seeds to evaluate
-        rollout_steps: Number of steps per rollout
-        runs_dir: Directory containing training runs
-        save_results: Whether to save results to disk
-        output_dir: Directory to save results (if None, uses model's run dir)
-        
-    Returns:
-        Tuple of (mean_rewards, std_rewards, metadata)
+    This function has been moved to rollout_instrumentation.py for better modularity.
+    Use the external module for rollout functionality.
     """
-    print("\n🎯 Starting Rollout Instrumentation")
-    print("=" * 50)
-    
-    # Import rollout functionality directly
+    raise NotImplementedError(
+        "perform_rollout_instrumentation has been moved to rollout_instrumentation.py. "
+        "Please use the external module instead."
+    )
+
+
+def main():
+    """Main training function"""
+    parser = argparse.ArgumentParser(description="Train SML model on Optomech dataset")
     try:
         # Add the parent directory to the path for imports
         current_dir = Path(__file__).parent
         project_root = current_dir.parent.parent
         sys.path.insert(0, str(project_root))
         
-        from optomech.optomech_rollout import UniversalRolloutEngine, create_model_interface
+        from optomech.eval.optomech_rollout import UniversalRolloutEngine, create_model_interface
         from argparse import Namespace
         import gymnasium as gym
     except ImportError as e:
@@ -1877,25 +1877,26 @@ def main():
     
     # Load and split dataset
     print("� Loading dataset...")
-    # Disable cache when max_examples is specified
-    # Determine cache usage - enable if explicitly requested or if no max_examples limit
-    use_cache = args.cache_data or (args.max_examples is None)
-    if args.max_examples is not None:
-        cache_status = "cache enabled" if args.cache_data else "cache disabled"
-        print(f"  Max examples: {args.max_examples} ({cache_status})")
-    pairs = load_dataset_pairs_sequential(config.dataset_path, use_cache=use_cache, max_examples=args.max_examples, cache_data=args.cache_data)
+    # Create datasets using unified utilities for memory-efficient loading
+    print(f"📦 Creating unified datasets from {config.dataset_path}")
     
-    if len(pairs) == 0:
+    # Create the main dataset with unified utilities
+    full_dataset = LazyDataset(
+        dataset_path=config.dataset_path,
+        task_type='supervised',
+        input_crop_size=args.center_crop_size,
+        max_examples=args.max_examples,
+        use_cache=args.cache_data
+    )
+    
+    if len(full_dataset) == 0:
         print("❌ No valid observation-action pairs found!")
         return
     
-    # Check action dimensions
-    sample_action = pairs[0][1]
+    # Get sample data for shape information
+    sample_obs, sample_action = full_dataset[0]
     action_dim = len(sample_action) if sample_action.size > 0 else 15
     print(f"Action dimension: {action_dim}")
-    
-    # Check observation shape
-    sample_obs = pairs[0][0]
     print(f"Original observation shape: {sample_obs.shape}")
     
     # Update effective observation shape for model creation if center cropping is specified
@@ -1907,14 +1908,19 @@ def main():
             effective_obs_shape = (sample_obs.shape[0], args.center_crop_size, args.center_crop_size)
         print(f"Effective observation shape: {effective_obs_shape}")
     
-    train_pairs, val_pairs, test_pairs = split_dataset(
-        pairs, config.train_split, config.val_split, config.test_split, config.seed
-    )
+    # Split dataset into train/val/test using PyTorch's random_split
+    total_size = len(full_dataset)
+    train_size = int(config.train_split * total_size)
+    val_size = int(config.val_split * total_size)
+    test_size = total_size - train_size - val_size
     
-    # Create datasets and dataloaders (no transform needed - cropping is done in model)
-    train_dataset = OptomechDataset(train_pairs)
-    val_dataset = OptomechDataset(val_pairs)
-    test_dataset = OptomechDataset(test_pairs)
+    print(f"📊 Dataset splits: train={train_size}, val={val_size}, test={test_size}")
+    
+    # Set seed for reproducible splits
+    generator = torch.Generator().manual_seed(config.seed)
+    train_dataset, val_dataset, test_dataset = random_split(
+        full_dataset, [train_size, val_size, test_size], generator=generator
+    )
     # DataLoader(ds, batch_size=..., shuffle=True, num_workers=0, pin_memory=False, persistent_workers=False)
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size, 
                              shuffle=True, num_workers=8, pin_memory=False, persistent_workers=True)

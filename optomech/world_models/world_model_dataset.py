@@ -143,10 +143,14 @@ class WorldModelSequenceDataset(Dataset):
                 
                 # Add non-overlapping sequences from this episode
                 # We need sequence_length+1 timesteps (for obs_t and obs_t+1)
+                # Reserve one extra timestep for next_obs (unless dataset has explicit next_observations field)
                 # Step by sequence_length to avoid redundancy
-                for start_idx in range(0, episode_length - self.sequence_length, self.sequence_length):
+                for start_idx in range(0, episode_length - self.sequence_length - 1, self.sequence_length):
                     end_idx = start_idx + self.sequence_length
-                    self.sequence_indices.append((file_idx, start_idx, end_idx))
+                    # Verify we have room for next_obs: need indices up to end_idx (inclusive)
+                    # For next_obs, we'll read obs[start_idx+1:end_idx+1], so max index is end_idx
+                    if end_idx < episode_length:  # Ensure we don't read past episode end
+                        self.sequence_indices.append((file_idx, start_idx, end_idx))
                 
                 if file_idx % 100 == 0 and file_idx > 0:
                     print(f"  📁 Processed {file_idx}/{len(self.file_paths)} files, "
@@ -413,10 +417,13 @@ class WorldModelLazyDataset(Dataset):
                     continue
                 
                 # Add non-overlapping sequences from this episode
+                # Reserve one extra timestep for next_obs (unless dataset has explicit next_observations field)
                 # Step by sequence_length to avoid redundancy
-                for start_idx in range(0, episode_length - self.sequence_length, self.sequence_length):
+                for start_idx in range(0, episode_length - self.sequence_length - 1, self.sequence_length):
                     end_idx = start_idx + self.sequence_length
-                    self.sequence_indices.append((file_idx, start_idx, end_idx))
+                    # Verify we have room for next_obs: need indices up to end_idx (inclusive)
+                    if end_idx < episode_length:  # Ensure we don't read past episode end
+                        self.sequence_indices.append((file_idx, start_idx, end_idx))
                 
                 if file_idx % 100 == 0 and file_idx > 0:
                     print(f"  📁 Processed {file_idx}/{len(self.file_paths)} files, "

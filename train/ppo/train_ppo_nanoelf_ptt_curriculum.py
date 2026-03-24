@@ -6,8 +6,6 @@ ramps linearly from 0.0 (aligned) to 2.0 arcsec. Holding bonus is ON
 throughout to stabilize early learning.
 
 Curriculum: hold at 0.0 TT for 100M steps, then ramp to 2.0 over 200M steps.
-Exploration: slightly higher ent_coef (0.01) and init_log_std (-1.5) to
-encourage broader action sampling early in training.
 
 Usage:
     python train/ppo/train_ppo_nanoelf_ptt_curriculum.py                  # local run
@@ -40,7 +38,7 @@ CURRICULUM = dict(
 )
 
 # ============================================================================
-# PPO hyperparameters — slightly more exploration via ent_coef and init_log_std
+# PPO hyperparameters — same as nocurr baseline, with TT curriculum
 # ============================================================================
 
 LOCAL_CONFIG = dict(
@@ -55,7 +53,7 @@ LOCAL_CONFIG = dict(
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.01,
+    ent_coef=0.005,
     vf_coef=0.5,
     max_grad_norm=1.0,
     anneal_lr=False,
@@ -66,7 +64,7 @@ LOCAL_CONFIG = dict(
     lstm_hidden_dim=256,
     channel_scale=32,
     fc_scale=256,
-    init_log_std=-1.5,
+    init_log_std=-2.0,
     action_scale=1.0,
     # --- Environment ---
     max_episode_steps=256,
@@ -96,7 +94,7 @@ HPC_CONFIG = dict(
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.01,
+    ent_coef=0.005,
     vf_coef=0.5,
     max_grad_norm=1.0,
     anneal_lr=False,
@@ -107,7 +105,7 @@ HPC_CONFIG = dict(
     lstm_hidden_dim=256,
     channel_scale=32,
     fc_scale=256,
-    init_log_std=-1.5,
+    init_log_std=-2.0,
     action_scale=1.0,
     # --- Environment ---
     max_episode_steps=256,
@@ -129,3 +127,12 @@ HPC_CONFIG = dict(
 
 if __name__ == "__main__":
     run_main(LOCAL_CONFIG, HPC_CONFIG)
+S,
+    # --- Curriculum ---
+    curriculum=CURRICULUM,
+)
+
+
+if __name__ == "__main__":
+    run_main(LOCAL_CONFIG, HPC_CONFIG)
+HPC_CONFIG)

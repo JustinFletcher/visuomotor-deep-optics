@@ -21,8 +21,8 @@
     "--frame_interval_ms=5.0",
     "--decision_interval_ms=5.0",
     "--num_atmosphere_layers=0",
-    "--aperture_type=elf",
-    "--focal_plane_image_size_pixels=512",
+    "--aperture_type=nanoelfplus",
+    "--focal_plane_image_size_pixels=128",
     "--observation_mode=image_only",
     "--command_secondaries",
     "--init_differential_motion",
@@ -30,14 +30,15 @@
     "--num_envs=1",
     "--reward_function=align",
     "--dataset",
-    "--write_frequency=10",
-    "--max_episode_steps=4_000",
-    "--init_temperature=10.0",
+    "--write_frequency=2",
+    "--max_episode_steps=100_000",
+    "--init_temperature=1.0",
     "--std_dev_patience=100",
-    "--sparsity_patience=10000000",
+    "--sparsity_patience=2000000000000",
     "--temperature_patience=10000000",
     "--init_std_dev=1.0",
     "--scale_patience=10",
-    "--scale_stickiness=1.0"
+    "--scale_stickiness=1.0",
+    "--dark_hole"
   ]
 }

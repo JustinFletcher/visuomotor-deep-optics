@@ -10,6 +10,8 @@
   "focal_plane_image_size_pixels": 128,
   "observation_mode": "image_only",
   "command_secondaries": true,
+  "command_dm": true,
+  "ao_loop_active": true,
   "init_differential_motion": true,
   "model_wind_diff_motion": true,
   "num_envs": 1,
@@ -52,10 +54,15 @@
   "pretrained_actor_path": null,
   "freeze_actor_encoder": false,
   "replay_buffer_cutoff_step": null,
-  "sa_dataset_path": "datasets/sa_dataset_1m",
-  "sa_action_type": "perfect_actions",
+  "sa_dataset_path": null,
+  "sa_action_type": null,
   "sa_max_sequences": null,
   "sa_max_episodes": 10,
   "timing_enabled": true,
-  "timing_interval": 100
+  "timing_interval": 100,
+  "dark_hole": true,
+  "dark_hole_angular_location_degrees": 60,
+  "dark_hole_location_radius_fraction": 0.4,
+  "dark_hole_size_radius": 0.1
 }
+

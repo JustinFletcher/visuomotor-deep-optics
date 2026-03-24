@@ -592,6 +592,11 @@ class Args:
     model_temp_diff_motion: bool = False
     """Whether to model temperature differential motion."""
 
+    dark_hole: bool = False
+    dark_hole_angular_location_degrees: float = 45
+    dark_hole_location_radius_fraction: float = 0.3
+    dark_hole_size_radius: float = 0.05
+
 
 
 
@@ -1601,7 +1606,6 @@ if __name__ == "__main__":
                 
             # Rescale the rewards. By default, this is 1.0 and does nothing.
             rewards = args.reward_scale * rewards
-
             # If this is the first step of the episode, store the rewards.
             if first_step_reward is None:
                 first_step_reward = rewards

@@ -275,6 +275,23 @@ class ObjectPlane(object):
         return np.dot(rgb[...,:3], [0.2989, 0.5870, 0.1140])
 
 
+def _centered_wavelengths(center_wl, bandwidth_nm, n_samples):
+    """Compute centered wavelength samples across a bandwidth.
+
+    For N samples across bandwidth B centered at lambda_c, samples are placed
+    at the centers of N equal bins:
+      N=1  ->  [lambda_c]
+      N=2  ->  [lambda_c - B/4, lambda_c + B/4]
+      N=3  ->  [lambda_c - B/3, lambda_c, lambda_c + B/3]
+    """
+    bw_m = bandwidth_nm / 1e9
+    if n_samples <= 1:
+        return [center_wl]
+    bin_width = bw_m / n_samples
+    first = center_wl - bw_m / 2.0 + bin_width / 2.0
+    return [first + i * bin_width for i in range(n_samples)]
+
+
 class OpticalSystem(object):
 
     def __init__(self, **kwargs):
@@ -437,6 +454,9 @@ class OpticalSystem(object):
 
         self.discrete_control_steps = kwargs['discrete_control_steps']
 
+        self._actuator_noise = kwargs.get('actuator_noise', True)
+        self._actuator_noise_fraction = kwargs.get('actuator_noise_fraction', 1e-4)
+
         # Parameters for the structual wind response model.
         # TODO: Externalize.
         initial_ground_wind_speed_mps = 3.0
@@ -589,16 +609,29 @@ class OpticalSystem(object):
         self.segmented_mirror = hcipy.SegmentedDeformableMirror(segments)
         self.aperture = aperture
 
-        wavefront = hcipy.Wavefront(self.aperture, self.wavelength)
-        perfect_image = self.pupil_to_focal_propagator(self.segmented_mirror(wavefront))
-        self.perfect_image = perfect_image.intensity
+        # Polychromatic perfect PSF: average across all sampled wavelengths.
+        bandwidth_nm = kwargs.get('bandwidth_nanometers', 200.0)
+        bandwidth_sampling = kwargs.get('bandwidth_sampling', 2)
+        _perfect_wavelengths = _centered_wavelengths(
+            self.wavelength, bandwidth_nm, bandwidth_sampling)
+        print("Computing polychromatic perfect PSF (%d wavelength(s): %s nm)"
+              % (len(_perfect_wavelengths),
+                 ", ".join("%.1f" % (wl * 1e9) for wl in _perfect_wavelengths)))
+        perfect_accum = None
+        for _pwl in _perfect_wavelengths:
+            wf = hcipy.Wavefront(self.aperture, _pwl)
+            img_wf = self.pupil_to_focal_propagator(
+                self.segmented_mirror(wf))
+            if perfect_accum is None:
+                perfect_accum = np.array(img_wf.intensity, dtype=np.float64)
+            else:
+                perfect_accum += np.array(img_wf.intensity, dtype=np.float64)
+        perfect_accum /= len(_perfect_wavelengths)
+        self.perfect_image = perfect_accum
+        self.perfect_image_max = float(np.max(self.perfect_image))
+        side = int(np.sqrt(self.perfect_image.size))
         # Reshape to be image shaped
-        self.target_image = perfect_image.intensity.reshape(
-            (
-                int(np.sqrt(perfect_image.intensity.size)),
-                int(np.sqrt(perfect_image.intensity.size))
-            )
-        )
+        self.target_image = self.perfect_image.reshape((side, side))
 
         # Check if dark_hole flag exists, if not set it to False
         if 'dark_hole' not in kwargs:
@@ -764,6 +797,12 @@ class OpticalSystem(object):
 
         # Scale the command vector to the phyiscal stroke limit of the DM.
         dm_command_meters = (dm_stroke_meters / 2.0) * command_vector
+
+        # Actuator repeatability noise for the DM.
+        if self._actuator_noise:
+            dm_command_meters += np.random.normal(
+                0.0, self._actuator_noise_fraction * dm_stroke_meters,
+                size=dm_command_meters.shape)
 
         # Set the dm actuators to the command vector, in meters.
         self.dm.actuators = dm_command_meters
@@ -1634,7 +1673,8 @@ class OpticalSystem(object):
                 tip_state = segment_tip - (decrease_segment_tip * (max_tip_correction_radians / self.discrete_control_steps))
                 tilt_state = segment_tilt - (decrease_segment_tilt * (max_tilt_correction_radians / self.discrete_control_steps))
 
-                # Enforce limits on incremental commmands with clip.
+                # Enforce limits on incremental commands with clip.
+                pre_clip = np.array([piston_state, tip_state, tilt_state])
                 piston_state = np.clip(
                     piston_state,
                     -max_piston_correction_meters + self.segment_baseline_dict[segment_id]["piston"],
@@ -1647,6 +1687,9 @@ class OpticalSystem(object):
                     tilt_state,
                     -max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"],
                     max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"])
+                post_clip = np.array([piston_state, tip_state, tilt_state])
+                self._clipped_dof_count += int(np.sum(pre_clip != post_clip))
+                self._total_dof_count += 3
 
             elif self.incremental_control:
 
@@ -1677,7 +1720,8 @@ class OpticalSystem(object):
                 # print("baseline_dict")
                 # print(self.segment_baseline_dict[segment_id]["piston"])
 
-                # Enforce limits on incremental commmands with clip.
+                # Enforce limits on incremental commands with clip.
+                pre_clip = np.array([piston_state, tip_state, tilt_state])
                 piston_state = np.clip(
                     piston_state,
                     -max_piston_correction_meters + self.segment_baseline_dict[segment_id]["piston"],
@@ -1690,7 +1734,10 @@ class OpticalSystem(object):
                     tilt_state,
                     -max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"],
                     max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"])
-                
+                post_clip = np.array([piston_state, tip_state, tilt_state])
+                self._clipped_dof_count += int(np.sum(pre_clip != post_clip))
+                self._total_dof_count += 3
+
             else:
 
                 segment_piston_command_meters = segment_piston_command * max_piston_correction_meters
@@ -1714,6 +1761,36 @@ class OpticalSystem(object):
 
                 # print("Piston state after:")
                 # print(piston_state)
+
+                # Enforce limits on absolute commands with clip.
+                pre_clip = np.array([piston_state, tip_state, tilt_state])
+                piston_state = np.clip(
+                    piston_state,
+                    -max_piston_correction_meters + self.segment_baseline_dict[segment_id]["piston"],
+                    max_piston_correction_meters + self.segment_baseline_dict[segment_id]["piston"])
+                tip_state = np.clip(
+                    tip_state,
+                    -max_tip_correction_radians + self.segment_baseline_dict[segment_id]["tip"],
+                    max_tip_correction_radians + self.segment_baseline_dict[segment_id]["tip"])
+                tilt_state = np.clip(
+                    tilt_state,
+                    -max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"],
+                    max_tilt_correction_radians + self.segment_baseline_dict[segment_id]["tilt"])
+                post_clip = np.array([piston_state, tip_state, tilt_state])
+                self._clipped_dof_count += int(np.sum(pre_clip != post_clip))
+                self._total_dof_count += 3
+
+            # Actuator repeatability noise: Gaussian perturbation
+            # proportional to correction range (models real hardware).
+            if self._actuator_noise:
+                piston_state += np.random.normal(0.0, self._actuator_noise_fraction * 2.0 * max_piston_correction_meters)
+                tip_state += np.random.normal(0.0, self._actuator_noise_fraction * 2.0 * max_tip_correction_radians)
+                tilt_state += np.random.normal(0.0, self._actuator_noise_fraction * 2.0 * max_tilt_correction_radians)
+                # Re-clip after noise to stay within physical limits
+                bl = self.segment_baseline_dict[segment_id]
+                piston_state = np.clip(piston_state, -max_piston_correction_meters + bl["piston"], max_piston_correction_meters + bl["piston"])
+                tip_state = np.clip(tip_state, -max_tip_correction_radians + bl["tip"], max_tip_correction_radians + bl["tip"])
+                tilt_state = np.clip(tilt_state, -max_tilt_correction_radians + bl["tilt"], max_tilt_correction_radians + bl["tilt"])
 
             # Set the actuators in meter and radians.
             self.segmented_mirror.set_segment_actuators(
@@ -1825,6 +1902,17 @@ class OptomechEnv(gym.Env):
         self.discrete_control = kwargs['discrete_control']
         self.discrete_control_steps = kwargs['discrete_control_steps']
 
+        self._actuator_noise = kwargs.get('actuator_noise', True)
+        self._actuator_noise_fraction = kwargs.get('actuator_noise_fraction', 1e-4)
+        self._action_penalty = kwargs.get('action_penalty', True)
+        self._action_penalty_weight = kwargs.get('action_penalty_weight', 0.03)
+        self._oob_penalty = kwargs.get('oob_penalty', True)
+        self._oob_penalty_weight = kwargs.get('oob_penalty_weight', 0.5)
+
+        # Composite reward weights.
+        self._reward_weight_strehl = kwargs.get('reward_weight_strehl', 1.0)
+        self._reward_weight_dark_hole = kwargs.get('reward_weight_dark_hole', 0.0)
+        self._reward_weight_image_quality = kwargs.get('reward_weight_image_quality', 0.0)
 
         self.observation_mode = kwargs['observation_mode']
 
@@ -1896,6 +1984,20 @@ class OptomechEnv(gym.Env):
         print("AO steps per frame: %s" % self.ao_steps_per_frame)
         print("Frames per decision: %s" % self.frames_per_decision)
 
+        # Print actuator noise settings.
+        print("Actuator noise: %s" % self._actuator_noise)
+        if self._actuator_noise:
+            print("  Noise fraction: %.2e" % self._actuator_noise_fraction)
+
+        # Print action penalty settings.
+        print("Action penalty: %s" % self._action_penalty)
+        if self._action_penalty:
+            print("  Weight: %.4f" % self._action_penalty_weight)
+        if self._oob_penalty:
+            print("  OOB penalty: weight=%.4f" % self._oob_penalty_weight)
+        else:
+            print("  OOB penalty: disabled")
+
         # Print dark hole settings
         if 'dark_hole' in kwargs:
             print("Dark hole enabled: %s" % kwargs['dark_hole'])
@@ -1918,6 +2020,38 @@ class OptomechEnv(gym.Env):
 
         # Build the optical system by passing in the kwargs.
         self.build_optical_system(**kwargs)
+
+        # Perfect image through the detector model (same units as focal_plane_images).
+        # The sim path multiplies PSF intensity by integration_seconds (via
+        # HCIPy camera.integrate) before the inline detector model, so we must
+        # do the same here to match units.
+        h = 6.62607015e-34   # Planck's constant (Joule seconds)
+        c = 2.99792458e8     # Speed of light (meters per second)
+        quantum_efficiency = 0.8
+        system_gain_e_per_dn = 0.5
+        frame_interval_seconds = self.frame_interval_ms / 1000.0
+        integration_seconds = frame_interval_seconds / self.ao_steps_per_frame
+        photon_energy_joules = h * c / self.optical_system.wavelength
+
+        # Use raw HCIPy intensity directly (no detector model).
+        # The detector model saturates every pixel to max_dn because the raw
+        # power values are enormous.  Since MSE now normalizes by each image's
+        # own max, we just need the correct PSF *shape*.
+        _pi_2d = np.array(self.optical_system.perfect_image).reshape(
+            (kwargs['focal_plane_image_size_pixels'],
+             kwargs['focal_plane_image_size_pixels']))
+        self._perfect_image_dn = _pi_2d
+        self._perfect_image_max_dn = float(np.max(self._perfect_image_dn))
+        print("perfect_image_max_dn: %.4f" % self._perfect_image_max_dn)
+
+        # Dark hole mask for composite reward.
+        if kwargs.get('dark_hole', False):
+            _norm_target = self.optical_system.target_image / np.max(
+                self.optical_system.target_image) if np.max(
+                self.optical_system.target_image) != 0 else self.optical_system.target_image
+            self._target_zero_mask = _norm_target < 1e-12
+        else:
+            self._target_zero_mask = None
 
         # Reset the episode clock.
         self.episode_time_ms = 0.0
@@ -2563,6 +2697,10 @@ class OptomechEnv(gym.Env):
         self.focal_plane_images = list()
         self.shwfs_slopes_list = list()
 
+        # Initialize clipping counters for OOB penalty.
+        self.optical_system._clipped_dof_count = 0
+        self.optical_system._total_dof_count = 0
+
         # Run the step simulation loop.
         for frame_num in range(self.frames_per_decision):
 
@@ -2606,16 +2744,12 @@ class OptomechEnv(gym.Env):
                 # Iterate, simulating an AO loop.
                 for ao_step_num in range(self.ao_steps_per_command):
 
-                    bandwidth_nanometers = 200.0
-                    bandwidth_meters = bandwidth_nanometers / 1e9
-                    bandwidth_sampling = 1
-                    bandwidth_increment_meters = bandwidth_meters / bandwidth_sampling
-                    min_wavelength = self.optical_system.wavelength - (bandwidth_meters / 2)
-                    wavelengths = [min_wavelength + (i * bandwidth_increment_meters) for i in range(bandwidth_sampling)]
-                    # wavelengths = [self.optical_system.wavelength]
-                    # print(wavelengths)
-                    # print(self.optical_system.wavelength)
-                    # die
+                    bandwidth_nanometers = self.kwargs.get('bandwidth_nanometers', 200.0)
+                    bandwidth_sampling = self.kwargs.get('bandwidth_sampling', 2)
+                    wavelengths = _centered_wavelengths(
+                        self.optical_system.wavelength,
+                        bandwidth_nanometers,
+                        bandwidth_sampling)
                     for wavelength in wavelengths:
 
                         if self.report_time:
@@ -2730,384 +2864,136 @@ class OptomechEnv(gym.Env):
 
         if self.reward_function == "strehl":
 
-            strehls = list()
-        
-            for focal_plane_image in self.focal_plane_images:
-
-
-                normalized_ideal_psf = self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-                normalized_focal_plane_image = focal_plane_image / np.max(focal_plane_image)
-                # strehls.append(hcipy.metrics.get_strehl_from_focal(
-                #     focal_plane_image.flatten() / np.max(focal_plane_image),
-                #     self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-                # ))
-
-                # print(focal_plane_image.flatten())
-                # print(np.min(focal_plane_image.flatten()))
-                # print(np.median(focal_plane_image.flatten()))
-                # print(np.max(focal_plane_image.flatten()))
-                # print(self.optical_system.perfect_image)
-                # print(np.min(self.optical_system.perfect_image))
-                # print(np.median(self.optical_system.perfect_image))
-                # print(np.max(self.optical_system.perfect_image))
-
-                strehl = hcipy.metrics.get_strehl_from_focal(
-                    normalized_focal_plane_image.flatten(),
-                    normalized_ideal_psf
-                )
-                # strehl = np.max(normalized_focal_plane_image) / np.max(normalized_ideal_psf)
-                strehls.append(strehl)
-
-            reward = np.mean(strehls, dtype=np.float32) * 1e0
+            # Absolute Strehl: peak(observed_dn) / peak(perfect_dn).
+            # No self-normalization.
+            strehls = [float(np.max(fpi)) / self._perfect_image_max_dn
+                       for fpi in self.focal_plane_images]
+            reward = np.mean(strehls, dtype=np.float32)
 
         elif self.reward_function == "align":
 
-            rewards = list()
-            normalized_psf = self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-            normalized_target = self.optical_system.target_image / np.max(self.optical_system.target_image)
-
-            target_mask = normalized_target < 0.000000000001
-            anti_target_mask = np.logical_not(target_mask)
-
-            # Create a binary circle mask centered on the origin with a radius of 64 pixels.
-
-
-            # plt.figure(figsize=(8, 8))
-            # plt.imshow((target_mask), cmap='hot')
-            # plt.colorbar(label='Loss Target Mask')
-            # plt.title('normalized_target Loss Target Image')
-            # plt.show()
-            
-
+            # Log-MSE alignment reward using absolute normalization.
+            _max_dn = self._perfect_image_max_dn
+            norm_target = self._perfect_image_dn / _max_dn
+            radius = 32
             radius_max = None
 
-            if not radius_max:
+            # Build center mask.
+            num_px = self.image_shape[0]
+            center_pt = num_px // 2
+            y_idx, x_idx = np.ogrid[:num_px, :num_px]
+            dist_sq = (y_idx - center_pt) ** 2 + (x_idx - center_pt) ** 2
+            center_mask = dist_sq <= radius ** 2
 
-                radius = 32 
-                
-            else:
-                
-                radius = radius_max
-
-            for focal_plane_image in self.focal_plane_images:
-                
-                normalized_image = focal_plane_image / np.max(focal_plane_image)
-                
-
-                strehl = hcipy.metrics.get_strehl_from_focal(
-                    focal_plane_image.flatten(), 
-                    65535.0 * (self.optical_system.perfect_image / np.max(self.optical_system.perfect_image))
-                )
-                # This is normalized and inverted, meaning that values 
-                # near the origin are not counted, but further values are.
-                # distance_map = generalized_radial_profile(
-                #     normalized_image.shape,
-                #     alpha=25,
-                #     beta=0.5,
-                #     normalize=True,
-                #     invert=False)
-                
-                # This is going generally be ~<200/2**16
-                # centering = np.mean(normalized_image * distance_map)
-                # center_concentration = centering / np.mean(normalized_image)
-
-                # Convert images to ints round to nearest.
-                loss_image = np.round(65534.0 * normalized_image)+1
-                loss_target = np.round((65534.0 * normalized_target))+1
-                # loss_image = normalized_image
-                # loss_target = normalized_target
-                # TEMPORARY: Quick visualization of log-scaled loss target image
-                # plt.figure(figsize=(8, 8))
-                # plt.imshow(np.log10(loss_target + 1e-10), cmap='hot')
-                # plt.colorbar(label='Log10 Loss Target')
-                # plt.title('Log-scaled Loss Target Image')
-                # plt.show()
-
-                # Print the mean min max and median of the normalized image.
-                # print("Image - min: %.6f, median: %.6f, max: %.6f" % (
-                #     np.min(loss_image),
-                #     np.median(loss_image),
-                #     np.max(loss_image)   
-                # )
-                # )   
-                # print("Target - min: %.6f, median: %.6f, max: %.6f" % (
-                #     np.min(loss_target),
-                #     np.median(loss_target),
-                #     np.max(loss_target)
-                # )
-                # )
-
-                # # PLot the histogram of the loss image and target on differentt axes.
-                # import matplotlib.pyplot as plt
-                # fig, axs = plt.subplots(2, 1, figsize=(10, 8))
-                # im = axs[0].imshow(loss_image, cmap='hot')
-                # # Add a colorbar
-                # plt.colorbar(im, label='Color Scale')
-                # axs[0].set_title("focal_plane_image")
-                # axs[0].set_xlabel("Pixel Value")
-                # axs[0].set_ylabel("Frequency")
-                # axs[0].legend()
-
-                # im = axs[1].imshow(loss_target, cmap='hot')
-                # plt.colorbar(im, label='Color Scale')
-                # axs[1].set_title("Loss Target Histogram")
-                # axs[1].set_xlabel("Pixel Value")
-                # axs[1].set_ylabel("Frequency")
-                # axs[1].legend()
-
-                # plt.tight_layout()
-                # plt.show()
-                # plt.title("Loss Image and Target Histograms")
-                # plt.xlabel("Pixel Value")
-                # plt.ylabel("Frequency")
-                # plt.show()  
-                center_mask = np.zeros_like(normalized_target, dtype=bool)
-                center = (center_mask.shape[0] // 2, center_mask.shape[1] // 2)
-                for i in range(center_mask.shape[0]):
-                    for j in range(center_mask.shape[1]):
-                        if (i - center[0])**2 + (j - center[1])**2 <= radius**2:
-                            center_mask[i, j] = True
-
-                mse = np.power(np.log(loss_image[center_mask]) - np.log(loss_target[center_mask]), 2)
-
- 
-                # mse = np.power(np.log(loss_image) - np.log(loss_target), 2)
- 
-
-                # plt.figure(figsize=(8, 8))
-                # plt.imshow(center_mask, cmap='hot')
-                # plt.colorbar(label='mse')
-                # plt.title('mse')
-                # plt.show()
-
-                # plt.figure(figsize=(8, 8))
-                # plt.imshow(center_mask, cmap='hot')
-                # plt.colorbar(label='mse')
-                # plt.title('mse')
-                # plt.show()
-
+            rewards = list()
+            for fpi in self.focal_plane_images:
+                norm_img = fpi / _max_dn
+                loss_img = np.round(65534.0 * norm_img) + 1
+                loss_tgt = np.round(65534.0 * norm_target) + 1
+                mse = np.power(
+                    np.log(loss_img[center_mask]) - np.log(loss_tgt[center_mask]), 2)
                 mse = -np.mean(mse.flatten())
-
                 if mse < -1.25:
                     radius_max = 64
-
-     
-
-                # reward = (alpha_strehl * strehl) +\
-                #          (alpha_dark_hole * dark_hole_score) +\
-                #          (alpha_mse * mse)
-                reward = mse
-    
-                rewards.append(reward)
+                rewards.append(mse)
 
             reward = np.mean(rewards, dtype=np.float32)
 
         elif self.reward_function == "dark_hole":
 
-            rewards = list()
-            normalized_psf = self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-            normalized_target = self.optical_system.target_image / np.max(self.optical_system.target_image)
-
-            target_mask = normalized_target < 0.000000000001
-            anti_target_mask = np.logical_not(target_mask)
-
-            # Create a binary circle mask centered on the origin with a radius of 64 pixels.
-
-
-            # plt.figure(figsize=(8, 8))
-            # plt.imshow((target_mask), cmap='hot')
-            # plt.colorbar(label='Loss Target Mask')
-            # plt.title('normalized_target Loss Target Image')
-            # plt.show()
-            
-
+            # Dark hole reward using absolute normalization.
+            _max_dn = self._perfect_image_max_dn
+            norm_target = self._perfect_image_dn / _max_dn
+            target_mask = self._target_zero_mask
+            alpha_hole_to_mse = self.kwargs.get('dark_hole_alpha', 0.0)
+            radius = 32
             radius_max = None
 
-            if not radius_max:
+            # Build center mask.
+            num_px = self.image_shape[0]
+            center_pt = num_px // 2
+            y_idx, x_idx = np.ogrid[:num_px, :num_px]
+            dist_sq = (y_idx - center_pt) ** 2 + (x_idx - center_pt) ** 2
+            center_mask = dist_sq <= radius ** 2
 
-                radius = 32 
-                
-            else:
-                
-                radius = radius_max
-
-            for focal_plane_image in self.focal_plane_images:
-                
-                normalized_image = focal_plane_image / np.max(focal_plane_image)
-                
-
-                strehl = hcipy.metrics.get_strehl_from_focal(
-                    focal_plane_image.flatten(), 
-                    65535.0 * (self.optical_system.perfect_image / np.max(self.optical_system.perfect_image))
-                )
-                # This is normalized and inverted, meaning that values 
-                # near the origin are not counted, but further values are.
-                # distance_map = generalized_radial_profile(
-                #     normalized_image.shape,
-                #     alpha=25,
-                #     beta=0.5,
-                #     normalize=True,
-                #     invert=False)
-                
-                # This is going generally be ~<200/2**16
-                # centering = np.mean(normalized_image * distance_map)
-                # center_concentration = centering / np.mean(normalized_image)
-
-                # Convert images to ints round to nearest.
-                loss_image = np.round(65534.0 * normalized_image)+1
-                loss_target = np.round((65534.0 * normalized_target))+1
-                # loss_image = normalized_image
-                # loss_target = normalized_target
-                # TEMPORARY: Quick visualization of log-scaled loss target image
-                # plt.figure(figsize=(8, 8))
-                # plt.imshow(np.log10(loss_target + 1e-10), cmap='hot')
-                # plt.colorbar(label='Log10 Loss Target')
-                # plt.title('Log-scaled Loss Target Image')
-                # plt.show()
-
-                # Print the mean min max and median of the normalized image.
-                # print("Image - min: %.6f, median: %.6f, max: %.6f" % (
-                #     np.min(loss_image),
-                #     np.median(loss_image),
-                #     np.max(loss_image)   
-                # )
-                # )   
-                # print("Target - min: %.6f, median: %.6f, max: %.6f" % (
-                #     np.min(loss_target),
-                #     np.median(loss_target),
-                #     np.max(loss_target)
-                # )
-                # )
-
-                # # PLot the histogram of the loss image and target on differentt axes.
-                # import matplotlib.pyplot as plt
-                # fig, axs = plt.subplots(2, 1, figsize=(10, 8))
-                # im = axs[0].imshow(loss_image, cmap='hot')
-                # # Add a colorbar
-                # plt.colorbar(im, label='Color Scale')
-                # axs[0].set_title("focal_plane_image")
-                # axs[0].set_xlabel("Pixel Value")
-                # axs[0].set_ylabel("Frequency")
-                # axs[0].legend()
-
-                # im = axs[1].imshow(loss_target, cmap='hot')
-                # plt.colorbar(im, label='Color Scale')
-                # axs[1].set_title("Loss Target Histogram")
-                # axs[1].set_xlabel("Pixel Value")
-                # axs[1].set_ylabel("Frequency")
-                # axs[1].legend()
-
-                # plt.tight_layout()
-                # plt.show()
-                # plt.title("Loss Image and Target Histograms")
-                # plt.xlabel("Pixel Value")
-                # plt.ylabel("Frequency")
-                # plt.show()  
-                center_mask = np.zeros_like(normalized_target, dtype=bool)
-                center = (center_mask.shape[0] // 2, center_mask.shape[1] // 2)
-                for i in range(center_mask.shape[0]):
-                    for j in range(center_mask.shape[1]):
-                        if (i - center[0])**2 + (j - center[1])**2 <= radius**2:
-                            center_mask[i, j] = True
-
-                mse = np.power(np.log(loss_image[center_mask]) - np.log(loss_target[center_mask]), 2)
-
- 
-                # mse = np.power(np.log(loss_image) - np.log(loss_target), 2)
- 
-
-                # plt.figure(figsize=(8, 8))
-                # plt.imshow(center_mask, cmap='hot')
-                # plt.colorbar(label='mse')
-                # plt.title('mse')
-                # plt.show()
-
-                # plt.figure(figsize=(8, 8))
-                # plt.imshow(center_mask, cmap='hot')
-                # plt.colorbar(label='mse')
-                # plt.title('mse')
-                # plt.show()
-
-                mse = -np.mean(mse.flatten())
-
+            rewards = list()
+            for fpi in self.focal_plane_images:
+                norm_img = fpi / _max_dn
+                loss_img = np.round(65534.0 * norm_img) + 1
+                loss_tgt = np.round(65534.0 * norm_target) + 1
+                mse = -np.mean(np.power(
+                    np.log(loss_img[center_mask]) - np.log(loss_tgt[center_mask]),
+                    2).flatten())
                 if mse < -1.25:
                     radius_max = 64
-
-                dark_hole_mse = np.power(np.log(focal_plane_image[target_mask]), 2)
-
-
-                dark_hole_mse = -np.mean(dark_hole_mse.flatten() - 0.0)
-
-                alpha_hole_to_mse = 0.0
-                # alpha_dark_hole = 1.0
-                # alpha_strehl = 0.0
-                # # alpha_mse = 50.0 * 1
-                # alpha_mse = 1.0 
-     
-
-                # reward = (alpha_strehl * strehl) +\
-                #          (alpha_dark_hole * dark_hole_score) +\
-                #          (alpha_mse * mse)
-                reward = (alpha_hole_to_mse * dark_hole_mse) +\
-                         ((1.0 - alpha_hole_to_mse) * mse)
-    
+                dh_mse = -np.mean(
+                    np.power(np.log(fpi[target_mask] + 1e-30), 2).flatten()) if target_mask is not None else 0.0
+                reward = alpha_hole_to_mse * dh_mse + (1.0 - alpha_hole_to_mse) * mse
                 rewards.append(reward)
 
             reward = np.mean(rewards, dtype=np.float32)
 
+        elif self.reward_function == "composite":
+
+            # Weighted multi-factor reward: Strehl + dark_hole + image_quality.
+            total = 0.0
+            w_s = self._reward_weight_strehl
+            w_dh = self._reward_weight_dark_hole
+            w_iq = self._reward_weight_image_quality
+
+            if w_s > 0:
+                strehls = [float(np.max(fpi)) / self._perfect_image_max_dn
+                           for fpi in self.focal_plane_images]
+                total += w_s * np.mean(strehls, dtype=np.float32)
+
+            if w_dh > 0 and self._target_zero_mask is not None:
+                dh_vals = []
+                for fpi in self.focal_plane_images:
+                    dh_intensity = float(np.mean(fpi[self._target_zero_mask]))
+                    dh_vals.append(-dh_intensity / self._perfect_image_max_dn)
+                total += w_dh * np.mean(dh_vals, dtype=np.float32)
+
+            if w_iq > 0:
+                perfect_dn_flat = self._perfect_image_dn.flatten()
+                max_dn_sq = self._perfect_image_max_dn ** 2
+                iq_vals = []
+                for fpi in self.focal_plane_images:
+                    mse = -float(np.mean((fpi.flatten() - perfect_dn_flat) ** 2))
+                    iq_vals.append(mse / max_dn_sq)
+                total += w_iq * np.mean(iq_vals, dtype=np.float32)
+
+            reward = np.float32(total)
 
         elif self.reward_function == "image_mse":
 
-            mses = list()
-
-            for focal_plane_image in self.focal_plane_images:
-
-                mses.append(np.mean(
-                    (
-                    (focal_plane_image.flatten() / np.max(focal_plane_image))
-                    - (self.optical_system.perfect_image / np.max(self.optical_system.perfect_image))) ** 2
-                ))
+            # Negative MSE vs perfect image (both normalised by perfect max).
+            _max_dn = self._perfect_image_max_dn
+            norm_ideal = self._perfect_image_dn.flatten() / _max_dn
+            mses = []
+            for fpi in self.focal_plane_images:
+                norm_img = fpi.flatten() / _max_dn
+                mses.append(float(np.mean((norm_img - norm_ideal) ** 2)))
             reward = -np.mean(mses, dtype=np.float32)
 
         elif self.reward_function == "negastrehl":
 
-            strehls = list()
-        
-            for focal_plane_image in self.focal_plane_images:
-
-                strehls.append(hcipy.metrics.get_strehl_from_focal(
-                    focal_plane_image.flatten() / np.max(focal_plane_image),
-                    self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-                ))
-
-            reward = np.mean(strehls) - 1.0
+            # Absolute Strehl - 1.0 (no self-normalization).
+            strehls = [float(np.max(fpi)) / self._perfect_image_max_dn
+                       for fpi in self.focal_plane_images]
+            reward = np.float32(np.mean(strehls) - 1.0)
 
         elif self.reward_function == "negaexpstrehl":
 
-            strehls = list()
-        
-            for focal_plane_image in self.focal_plane_images:
-
-                strehls.append(hcipy.metrics.get_strehl_from_focal(
-                    focal_plane_image.flatten() / np.max(focal_plane_image),
-                    self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-                ))
-
-
-            reward = (np.mean(strehls) ** 10) - 1.0
+            # (Absolute Strehl)^10 - 1.0 (no self-normalization).
+            strehls = [float(np.max(fpi)) / self._perfect_image_max_dn
+                       for fpi in self.focal_plane_images]
+            reward = np.float32(np.mean(strehls) ** 10 - 1.0)
 
         elif self.reward_function == "strehl_closed":
 
-            strehls = list()
-        
-            for focal_plane_image in self.focal_plane_images:
-
-                strehls.append(hcipy.metrics.get_strehl_from_focal(
-                    focal_plane_image.flatten() / np.max(focal_plane_image),
-                    self.optical_system.perfect_image / np.max(self.optical_system.perfect_image)
-                ))
-
-            
+            # Binary reward: 1.0 if absolute Strehl >= 0.8, else 0.0.
+            strehls = [float(np.max(fpi)) / self._perfect_image_max_dn
+                       for fpi in self.focal_plane_images]
             reward = 1.0 if np.mean(strehls) >= 0.8 else 0.0
 
         elif self.reward_function == "ao_rms_slope":
@@ -3175,6 +3061,20 @@ class OptomechEnv(gym.Env):
 
             raise ValueError("reward_function must be specified.")
 
+        # L2 action penalty: reward -= w * |reward| * mean(a^2).
+        # With actions in [-1, 1], mean(a^2) in [0, 1].
+        # Default w = 0.03 -> 3% worse at full-magnitude action,
+        # 0% at zero action. Works for both positive and negative rewards.
+        if self._action_penalty:
+            action_sq_mean = float(np.mean(np.square(action)))
+            reward = reward - self._action_penalty_weight * abs(reward) * action_sq_mean
+
+        # Out-of-bounds penalty: penalize actuator clipping at physical rails.
+        oob_frac = 0.0
+        if self._oob_penalty and self.optical_system._total_dof_count > 0:
+            oob_frac = float(self.optical_system._clipped_dof_count) / float(self.optical_system._total_dof_count)
+            reward = reward - self._oob_penalty_weight * oob_frac
+
         # TODO: compute_terminated()
         terminated = False
         
@@ -3183,12 +3083,24 @@ class OptomechEnv(gym.Env):
 
         # Populate the information dictionary for this step.
         info = dict()
-        
+
         if self.record_env_state_info:
 
             info["state_content"] = self.state_content
             # info["state"] = np.array(self.state)
             info["state"] = self.state
+
+        # --- Diagnostic metrics (always reported) --------------------
+        _diag_strehls = [float(np.max(fpi)) / self._perfect_image_max_dn
+                         for fpi in self.focal_plane_images]
+        _diag_max_dn = self._perfect_image_max_dn
+        _diag_perfect_flat = self._perfect_image_dn.flatten()
+        _diag_mses = [float(np.mean((fpi.flatten() - _diag_perfect_flat) ** 2)) / (_diag_max_dn ** 2)
+                      for fpi in self.focal_plane_images]
+        info["strehl"] = float(np.mean(_diag_strehls))
+        info["mse"] = float(np.mean(_diag_mses))
+        info["reward_raw"] = float(reward)
+        info["oob_frac"] = oob_frac
 
         if self.report_time:
             print("Step time: %.6f" % (time.time() - step_time))

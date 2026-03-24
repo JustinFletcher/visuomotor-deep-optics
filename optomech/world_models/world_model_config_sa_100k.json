@@ -1,5 +1,5 @@
 {
-  "dataset_path": "/wdata/scratch/fletch/datasets/sa_dataset_100k",
+  "dataset_path": "/wdata/scratch/fletch/datasets/sa_dataset_1m",
   "pretrained_autoencoder_path": "./models/trained_autoencoder_corrector_last_epoch.pth",
   "run_name": "world_model_default",
   "batch_size": 8,

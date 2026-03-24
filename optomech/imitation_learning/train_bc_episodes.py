@@ -41,6 +41,7 @@ from torch.utils.data import DataLoader, random_split
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from tqdm import tqdm
+from typing import Dict, Tuple, List
 
 # Add project root to path
 current_dir = Path(__file__).parent
@@ -53,6 +54,46 @@ from utils.data_loading import DatasetDiscovery
 
 # Import model
 from models.bc_model import BCModel
+
+
+def compute_action_metrics(predictions: np.ndarray, targets: np.ndarray) -> Dict:
+    """
+    Compute detailed metrics for action predictions.
+    
+    Args:
+        predictions: Predicted actions [N, action_dim]
+        targets: Target actions [N, action_dim]
+    
+    Returns:
+        Dictionary with MAE and absolute error metrics
+    """
+    # Per-sample MAE (mean across action dimensions)
+    mae_per_sample = np.mean(np.abs(predictions - targets), axis=1)
+    
+    # All absolute errors (flattened)
+    abs_errors = np.abs(predictions - targets).flatten()
+    
+    mae_metrics = {
+        'mae_mean': float(np.mean(mae_per_sample)),
+        'mae_median': float(np.median(mae_per_sample)),
+        'mae_min': float(np.min(mae_per_sample)),
+        'mae_max': float(np.max(mae_per_sample)),
+        'mae_std': float(np.std(mae_per_sample)),
+        'mae_q25': float(np.percentile(mae_per_sample, 25)),
+        'mae_q75': float(np.percentile(mae_per_sample, 75))
+    }
+    
+    abs_error_metrics = {
+        'abs_error_mean': float(np.mean(abs_errors)),
+        'abs_error_median': float(np.median(abs_errors)),
+        'abs_error_min': float(np.min(abs_errors)),
+        'abs_error_max': float(np.max(abs_errors)),
+        'abs_error_std': float(np.std(abs_errors)),
+        'abs_error_q25': float(np.percentile(abs_errors, 25)),
+        'abs_error_q75': float(np.percentile(abs_errors, 75))
+    }
+    
+    return mae_metrics, abs_error_metrics, mae_per_sample, abs_errors
 from models import create_model, AutoEncoderCNN, AutoEncoderResNet
 
 
@@ -196,7 +237,7 @@ def train_epoch_batched(
     sequence_length: int,
     grad_clip: float = None,
     scaler=None
-) -> float:
+) -> Tuple[float, Dict, Dict, np.ndarray]:
     """
     Train for one epoch with batched episode processing and TBPTT.
     
@@ -211,11 +252,14 @@ def train_epoch_batched(
         scaler: AMP gradient scaler (optional)
     
     Returns:
-        Average loss for epoch
+        Tuple of (avg_loss, mae_metrics, abs_error_metrics, error_distribution)
     """
     model.train()
     total_loss = 0.0
     num_sequences = 0
+    
+    all_predictions = []
+    all_targets = []
     
     for batch_data in tqdm(dataloader, desc="Training", leave=False):
         # Unpack batch (pre-collated format)
@@ -280,6 +324,15 @@ def train_epoch_batched(
                 
                 optimizer.step()
             
+            # Collect predictions for metrics (only valid timesteps)
+            with torch.no_grad():
+                valid_mask = mask_chunk.bool()
+                for b in range(batch_size):
+                    valid_t = valid_mask[b].sum().item()
+                    if valid_t > 0:
+                        all_predictions.append(action_pred[b, :valid_t].cpu().numpy())
+                        all_targets.append(action_chunk[b, :valid_t].cpu().numpy())
+            
             # Detach hidden state for TBPTT
             hidden = (hidden[0].detach(), hidden[1].detach())
             
@@ -290,7 +343,19 @@ def train_epoch_batched(
             total_loss += epoch_loss / num_chunks
             num_sequences += 1
     
-    return total_loss / max(num_sequences, 1)
+    avg_loss = total_loss / max(num_sequences, 1)
+    
+    # Compute metrics from collected predictions
+    if all_predictions:
+        predictions = np.concatenate(all_predictions, axis=0)
+        targets = np.concatenate(all_targets, axis=0)
+        mae_metrics, abs_error_metrics, _, error_dist = compute_action_metrics(predictions, targets)
+    else:
+        mae_metrics = {k: 0.0 for k in ['mae_mean', 'mae_median', 'mae_min', 'mae_max', 'mae_std', 'mae_q25', 'mae_q75']}
+        abs_error_metrics = {k: 0.0 for k in ['abs_error_mean', 'abs_error_median', 'abs_error_min', 'abs_error_max', 'abs_error_std', 'abs_error_q25', 'abs_error_q75']}
+        error_dist = np.array([0.0])
+    
+    return avg_loss, mae_metrics, abs_error_metrics, error_dist
 
 
 def validate_epoch_batched(
@@ -299,7 +364,7 @@ def validate_epoch_batched(
     criterion: nn.Module,
     device: torch.device,
     sequence_length: int = 32
-) -> float:
+) -> Tuple[float, Dict, Dict, np.ndarray]:
     """
     Validate for one epoch with batched episode processing.
     
@@ -313,11 +378,14 @@ def validate_epoch_batched(
         sequence_length: Chunk size for processing (to avoid OOM)
     
     Returns:
-        Average loss for epoch
+        Tuple of (avg_loss, mae_metrics, abs_error_metrics, error_distribution)
     """
     model.eval()
     total_loss = 0.0
     total_valid_timesteps = 0
+    
+    all_predictions = []
+    all_targets = []
     
     with torch.no_grad():
         for batch_data in tqdm(dataloader, desc="Validation", leave=False):
@@ -359,12 +427,32 @@ def validate_epoch_batched(
                 
                 batch_loss += chunk_loss.item() * valid_timesteps
                 batch_valid_timesteps += valid_timesteps
+                
+                # Collect predictions for metrics (only valid timesteps)
+                valid_mask = mask_chunk.bool()
+                for b in range(batch_size):
+                    valid_t = valid_mask[b].sum().item()
+                    if valid_t > 0:
+                        all_predictions.append(action_pred[b, :valid_t].cpu().numpy())
+                        all_targets.append(action_chunk[b, :valid_t].cpu().numpy())
             
             if batch_valid_timesteps > 0:
                 total_loss += batch_loss
                 total_valid_timesteps += batch_valid_timesteps
     
-    return total_loss / max(total_valid_timesteps, 1)
+    avg_loss = total_loss / max(total_valid_timesteps, 1)
+    
+    # Compute metrics from collected predictions
+    if all_predictions:
+        predictions = np.concatenate(all_predictions, axis=0)
+        targets = np.concatenate(all_targets, axis=0)
+        mae_metrics, abs_error_metrics, _, error_dist = compute_action_metrics(predictions, targets)
+    else:
+        mae_metrics = {k: 0.0 for k in ['mae_mean', 'mae_median', 'mae_min', 'mae_max', 'mae_std', 'mae_q25', 'mae_q75']}
+        abs_error_metrics = {k: 0.0 for k in ['abs_error_mean', 'abs_error_median', 'abs_error_min', 'abs_error_max', 'abs_error_std', 'abs_error_q25', 'abs_error_q75']}
+        error_dist = np.array([0.0])
+    
+    return avg_loss, mae_metrics, abs_error_metrics, error_dist
 
 
 def train_bc(config: BCConfig):
@@ -460,10 +548,36 @@ def train_bc(config: BCConfig):
         batch_size = config.batch_size
         print(f"   Using dynamic collation (batch_size={config.batch_size})")
     
-    # Split dataset
-    train_size = int(config.train_split * len(dataset))
-    val_size = int(config.val_split * len(dataset))
-    test_size = len(dataset) - train_size - val_size
+    # Split dataset - ensure validation is populated before test for small datasets
+    total_size = len(dataset)
+    train_size = int(config.train_split * total_size)
+    val_size = int(config.val_split * total_size)
+    test_size = total_size - train_size - val_size
+    
+    # For small datasets, prioritize: train > val > test
+    # Ensure at least 1 sample in each split if we have enough data
+    if total_size >= 3:
+        # Ensure minimum 1 for train
+        if train_size < 1:
+            train_size = 1
+        # Ensure minimum 1 for val (take from test if needed)
+        if val_size < 1 and test_size > 1:
+            val_size = 1
+            test_size = total_size - train_size - val_size
+        elif val_size < 1 and test_size == 1:
+            # Only 1 left after train - give to val, no test
+            val_size = 1
+            test_size = 0
+    elif total_size == 2:
+        # 2 samples: 1 train, 1 val, 0 test
+        train_size = 1
+        val_size = 1
+        test_size = 0
+    elif total_size == 1:
+        # 1 sample: all train
+        train_size = 1
+        val_size = 0
+        test_size = 0
     
     train_dataset, val_dataset, test_dataset = random_split(
         dataset,
@@ -666,6 +780,7 @@ def train_bc(config: BCConfig):
     best_val_loss = float('inf')
     train_losses = []
     val_losses = []
+    epoch_times = []
     
     for epoch in range(config.num_epochs):
         epoch_start = time.time()
@@ -675,25 +790,80 @@ def train_bc(config: BCConfig):
             torch.cuda.empty_cache()
         
         # Train
-        train_loss = train_epoch_batched(
+        train_loss, train_mae_metrics, train_abs_error_metrics, train_error_dist = train_epoch_batched(
             model, train_loader, optimizer, criterion, device,
             config.sequence_length, config.grad_clip, scaler
         )
         
         # Validate
-        val_loss = validate_epoch_batched(
+        val_loss, val_mae_metrics, val_abs_error_metrics, val_error_dist = validate_epoch_batched(
             model, val_loader, criterion, device, config.sequence_length
         )
         
         epoch_time = time.time() - epoch_start
+        epoch_times.append(epoch_time)
         
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         
-        # Log to TensorBoard
+        # Calculate timing metrics
+        avg_epoch_time = sum(epoch_times) / len(epoch_times)
+        remaining_epochs = config.num_epochs - epoch - 1
+        eta_hours = (avg_epoch_time * remaining_epochs) / 3600
+        
+        # Log to TensorBoard - Loss
         writer.add_scalar('Loss/Train', train_loss, epoch)
         writer.add_scalar('Loss/Val', val_loss, epoch)
         writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch)
+        
+        # Log Training MAE metrics
+        writer.add_scalar('Training_Instrumentation/MAE_Mean', train_mae_metrics['mae_mean'], epoch)
+        writer.add_scalar('Training_Instrumentation/MAE_Median', train_mae_metrics['mae_median'], epoch)
+        writer.add_scalar('Training_Instrumentation/MAE_Min', train_mae_metrics['mae_min'], epoch)
+        writer.add_scalar('Training_Instrumentation/MAE_Max', train_mae_metrics['mae_max'], epoch)
+        writer.add_scalar('Training_Instrumentation/MAE_Std', train_mae_metrics['mae_std'], epoch)
+        writer.add_scalar('Training_Instrumentation/MAE_Q25', train_mae_metrics['mae_q25'], epoch)
+        writer.add_scalar('Training_Instrumentation/MAE_Q75', train_mae_metrics['mae_q75'], epoch)
+        
+        # Log Training AbsError metrics
+        writer.add_scalar('Training_Instrumentation/AbsError_Mean', train_abs_error_metrics['abs_error_mean'], epoch)
+        writer.add_scalar('Training_Instrumentation/AbsError_Median', train_abs_error_metrics['abs_error_median'], epoch)
+        writer.add_scalar('Training_Instrumentation/AbsError_Min', train_abs_error_metrics['abs_error_min'], epoch)
+        writer.add_scalar('Training_Instrumentation/AbsError_Max', train_abs_error_metrics['abs_error_max'], epoch)
+        writer.add_scalar('Training_Instrumentation/AbsError_Std', train_abs_error_metrics['abs_error_std'], epoch)
+        writer.add_scalar('Training_Instrumentation/AbsError_Q25', train_abs_error_metrics['abs_error_q25'], epoch)
+        writer.add_scalar('Training_Instrumentation/AbsError_Q75', train_abs_error_metrics['abs_error_q75'], epoch)
+        
+        # Log Training error distribution histogram
+        if len(train_error_dist) > 1:
+            writer.add_histogram('Training_Instrumentation/Error_Distribution', train_error_dist, epoch)
+        
+        # Log Validation MAE metrics
+        writer.add_scalar('Validation_Instrumentation/MAE_Mean', val_mae_metrics['mae_mean'], epoch)
+        writer.add_scalar('Validation_Instrumentation/MAE_Median', val_mae_metrics['mae_median'], epoch)
+        writer.add_scalar('Validation_Instrumentation/MAE_Min', val_mae_metrics['mae_min'], epoch)
+        writer.add_scalar('Validation_Instrumentation/MAE_Max', val_mae_metrics['mae_max'], epoch)
+        writer.add_scalar('Validation_Instrumentation/MAE_Std', val_mae_metrics['mae_std'], epoch)
+        writer.add_scalar('Validation_Instrumentation/MAE_Q25', val_mae_metrics['mae_q25'], epoch)
+        writer.add_scalar('Validation_Instrumentation/MAE_Q75', val_mae_metrics['mae_q75'], epoch)
+        
+        # Log Validation AbsError metrics
+        writer.add_scalar('Validation_Instrumentation/AbsError_Mean', val_abs_error_metrics['abs_error_mean'], epoch)
+        writer.add_scalar('Validation_Instrumentation/AbsError_Median', val_abs_error_metrics['abs_error_median'], epoch)
+        writer.add_scalar('Validation_Instrumentation/AbsError_Min', val_abs_error_metrics['abs_error_min'], epoch)
+        writer.add_scalar('Validation_Instrumentation/AbsError_Max', val_abs_error_metrics['abs_error_max'], epoch)
+        writer.add_scalar('Validation_Instrumentation/AbsError_Std', val_abs_error_metrics['abs_error_std'], epoch)
+        writer.add_scalar('Validation_Instrumentation/AbsError_Q25', val_abs_error_metrics['abs_error_q25'], epoch)
+        writer.add_scalar('Validation_Instrumentation/AbsError_Q75', val_abs_error_metrics['abs_error_q75'], epoch)
+        
+        # Log Validation error distribution histogram
+        if len(val_error_dist) > 1:
+            writer.add_histogram('Validation_Instrumentation/Error_Distribution', val_error_dist, epoch)
+        
+        # Log timing metrics
+        writer.add_scalar('Timing/Epoch_Time', epoch_time, epoch)
+        writer.add_scalar('Timing/Average_Epoch_Time', avg_epoch_time, epoch)
+        writer.add_scalar('Timing/ETA_Hours', eta_hours, epoch)
         
         # Scheduler step
         if scheduler is not None:
@@ -735,10 +905,20 @@ def train_bc(config: BCConfig):
     
     # Test final model
     print(f"\n🧪 Testing final model...")
-    test_loss = validate_epoch_batched(model, test_loader, criterion, device, config.sequence_length)
+    test_loss, test_mae_metrics, test_abs_error_metrics, test_error_dist = validate_epoch_batched(
+        model, test_loader, criterion, device, config.sequence_length
+    )
     print(f"Test Loss: {test_loss:.6f}")
+    print(f"Test MAE: {test_mae_metrics['mae_mean']:.6f} (median: {test_mae_metrics['mae_median']:.6f})")
     
+    # Log final test metrics
     writer.add_scalar('Final/Test_Loss', test_loss, config.num_epochs)
+    writer.add_scalar('Final/Test_MAE_Mean', test_mae_metrics['mae_mean'], config.num_epochs)
+    writer.add_scalar('Final/Test_MAE_Median', test_mae_metrics['mae_median'], config.num_epochs)
+    writer.add_scalar('Final/Test_MAE_Q25', test_mae_metrics['mae_q25'], config.num_epochs)
+    writer.add_scalar('Final/Test_MAE_Q75', test_mae_metrics['mae_q75'], config.num_epochs)
+    writer.add_scalar('Final/Test_AbsError_Mean', test_abs_error_metrics['abs_error_mean'], config.num_epochs)
+    writer.add_scalar('Final/Test_AbsError_Median', test_abs_error_metrics['abs_error_median'], config.num_epochs)
     
     # Save final model
     if config.save_model:
