@@ -221,6 +221,30 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._holding_bonus_threshold = cfg.get("holding_bonus_threshold", 0.0)
         self._minimum_absolute_action = cfg.get("minimum_absolute_action", 0.0)
 
+        # Bootstrap config
+        self._bootstrap = env_kwargs.get("bootstrap_phase", False)
+        self._phased_count = env_kwargs.get("bootstrap_phased_count", 0)
+
+        # Per-DOF action penalty weights (bootstrap mode)
+        # V5 DOF layout: [p0..pN, tip0..tipN, tilt0..tiltN]
+        self._action_penalty_weights_t = None
+        if self._bootstrap:
+            n_seg = self._num_apertures
+            n_dof = n_seg * self._n_dof_per_seg
+            multiplier = env_kwargs.get("bootstrap_nontarget_penalty_multiplier", 10.0)
+            base_w = self._action_penalty_weight
+            weights = np.ones(n_dof, dtype=np.float32) * base_w * multiplier
+            target = self._phased_count
+            if target < n_seg:
+                # Set target segment's piston DOF
+                weights[target] = base_w
+                # Set target segment's tip/tilt DOFs if active
+                if self._command_tip_tilt:
+                    weights[n_seg + target] = base_w       # tip
+                    weights[2 * n_seg + target] = base_w   # tilt
+            self._action_penalty_weights_t = torch.tensor(
+                weights, dtype=torch.float32, device=self.dev)
+
         # Reward function config
         self._reward_function = cfg.get("reward_function", "factored")
         self._rw_centered_strehl = cfg.get("reward_weight_centered_strehl", 0.0)
@@ -284,6 +308,13 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Episode return tracking
         self._episode_returns = torch.zeros(N, dtype=torch.float32, device=self.dev)
         self._episode_lengths = torch.zeros(N, dtype=torch.long, device=self.dev)
+
+        # Bootstrap off-axis constants (extracted from V4 optical system)
+        if self._bootstrap:
+            self._bootstrap_off_axis = os4._bootstrap_off_axis_angle()
+            self._bootstrap_seg_angles = torch.tensor(
+                os4._bootstrap_segment_angles(),
+                dtype=torch.float32, device=self.dev)
 
         # Discard V4 env
         v4.close()
@@ -491,8 +522,15 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
 
         # --- Action penalty ---
         if self._action_penalty:
-            action_l1 = self._prior_actions.abs().mean(dim=1)  # [N]
-            total = total - self._action_penalty_weight * action_l1
+            abs_actions = self._prior_actions.abs()  # [N, action_dim]
+            if self._action_penalty_weights_t is not None:
+                # Per-DOF weighted penalty (bootstrap mode)
+                action_penalty = (self._action_penalty_weights_t * abs_actions).mean(dim=1)
+                total = total - action_penalty
+            else:
+                # Uniform scalar penalty (standard mode)
+                action_l1 = abs_actions.mean(dim=1)  # [N]
+                total = total - self._action_penalty_weight * action_l1
 
         # --- OOB penalty ---
         if self._oob_penalty:
@@ -522,15 +560,66 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         if n_reset == 0:
             return
 
+        n_seg = self._num_apertures
+
         # Start from zero actuators
         self._actuators_t[env_mask] = 0.0
 
-        if self._init_diff_motion and self._model_wind:
+        if self._bootstrap:
+            # --- Bootstrap mode ---
+            # Target segment gets wind perturbation; excluded segments
+            # get tipped/tilted off the focal plane; co-phased segments
+            # stay at zero.
+            target = self._phased_count
+            off_axis = self._bootstrap_off_axis
+            seg_angles = self._bootstrap_seg_angles  # [n_seg] on GPU
+
+            piston = torch.zeros(n_reset, n_seg, device=self.dev)
+            tip = torch.zeros(n_reset, n_seg, device=self.dev)
+            tilt = torch.zeros(n_reset, n_seg, device=self.dev)
+
+            # Excluded segments: push off-axis with ±10% noise
+            for seg_id in range(target + 1, n_seg):
+                noise = 1.0 + (torch.rand(n_reset, device=self.dev) * 0.2 - 0.1)
+                theta = seg_angles[seg_id]
+                tip[:, seg_id] = off_axis * torch.sin(theta) * noise
+                tilt[:, seg_id] = off_axis * torch.cos(theta) * noise
+
+            # Target segment: wind perturbation (same as normal mode)
+            if self._init_diff_motion and self._model_wind:
+                wl = self._wl
+                piston_mean = wl / 4.0
+                piston_std = wl / 6.0
+                clip_m = self._init_piston_clip_m
+
+                signs = torch.sign(torch.randn(n_reset, device=self.dev))
+                signs = torch.where(signs == 0, torch.ones_like(signs), signs)
+                p_target = signs * (piston_mean + torch.randn(n_reset, device=self.dev) * piston_std)
+                piston[:, target] = p_target.clamp(-clip_m, clip_m)
+
+                if self._command_tip_tilt and self._init_tip_std > 0:
+                    t_sign = torch.sign(torch.randn(n_reset, device=self.dev))
+                    t_sign = torch.where(t_sign == 0, torch.ones_like(t_sign), t_sign)
+                    tip[:, target] = t_sign * (
+                        self._init_tip_std + torch.randn(n_reset, device=self.dev) * self._init_tip_std / 3.0
+                    ) * math.pi / (180 * 3600)
+
+                if self._command_tip_tilt and self._init_tilt_std > 0:
+                    tl_sign = torch.sign(torch.randn(n_reset, device=self.dev))
+                    tl_sign = torch.where(tl_sign == 0, torch.ones_like(tl_sign), tl_sign)
+                    tilt[:, target] = tl_sign * (
+                        self._init_tilt_std + torch.randn(n_reset, device=self.dev) * self._init_tilt_std / 3.0
+                    ) * math.pi / (180 * 3600)
+
+            actuators = torch.cat([piston, tip, tilt], dim=1)
+            self._actuators_t[env_mask] = actuators
+
+        elif self._init_diff_motion and self._model_wind:
+            # --- Standard mode ---
             wl = self._wl
             piston_mean = wl / 4.0
             piston_std = wl / 6.0
             clip_m = self._init_piston_clip_m
-            n_seg = self._num_apertures
 
             # Random ±sign per segment per env
             signs = torch.sign(torch.randn(n_reset, n_seg, device=self.dev))
