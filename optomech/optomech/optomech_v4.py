@@ -225,6 +225,16 @@ DEFAULT_CONFIG = {
 
     # --- GPU acceleration (v4) ----------------------------------------
     "device": "auto",  # "auto", "cuda", "mps", "cpu"
+
+    # --- Incremental bootstrapping ------------------------------------
+    # When bootstrap_phase is True, bootstrap_phased_count segments
+    # (indices 0..phased_count-1) start co-phased, the target segment
+    # (index phased_count) is perturbed, and all remaining segments are
+    # tipped/tilted to push their light fully off the focal plane.
+    # Reference images are computed for the goal state (phased_count+1
+    # segments co-phased).  When False, everything works as before.
+    "bootstrap_phase": False,
+    "bootstrap_phased_count": 0,
 }
 
 
@@ -520,6 +530,10 @@ class OpticalSystem(object):
          focal_plane_image_size_meters) = self._build_aperture(
              aperture_type, cfg)
 
+        # Store for bootstrap off-axis computation
+        self._focal_length = focal_length
+        self._focal_plane_image_size_meters = focal_plane_image_size_meters
+
         # --- Optical grid parameters ---------------------------------
         num_px = cfg['focal_plane_image_size_pixels']
         self.wavelength = cfg['wavelength']
@@ -603,6 +617,17 @@ class OpticalSystem(object):
 
         self.segmented_mirror = hcipy.SegmentedDeformableMirror(segments_field)
         self.aperture = aperture_field
+
+        # --- Bootstrap: push excluded segments off focal plane -------
+        # For the perfect image, excluded segments must already be
+        # off-axis so the reference represents the goal state.
+        _bootstrap = cfg.get('bootstrap_phase', False)
+        _phased_count = cfg.get('bootstrap_phased_count', 0)
+        if _bootstrap:
+            _v3("Bootstrap mode: %d co-phased, target=%d, %d excluded"
+                % (_phased_count, _phased_count,
+                   self.num_apertures - _phased_count - 1))
+            self._init_bootstrap_segments(_phased_count, noisy=False)
 
         # --- Perfect (reference) image -------------------------------
         # Polychromatic perfect PSF: average across all sampled wavelengths
@@ -1420,6 +1445,81 @@ class OpticalSystem(object):
             self._actuators_t = torch.tensor(
                 np.array(self.segmented_mirror.actuators),
                 dtype=torch.float32, device=self._torch_device)
+
+    # ================================================================
+    # Incremental bootstrapping
+    # ================================================================
+
+    def _bootstrap_off_axis_angle(self):
+        """Tip/tilt angle (radians) that moves a segment's light fully
+        off the focal plane.  Uses 1.5× the half-extent for margin."""
+        half_extent = self._focal_plane_image_size_meters / (2.0 * self._focal_length)
+        return half_extent * 1.5
+
+    def _bootstrap_segment_angles(self):
+        """Return angular position (radians) of each segment on the ring."""
+        return np.array([2.0 * np.pi * i / self.num_apertures
+                         for i in range(self.num_apertures)])
+
+    def _init_bootstrap_segments(self, phased_count, noisy=False):
+        """Set segment states for incremental bootstrapping.
+
+        - Segments 0..phased_count-1: left at zero PTT (co-phased).
+        - Segment phased_count (the target): left at zero PTT here;
+          perturbation is applied separately by the caller.
+        - Segments phased_count+1..N-1: tipped/tilted to push their
+          light fully off the focal plane.
+
+        Args:
+            phased_count: number of already co-phased segments.
+            noisy: if True, add ±10% uniform noise to the off-axis
+                   offset (for episode variation).  Use False when
+                   computing reference images.
+        """
+        off_axis = self._bootstrap_off_axis_angle()
+        seg_angles = self._bootstrap_segment_angles()
+
+        ptt = np.zeros((self.num_apertures, 3))
+        for seg_id in range(phased_count + 1, self.num_apertures):
+            scale = 1.0
+            if noisy:
+                scale += np.random.uniform(-0.1, 0.1)
+            theta = seg_angles[seg_id]
+            ptt[seg_id, 1] = off_axis * np.sin(theta) * scale   # tip
+            ptt[seg_id, 2] = off_axis * np.cos(theta) * scale   # tilt
+
+        self._apply_ptt_displacements(ptt)
+
+    def _init_bootstrap_target_perturbation(self, phased_count):
+        """Apply initial perturbation to the target segment only.
+
+        Uses the same wind-driven perturbation logic as
+        _init_natural_diff_motion, but restricted to segment
+        ``phased_count``.
+        """
+        cfg = self._cfg
+        _wl = self.wavelength
+        _piston_mean = _wl / 4.0
+        _piston_std = _wl / 6.0
+
+        ptt = np.zeros((self.num_apertures, 3))
+        seg = phased_count
+        sign = np.random.choice([-1.0, 1.0])
+        ptt[seg, 0] = sign * (_piston_mean + np.random.randn() * _piston_std)
+        clip_m = cfg["init_wind_piston_clip_m"]
+        ptt[seg, 0] = np.clip(ptt[seg, 0], -clip_m, clip_m)
+
+        if self.command_tip_tilt:
+            tip_std = cfg["init_wind_tip_arcsec_std_tt"]
+            tilt_std = cfg["init_wind_tilt_arcsec_std_tt"]
+            ptt[seg, 1] = (np.random.choice([-1.0, 1.0])
+                           * (tip_std + np.random.randn() * tip_std / 3.0)
+                           * np.pi / (180 * 3600))
+            ptt[seg, 2] = (np.random.choice([-1.0, 1.0])
+                           * (tilt_std + np.random.randn() * tilt_std / 3.0)
+                           * np.pi / (180 * 3600))
+
+        self._apply_ptt_displacements(ptt, incremental=True)
 
     def get_ptt_state(self):
         """Return list of (piston, tip, tilt) tuples for all segments."""
@@ -2248,15 +2348,37 @@ class OptomechEnv(gym.Env):
 
         _v3("Seeding initial action...")
 
-        if self.cfg['init_differential_motion']:
-            _v3("Applying initial differential motion...")
-            self.optical_system._init_natural_diff_motion()
+        _bootstrap = self.cfg.get('bootstrap_phase', False)
+        _phased_count = self.cfg.get('bootstrap_phased_count', 0)
+
+        if _bootstrap:
+            # Re-push excluded segments with per-episode noise
+            # (deterministic push already happened in OpticalSystem init
+            # for the reference images; now add noise for training variety).
+            self.optical_system._init_bootstrap_segments(
+                _phased_count, noisy=True)
+
+            # Perturb the target segment only (index = phased_count)
+            if self.cfg['init_differential_motion']:
+                _v3("Bootstrap: perturbing target segment %d..." % _phased_count)
+                self.optical_system._init_bootstrap_target_perturbation(
+                    _phased_count)
+        else:
+            if self.cfg['init_differential_motion']:
+                _v3("Applying initial differential motion...")
+                self.optical_system._init_natural_diff_motion()
+
         self.optical_system._store_baseline_segment_displacements()
 
+        # Warm-up: run frames to generate the initial observation.
+        # In bootstrap mode, use zero action so excluded segments stay
+        # at their off-axis positions (random actions could overwrite them).
+        _warmup_action = (np.zeros_like(self.action_space.sample())
+                          if _bootstrap else self.action_space.sample())
         _v3("Warm-up: %d initial frame(s)..." % self.frames_per_decision)
         for _ in range(self.frames_per_decision):
             (initial_state, _, _, _, info) = self.step(
-                action=self.action_space.sample(),
+                action=_warmup_action,
                 noisy_command=False,
                 reset=True)
 

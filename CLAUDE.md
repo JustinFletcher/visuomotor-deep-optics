@@ -184,6 +184,46 @@ poetry run python train/ppo/sweep_tiptilt.py \
     --replot test_output/sweep_.../sweep_results.json
 ```
 
+## Incremental bootstrapping
+
+Decomposes full ELF co-phasing (15 segments, 45 DOF) into 15 sequential
+single-segment tasks.  Each model learns to bring one additional segment
+into co-phase while the rest are either already aligned or pushed off
+the focal plane.
+
+```python
+# Environment flags
+"bootstrap_phase": True,
+"bootstrap_phased_count": 3,   # segments 0-2 co-phased, 3 is target, 4-14 excluded
+```
+
+### Training
+
+```bash
+# Single phase
+poetry run python train/ppo/train_ppo_elf_bootstrap.py --phased-count 3
+
+# All 15 phases via SLURM array job
+sbatch train/ppo/run_elf_bootstrap.sbatch
+```
+
+### Chaining trained models
+
+After training all 15, create a composite YAML spec:
+```yaml
+type: composite
+phases:
+  - name: phase-0
+    checkpoint: runs/bootstrap_0/best.pt
+    until:
+      metric_above: {strehl: 0.8}
+  - name: phase-1
+    checkpoint: runs/bootstrap_1/best.pt
+    until:
+      metric_above: {strehl: 0.85}
+  # ... through phase-14
+```
+
 ## Reward function
 
 ```
