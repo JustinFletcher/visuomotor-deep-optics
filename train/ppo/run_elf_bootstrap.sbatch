@@ -1,4 +1,7 @@
 #!/bin/bash
+# NOTE: Prefer launch_bootstrap.py for managed runs with unique IDs,
+# organized output directories, and phase cherry-picking support.
+# This sbatch is kept for quick one-off submissions.
 #SBATCH --job-name=elf-boot
 #SBATCH --time=72:00:00
 #SBATCH --account=MHPCC38870258

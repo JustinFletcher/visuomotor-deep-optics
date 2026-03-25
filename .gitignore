@@ -22,6 +22,7 @@ build/
 
 # Training artifacts
 runs/
+bootstrap_runs/
 results/
 eval_gifs/
 datasets/
