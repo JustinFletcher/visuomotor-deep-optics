@@ -27,5 +27,9 @@ eval_gifs/
 datasets/
 *.pth
 
+# Generated figures (regenerate via scripts in figures/)
+figures/**/*.png
+figures/**/*.pdf
+
 # Claude
 .claude/
