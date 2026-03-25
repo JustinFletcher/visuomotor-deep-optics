@@ -969,6 +969,97 @@ def evaluate_random_policy(config: dict, num_episodes: int = 5) -> float:
 
 
 # ============================================================================
+# Checkpoint management
+# ============================================================================
+
+
+class CheckpointManager:
+    """Manages checkpoint lifecycle: latest, best, and evenly-spaced history.
+
+    Keeps at most three categories of checkpoints on disk:
+      - ``latest.pt``   — overwritten every save
+      - ``best.pt``     — overwritten when a new best metric is achieved
+      - ``history_update_N.pt`` — up to *max_keep* checkpoints spaced
+        approximately evenly across training
+
+    The history spacing works by dividing the total number of updates into
+    *max_keep* equal slots.  A new history checkpoint is saved whenever the
+    current update crosses into a new slot.  Old checkpoints that fall in the
+    same slot are deleted, so the on-disk count never exceeds *max_keep*.
+    """
+
+    def __init__(self, ckpt_dir: str, num_updates: int, max_keep: int = 10):
+        self.ckpt_dir = ckpt_dir
+        self.num_updates = max(num_updates, 1)
+        self.max_keep = max(max_keep, 1)
+        self.slot_size = self.num_updates / self.max_keep
+        # slot_index → path on disk
+        self._history: dict[int, str] = {}
+        self.best_metric = -np.inf
+
+    def _make_ckpt_dict(self, agent, optimizer, global_step, update,
+                        best_eval_return, config, include_wrapper=False):
+        d = {
+            "model_state_dict": agent.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "global_step": global_step,
+            "update": update,
+            "best_eval_return": best_eval_return,
+            "config": config,
+        }
+        if include_wrapper:
+            d["policy_wrapper"] = PPOActorWrapper(agent)
+        return d
+
+    def save_latest(self, agent, optimizer, global_step, update,
+                    best_eval_return, config):
+        """Save latest.pt (always overwritten)."""
+        path = os.path.join(self.ckpt_dir, "latest.pt")
+        torch.save(self._make_ckpt_dict(
+            agent, optimizer, global_step, update, best_eval_return, config
+        ), path)
+
+    def save_best(self, metric, agent, optimizer, global_step, update,
+                  best_eval_return, config):
+        """Save best.pt if *metric* exceeds the previous best. Returns True if saved."""
+        if metric > self.best_metric:
+            self.best_metric = metric
+            path = os.path.join(self.ckpt_dir, "best.pt")
+            torch.save(self._make_ckpt_dict(
+                agent, optimizer, global_step, update,
+                best_eval_return, config, include_wrapper=True
+            ), path)
+            return True
+        return False
+
+    def save_history(self, agent, optimizer, global_step, update,
+                     best_eval_return, config):
+        """Save a history checkpoint if *update* falls in a new slot."""
+        slot = min(int(update / self.slot_size), self.max_keep - 1)
+        if slot in self._history:
+            return  # already have a checkpoint in this slot
+        # Save new history checkpoint
+        fname = f"history_update_{update}.pt"
+        path = os.path.join(self.ckpt_dir, fname)
+        torch.save(self._make_ckpt_dict(
+            agent, optimizer, global_step, update, best_eval_return, config
+        ), path)
+        self._history[slot] = path
+
+    def save(self, agent, optimizer, global_step, update,
+             best_eval_return, config, metric=None):
+        """One-call convenience: save latest, update history, optionally update best."""
+        self.save_latest(agent, optimizer, global_step, update,
+                         best_eval_return, config)
+        self.save_history(agent, optimizer, global_step, update,
+                          best_eval_return, config)
+        if metric is not None:
+            return self.save_best(metric, agent, optimizer, global_step,
+                                  update, best_eval_return, config)
+        return False
+
+
+# ============================================================================
 # Main training loop
 # ============================================================================
 
@@ -1118,6 +1209,7 @@ def run_ppo_training(config: dict, run_dir: str):
     num_updates = config["total_timesteps"] // batch_size
     reward_scale = config.get("reward_scale", 1.0)
     save_interval = config.get("model_save_interval", 0)
+    max_keep_checkpoints = config.get("max_keep_checkpoints", 10)
 
     run_name = f"ppo_optomech_{seed}_{int(time.time())}"
     this_run_dir = os.path.join(run_dir, run_name)
@@ -1130,6 +1222,8 @@ def run_ppo_training(config: dict, run_dir: str):
     ckpt_dir = os.path.join(this_run_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
+    ckpt_mgr = CheckpointManager(ckpt_dir, num_updates, max_keep=max_keep_checkpoints)
+
     print(f"\n{'='*60}")
     print(f"PPO Optomech Training")
     print(f"{'='*60}")
@@ -1141,6 +1235,7 @@ def run_ppo_training(config: dict, run_dir: str):
     print(f"  Batch size:       {batch_size} ({num_envs} envs x {num_steps} steps)")
     print(f"  Minibatch size:   {minibatch_size}")
     print(f"  Reward scale:     {reward_scale}")
+    print(f"  Checkpoints:      latest + best + {max_keep_checkpoints} history")
     print(f"  Save interval:    {save_interval} updates" if save_interval > 0 else "  Save interval:    disabled")
     print(f"  Parameters:       {sum(p.numel() for p in agent.parameters()):,}")
     print(f"  Run directory:    {this_run_dir}")
@@ -1595,14 +1690,16 @@ def run_ppo_training(config: dict, run_dir: str):
         # PERIODIC CHECKPOINT SAVING
         # ==============================================================
         if save_interval > 0 and update % save_interval == 0:
-            torch.save({
-                "model_state_dict": agent.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "global_step": global_step,
-                "update": update,
-                "best_eval_return": best_eval_return,
-                "config": config,
-            }, os.path.join(ckpt_dir, f"update_{update}.pt"))
+            # Use training return as metric when eval is disabled
+            train_metric = None
+            if config.get("no_eval", False) and recent_train_returns:
+                train_metric = float(np.mean(recent_train_returns[-20:]))
+            is_new_best = ckpt_mgr.save(
+                agent, optimizer, global_step, update,
+                best_eval_return, config, metric=train_metric)
+            if is_new_best:
+                best_eval_return = ckpt_mgr.best_metric
+                print(f"  New best (train): {best_eval_return:.4f}")
             print(f"  Saved checkpoint at update {update}")
 
         # ==============================================================
@@ -1632,22 +1729,11 @@ def run_ppo_training(config: dict, run_dir: str):
                 f"r_last/r_first={eval_metrics['mean_reward_ratio']:.3f}"
             )
 
-            if eval_metrics["mean_return"] > best_eval_return:
-                best_eval_return = eval_metrics["mean_return"]
-
-                # Save best checkpoint (full state + deployable wrapper)
-                best_path = os.path.join(ckpt_dir, "best.pt")
-                wrapper = PPOActorWrapper(agent)
-                torch.save({
-                    "model_state_dict": agent.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "global_step": global_step,
-                    "update": update,
-                    "best_eval_return": best_eval_return,
-                    "config": config,
-                    "policy_wrapper": wrapper,
-                }, best_path)
-
+            if ckpt_mgr.save_best(
+                eval_metrics["mean_return"], agent, optimizer,
+                global_step, update, best_eval_return, config
+            ):
+                best_eval_return = ckpt_mgr.best_metric
                 print(f"  New best eval model saved: {best_eval_return:.4f}")
 
             writer.add_scalar(
@@ -1713,6 +1799,12 @@ def run_main(local_config: dict, hpc_config: dict):
         type=int,
         default=None,
         help="Checkpoint every N updates (0 = disabled, default: from config)",
+    )
+    parser.add_argument(
+        "--max-keep-checkpoints",
+        type=int,
+        default=None,
+        help="Max evenly-spaced history checkpoints to keep (default: 10)",
     )
     parser.add_argument(
         "--pretrained-encoder",
@@ -1794,6 +1886,8 @@ def run_main(local_config: dict, hpc_config: dict):
     # Override model save interval if specified on command line
     if cli.model_save_interval is not None:
         config["model_save_interval"] = cli.model_save_interval
+    if cli.max_keep_checkpoints is not None:
+        config["max_keep_checkpoints"] = cli.max_keep_checkpoints
 
     # Override learning rate if specified on command line
     if cli.learning_rate is not None:
