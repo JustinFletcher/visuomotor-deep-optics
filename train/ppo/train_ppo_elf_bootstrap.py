@@ -35,6 +35,7 @@ ELF_BOOTSTRAP_ENV_KWARGS = {
     "command_tip_tilt": True,            # full 45 DOF
     "bootstrap_phase": True,
     "bootstrap_phased_count": 0,         # overridden by --phased-count
+    "bootstrap_nontarget_penalty_multiplier": 10.0,
 }
 
 

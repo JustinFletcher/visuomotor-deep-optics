@@ -235,6 +235,10 @@ DEFAULT_CONFIG = {
     # segments co-phased).  When False, everything works as before.
     "bootstrap_phase": False,
     "bootstrap_phased_count": 0,
+    # Per-DOF action penalty multiplier for non-target segments during
+    # bootstrap.  Applied to all segments except the target (phased_count).
+    # Set to 0.0 to disable (only the base action_penalty_weight applies).
+    "bootstrap_nontarget_penalty_multiplier": 10.0,
 }
 
 
@@ -1799,6 +1803,13 @@ class OptomechEnv(gym.Env):
         self._minimum_absolute_action = cfg.get('minimum_absolute_action', 0.0)
         self._reward_scale = cfg.get('reward_scale', 1.0)
 
+        # --- Per-DOF action penalty weights (bootstrap) -----------------
+        # When bootstrap_phase is True, non-target segments get a heavier
+        # action penalty to discourage the policy from moving them.
+        # _action_penalty_weights is a 1-D array matching the flat action
+        # vector, or None when uniform penalty applies (non-bootstrap).
+        self._action_penalty_weights = None  # built in _build_bootstrap_penalty
+
         self.reward_function = cfg['reward_function']
 
         # --- Composite reward weights --------------------------------
@@ -1933,6 +1944,7 @@ class OptomechEnv(gym.Env):
 
         # --- Build action spaces -------------------------------------
         self._build_action_spaces()
+        self._build_bootstrap_penalty()
 
         # --- Build observation space ---------------------------------
         self._build_observation_space()
@@ -2216,6 +2228,63 @@ class OptomechEnv(gym.Env):
             act_space = spaces.Box(low=lo, high=hi, shape=(1,), dtype=np.float32)
             return spaces.Tuple(
                 tuple([act_space] * len(self.optical_system.dm.actuators)))
+
+    def _build_bootstrap_penalty(self):
+        """Build per-DOF action penalty weights for bootstrap training.
+
+        In bootstrap mode, the target segment (index == phased_count) gets
+        the base action_penalty_weight, while all other segments get
+        base_weight * bootstrap_nontarget_penalty_multiplier.
+
+        The flat action vector is structured as commands_per_decision
+        repetitions of the per-command vector.  Within each command, the
+        secondaries DOFs are interleaved per segment:
+          [p0, tip0, tilt0, p1, tip1, tilt1, ..., pN, tipN, tiltN]
+
+        When bootstrap_phase is False, self._action_penalty_weights stays
+        None and the reward code falls back to the uniform scalar weight.
+        """
+        cfg = self.cfg
+        if not cfg.get('bootstrap_phase', False):
+            self._action_penalty_weights = None
+            return
+
+        n_seg = self.optical_system.num_apertures
+        target_seg = cfg.get('bootstrap_phased_count', 0)
+        multiplier = cfg.get('bootstrap_nontarget_penalty_multiplier', 10.0)
+        base_w = self._action_penalty_weight
+
+        action_dim = self.action_space.shape[0]
+        cpd = self.commands_per_decision
+
+        # DOFs per segment within a single command step
+        dofs_per_seg = 1  # piston
+        if self.command_tip_tilt:
+            dofs_per_seg = 3  # piston + tip + tilt
+
+        # Build per-command weight vector
+        dofs_per_cmd = n_seg * dofs_per_seg
+        cmd_weights = np.ones(dofs_per_cmd, dtype=np.float32) * base_w * multiplier
+
+        # Set target segment DOFs to base weight
+        if target_seg < n_seg:
+            start = target_seg * dofs_per_seg
+            end = start + dofs_per_seg
+            cmd_weights[start:end] = base_w
+
+        # Tile across all command steps
+        weights = np.tile(cmd_weights, cpd)
+
+        # If there are extra DOFs (tensioners, DM) beyond secondaries,
+        # pad with base weight so they aren't over-penalized
+        if len(weights) < action_dim:
+            extra = np.ones(action_dim - len(weights), dtype=np.float32) * base_w
+            weights = np.concatenate([weights, extra])
+
+        assert len(weights) == action_dim, (
+            f"Bootstrap penalty weights length {len(weights)} != action_dim {action_dim}")
+
+        self._action_penalty_weights = weights
 
     # ================================================================
     # Observation space
@@ -2588,8 +2657,15 @@ class OptomechEnv(gym.Env):
         # of action_scale.  L1 encourages exact-zero outputs (sparsity),
         # pairing with the deadzone to produce clean "hold" behavior.
         if self._action_penalty:
-            action_l1_mean = float(np.mean(np.abs(self._raw_action)))
-            reward = reward - self._action_penalty_weight * action_l1_mean
+            abs_action = np.abs(self._raw_action)
+            if self._action_penalty_weights is not None:
+                # Per-DOF weighted penalty (bootstrap mode)
+                action_penalty = float(np.mean(self._action_penalty_weights * abs_action))
+                reward = reward - action_penalty
+            else:
+                # Uniform scalar penalty (standard mode)
+                action_l1_mean = float(np.mean(abs_action))
+                reward = reward - self._action_penalty_weight * action_l1_mean
 
         # Out-of-bounds penalty: penalize actuator clipping at physical rails.
         # Fraction of DOFs that were clipped, times penalty weight.
