@@ -52,6 +52,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from train.ppo.ppo_models import RecurrentActorCritic, PPOActorWrapper
+from train.ppo.agents import BaseAgent, SingleModelAgent
 from train.ppo.train_ppo_optomech import (
     register_optomech,
     normalize_obs_fixed,
@@ -112,14 +113,29 @@ def load_agent(checkpoint_path, env, device="cpu"):
     return agent, config, obs_ref_max
 
 
+def _wrap_as_agent(agent_or_base, device="cpu"):
+    """Accept either a BaseAgent or a raw RecurrentActorCritic and return a BaseAgent."""
+    if isinstance(agent_or_base, BaseAgent):
+        return agent_or_base
+    # Legacy path: raw RecurrentActorCritic
+    wrapper = PPOActorWrapper(agent_or_base)
+    return SingleModelAgent(wrapper, device)
+
+
 def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
     """Run a single deterministic episode and return structured data.
+
+    Parameters
+    ----------
+    agent : BaseAgent or RecurrentActorCritic
+        Policy to evaluate.  Raw RecurrentActorCritic is auto-wrapped for
+        backwards compatibility.
 
     Returns a dict with keys: rewards, actions, obs_raw, strehls, mses,
     oob_fracs, return, length, seed, zero_return, random_return,
     improvement_gap.
     """
-    wrapper = PPOActorWrapper(agent)
+    agent = _wrap_as_agent(agent, device)
 
     # Zero-action baseline
     zero_return, _, zero_rewards = _run_zero_action_episode(env, seed)
@@ -131,8 +147,7 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
     obs_raw, _ = env.reset(seed=seed)
     obs_np = normalize_obs_fixed(obs_raw[np.newaxis], obs_ref_max)
 
-    hidden = wrapper.get_zero_hidden()
-    hidden = (hidden[0].to(device), hidden[1].to(device))
+    hidden = agent.get_zero_hidden()
     prior_action = torch.zeros(1, agent.action_dim, device=device)
     prior_reward = torch.zeros(1, device=device)
 
@@ -144,14 +159,15 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
     ep_oob_fracs = []
 
     done = False
+    step = 0
     while not done:
         obs_t = torch.from_numpy(obs_np).float().to(device)
-        with torch.no_grad():
-            action_t, hidden = wrapper(obs_t, prior_action, prior_reward, hidden)
+        action_t, hidden = agent(obs_t, prior_action, prior_reward, hidden)
         action = action_t.cpu().numpy()[0]
 
         next_obs_raw, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+        step += 1
 
         ep_rewards.append(float(reward))
         ep_actions.append(action.copy())
@@ -159,6 +175,9 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
         ep_strehls.append(float(info.get("strehl", 0.0)))
         ep_mses.append(float(info.get("mse", 0.0)))
         ep_oob_fracs.append(float(info.get("oob_frac", 0.0)))
+
+        # Notify the agent (triggers phase transitions in composite agents)
+        agent.notify_step(info)
 
         obs_np = normalize_obs_fixed(next_obs_raw[np.newaxis], obs_ref_max)
         prior_action = action_t.clone()
@@ -184,7 +203,8 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
 
 
 def run_rollouts(
-    checkpoint_path,
+    checkpoint_path=None,
+    policy_spec_path=None,
     env_kwargs=None,
     env_version="v3",
     num_episodes=8,
@@ -196,8 +216,10 @@ def run_rollouts(
 
     Parameters
     ----------
-    checkpoint_path : str
-        Path to a PPO checkpoint (.pt).
+    checkpoint_path : str, optional
+        Path to a PPO checkpoint (.pt).  Mutually exclusive with policy_spec_path.
+    policy_spec_path : str, optional
+        Path to a policy specification YAML.  Mutually exclusive with checkpoint_path.
     env_kwargs : dict, optional
         Environment kwargs. Defaults to NANOELF_TT_ENV_KWARGS.
     env_version : str
@@ -207,7 +229,7 @@ def run_rollouts(
     max_episode_steps : int
         Max steps per episode (default: 256).
     seeds : list[int], optional
-        Seeds for each episode. If None, uses 0..num_episodes-1.
+        Seeds for each episode. If None, uses random seeds.
     device : str, optional
         Torch device. If None, auto-detects (CUDA > CPU).
 
@@ -218,6 +240,9 @@ def run_rollouts(
     metrics : dict
         Aggregate metrics across all episodes.
     """
+    if checkpoint_path is None and policy_spec_path is None:
+        raise ValueError("Provide either checkpoint_path or policy_spec_path")
+
     if device is None:
         device = _auto_device()
 
@@ -234,7 +259,13 @@ def run_rollouts(
     env = gym.make(f"optomech-{env_version}", **env_kwargs)
     env = gym.wrappers.RecordEpisodeStatistics(env)
 
-    agent, config, obs_ref_max = load_agent(checkpoint_path, env, device)
+    if policy_spec_path is not None:
+        from train.ppo.policy_spec import load_policy_spec
+        agent, obs_ref_max = load_policy_spec(
+            policy_spec_path, env, device, max_episode_steps)
+    else:
+        raw_agent, config, obs_ref_max = load_agent(checkpoint_path, env, device)
+        agent = _wrap_as_agent(raw_agent, device)
 
     if seeds is None:
         rng = np.random.RandomState(42)
@@ -557,8 +588,11 @@ def _fig_final_strehl_distribution(episodes, metrics, output_dir):
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate a PPO agent with rollout instrumentation")
-    parser.add_argument("--checkpoint", type=str, required=True,
-                        help="Path to PPO checkpoint (.pt)")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--checkpoint", type=str,
+                       help="Path to PPO checkpoint (.pt)")
+    group.add_argument("--policy-spec", type=str,
+                       help="Path to policy specification YAML")
     parser.add_argument("--env-version", type=str, default="v3",
                         choices=["v1", "v2", "v3", "v4"])
     parser.add_argument("--num-episodes", type=int, default=8)
@@ -578,6 +612,7 @@ def main():
     # Run rollouts
     episodes, metrics = run_rollouts(
         checkpoint_path=args.checkpoint,
+        policy_spec_path=getattr(args, 'policy_spec', None),
         env_version=args.env_version,
         num_episodes=args.num_episodes,
         max_episode_steps=args.max_episode_steps,

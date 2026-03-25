@@ -766,7 +766,7 @@ class OpticalSystem(object):
         focal_length, pupil_diameter, focal_plane_image_size_meters)."""
         if aperture_type == "elf":
             self.num_apertures = 15
-            focal_plane_image_size_meters = 8.192e-4
+            focal_plane_image_size_meters = 3.611e-4
             focal_length = 32.5
             pupil_diameter = 3.6
             segment_diameter = 0.5

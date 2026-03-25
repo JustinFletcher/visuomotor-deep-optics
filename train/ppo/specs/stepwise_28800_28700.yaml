@@ -1,0 +1,8 @@
+type: composite
+phases:
+  - name: coarse-align
+    checkpoint: runs/ppo_optomech_1_1774296665/checkpoints/update_28800.pt
+    until:
+      step: 32
+  - name: fine-hold
+    checkpoint: runs/ppo_optomech_1_1774296661/checkpoints/update_28700.pt

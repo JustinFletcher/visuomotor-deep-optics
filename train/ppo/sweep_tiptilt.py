@@ -96,6 +96,7 @@ def run_sweep(args):
         # Agent rollouts
         episodes, metrics = run_rollouts(
             checkpoint_path=args.checkpoint,
+            policy_spec_path=getattr(args, 'policy_spec', None),
             env_kwargs=env_kwargs,
             env_version=args.env_version,
             num_episodes=args.num_episodes,
@@ -633,6 +634,8 @@ def main():
         description="Sweep tip/tilt error and plot agent performance")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to PPO checkpoint (.pt)")
+    parser.add_argument("--policy-spec", type=str, default=None,
+                        help="Path to policy specification YAML (alternative to --checkpoint)")
     parser.add_argument("--replot", type=str, default=None,
                         help="Path to existing sweep_results.json to re-plot without re-running")
     parser.add_argument("--env-version", type=str, default="v3",
@@ -654,8 +657,8 @@ def main():
     if args.replot:
         replot(args.replot)
     else:
-        if args.checkpoint is None:
-            parser.error("--checkpoint is required when not using --replot")
+        if args.checkpoint is None and args.policy_spec is None:
+            parser.error("--checkpoint or --policy-spec is required when not using --replot")
         run_sweep(args)
 
 
