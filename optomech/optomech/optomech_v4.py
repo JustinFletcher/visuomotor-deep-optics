@@ -210,6 +210,8 @@ DEFAULT_CONFIG = {
     "detector_quantum_efficiency": 0.8,
     "detector_gain_e_per_dn": 0.5,
     "detector_max_dn": 65535,
+    "detector_poisson_noise": False,
+    "detector_quantize_adc": False,
 
     # --- State recording ---------------------------------------------
     "record_env_state_info": False,
@@ -1857,6 +1859,8 @@ class OptomechEnv(gym.Env):
         self._det_qe = cfg['detector_quantum_efficiency']
         self._det_gain = cfg['detector_gain_e_per_dn']
         self._det_max_dn = cfg['detector_max_dn']
+        self._det_poisson = cfg['detector_poisson_noise']
+        self._det_quantize = cfg['detector_quantize_adc']
         self._frame_sec = self.frame_interval_ms / 1000.0
 
         _v3_section("Initializing OptomechEnv")
@@ -2769,20 +2773,32 @@ class OptomechEnv(gym.Env):
         """Convert power-per-pixel frame to digital numbers (DN).
 
         [v3-opt] Uses pre-computed photon_energy, qe, gain, max_dn, frame_sec.
+        Optionally applies Poisson photon noise and ADC quantization.
         """
         energy_joules = frame * self._frame_sec
         n_photons = energy_joules / self._photon_energy
+        if self._det_poisson:
+            n_photons = np.random.poisson(np.maximum(n_photons, 0)).astype(np.float32)
         n_electrons = n_photons * self._det_qe
         dn = n_electrons / self._det_gain
+        if self._det_quantize:
+            dn = np.floor(dn)
         return np.clip(dn, 0, self._det_max_dn)
 
     def _apply_detector_model_gpu(self, frame_t, device):
-        """GPU version of _apply_detector_model."""
+        """GPU version of _apply_detector_model.
+
+        Optionally applies Poisson photon noise and ADC quantization.
+        """
         os = self.optical_system
         energy = frame_t * self._frame_sec
         n_photons = energy / os._photon_energy
+        if self._det_poisson:
+            n_photons = torch.poisson(torch.clamp(n_photons, min=0))
         n_electrons = n_photons * os._det_qe
         dn = n_electrons / os._det_gain
+        if self._det_quantize:
+            dn = torch.floor(dn)
         return torch.clamp(dn, 0, os._det_max_dn)
 
     # ================================================================
