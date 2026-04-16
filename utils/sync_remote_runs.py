@@ -8,10 +8,14 @@ the Kerberos ticket expires, so you enter your PIN once and it stays
 valid for the ticket lifetime (typically 10-24 hours).
 
 Usage:
-    python utils/sync_remote_runs.py                    # sync all runs
+    python utils/sync_remote_runs.py                    # sync all runs from makau
+    python utils/sync_remote_runs.py --remote coral     # sync all runs from coral
     python utils/sync_remote_runs.py --run ppo_optomech_1_1774138836  # sync one run
     python utils/sync_remote_runs.py --interval 60      # poll every 60s
     python utils/sync_remote_runs.py --dry-run           # show what would transfer
+    python utils/sync_remote_runs.py --bootstrap        # sync full bootstrap_runs/
+    python utils/sync_remote_runs.py --bootstrap --run bootstrap_1776285401
+                                                        # sync one bootstrap run id
 """
 
 import argparse
@@ -28,9 +32,22 @@ KLIST_BIN = "/usr/local/krb5/bin/klist"
 KDESTROY_BIN = "/usr/local/krb5/bin/kdestroy"
 PRINCIPAL = "fletch@HPCMP.HPC.MIL"
 
-REMOTE_HOST = "fletch@makau.mhpcc.hpc.mil"
-REMOTE_RUNS = "/p/home/fletch/visuomotor-deep-optics/runs/"
-LOCAL_RUNS = Path(__file__).resolve().parent.parent / "runs"
+REMOTES = {
+    "makau": {
+        "host": "fletch@makau.mhpcc.hpc.mil",
+        "runs": "/p/home/fletch/visuomotor-deep-optics/runs/",
+        "bootstrap_runs": "/p/home/fletch/visuomotor-deep-optics/bootstrap_runs/",
+    },
+    "coral": {
+        "host": "fletch@coral.mhpcc.hpc.mil",
+        "runs": "/wdata/home/fletch/visuomotor-deep-optics/runs/",
+        "bootstrap_runs": "/wdata/home/fletch/visuomotor-deep-optics/bootstrap_runs/",
+    },
+}
+DEFAULT_REMOTE = "makau"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+LOCAL_RUNS = _REPO_ROOT / "runs"
+LOCAL_BOOTSTRAP_RUNS = _REPO_ROOT / "bootstrap_runs"
 
 # SSH ControlMaster: keep a persistent connection open so we only
 # authenticate once. All subsequent rsync calls multiplex over it.
@@ -104,12 +121,14 @@ def ensure_ticket() -> bool:
     return False
 
 
-def test_ssh_connection() -> bool:
+def test_ssh_connection(remote_host: str | None = None) -> bool:
     """Quick SSH test to verify Kerberos auth actually works end-to-end."""
+    if remote_host is None:
+        remote_host = REMOTES[DEFAULT_REMOTE]["host"]
     print("  Testing SSH connection...", end=" ", flush=True)
     result = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-         REMOTE_HOST.split("@")[1] if "@" not in REMOTE_HOST else REMOTE_HOST,
+         remote_host,
          "echo ok"],
         capture_output=True,
         text=True,
@@ -123,16 +142,19 @@ def test_ssh_connection() -> bool:
     return False
 
 
-def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False) -> bool:
+def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False,
+              remote_host: str | None = None) -> bool:
     """
     Run rsync with retry logic. Returns True on success.
     """
+    if remote_host is None:
+        remote_host = REMOTES[DEFAULT_REMOTE]["host"]
     local_path.mkdir(parents=True, exist_ok=True)
 
     args = list(RSYNC_BASE_ARGS)
     if dry_run:
         args.append("--dry-run")
-    args += [f"{REMOTE_HOST}:{remote_path}", str(local_path) + "/"]
+    args += [f"{remote_host}:{remote_path}", str(local_path) + "/"]
 
     for attempt in range(1, MAX_RETRIES + 1):
         print(f"\n{'─' * 60}")
@@ -164,7 +186,7 @@ def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False) -> bool
                 print("✗ Cannot re-authenticate, aborting")
                 return False
             # Verify SSH actually works with the new ticket
-            if not test_ssh_connection():
+            if not test_ssh_connection(remote_host=remote_host):
                 print("✗ SSH still failing after re-auth — credential cache issue?")
                 print(f"  Try: export KRB5CCNAME=$(klist 2>&1 | grep 'cache:' | awk '{{print $NF}}')")
                 return False
@@ -177,20 +199,38 @@ def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False) -> bool
     return False
 
 
-def sync_once(run_name: str | None = None, dry_run: bool = False) -> bool:
-    """Run a single sync cycle. Returns True on success."""
+def sync_once(run_name: str | None = None, dry_run: bool = False,
+              remote_name: str = DEFAULT_REMOTE,
+              bootstrap: bool = False) -> bool:
+    """Run a single sync cycle. Returns True on success.
+
+    When ``bootstrap`` is True, syncs the full ``bootstrap_runs/`` tree
+    (or a specific bootstrap run id when ``run_name`` is given) instead
+    of the regular ``runs/`` tree. This preserves the nested directory
+    structure expected by ``compose_bootstrap_agent.py``.
+    """
     SSH_CONTROL_DIR.mkdir(parents=True, exist_ok=True)
     if not ensure_ticket():
         return False
 
-    if run_name:
-        remote = f"{REMOTE_RUNS.rstrip('/')}/{run_name}/"
-        local = LOCAL_RUNS / run_name
-    else:
-        remote = REMOTE_RUNS
-        local = LOCAL_RUNS
+    remote_cfg = REMOTES[remote_name]
+    remote_host = remote_cfg["host"]
 
-    return run_rsync(remote, local, dry_run=dry_run)
+    if bootstrap:
+        remote_base = remote_cfg["bootstrap_runs"]
+        local_base = LOCAL_BOOTSTRAP_RUNS
+    else:
+        remote_base = remote_cfg["runs"]
+        local_base = LOCAL_RUNS
+
+    if run_name:
+        remote = f"{remote_base.rstrip('/')}/{run_name}/"
+        local = local_base / run_name
+    else:
+        remote = remote_base
+        local = local_base
+
+    return run_rsync(remote, local, dry_run=dry_run, remote_host=remote_host)
 
 
 def main():
@@ -214,20 +254,45 @@ def main():
         action="store_true",
         help="Show what would be transferred without actually copying",
     )
+    parser.add_argument(
+        "--remote",
+        type=str,
+        default=DEFAULT_REMOTE,
+        choices=list(REMOTES.keys()),
+        help=f"Remote HPC to sync from (default: {DEFAULT_REMOTE})",
+    )
+    parser.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="Sync the full bootstrap_runs/ tree instead of runs/. "
+             "Preserves the nested layout expected by "
+             "compose_bootstrap_agent.py. Combine with --run to sync "
+             "a single bootstrap run id.",
+    )
     args = parser.parse_args()
+
+    remote_cfg = REMOTES[args.remote]
+    remote_path = (remote_cfg["bootstrap_runs"] if args.bootstrap
+                   else remote_cfg["runs"])
+    print(f"Remote: {args.remote} ({remote_cfg['host']})")
+    print(f"Path:   {remote_path}\n")
 
     if args.interval is not None:
         print(f"Polling every {args.interval}s (Ctrl-C to stop)\n")
         while True:
             try:
-                sync_once(run_name=args.run, dry_run=args.dry_run)
+                sync_once(run_name=args.run, dry_run=args.dry_run,
+                          remote_name=args.remote,
+                          bootstrap=args.bootstrap)
                 print(f"\nSleeping {args.interval}s until next sync...")
                 time.sleep(args.interval)
             except KeyboardInterrupt:
                 print("\nStopped.")
                 sys.exit(0)
     else:
-        ok = sync_once(run_name=args.run, dry_run=args.dry_run)
+        ok = sync_once(run_name=args.run, dry_run=args.dry_run,
+                       remote_name=args.remote,
+                       bootstrap=args.bootstrap)
         sys.exit(0 if ok else 1)
 
 
