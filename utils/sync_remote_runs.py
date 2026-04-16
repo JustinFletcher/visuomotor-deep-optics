@@ -143,15 +143,24 @@ def test_ssh_connection(remote_host: str | None = None) -> bool:
 
 
 def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False,
-              remote_host: str | None = None) -> bool:
+              remote_host: str | None = None,
+              best_only: bool = False) -> bool:
     """
     Run rsync with retry logic. Returns True on success.
+
+    When ``best_only`` is True, only ``best.pt`` files are transferred
+    (with the surrounding directory structure preserved).
     """
     if remote_host is None:
         remote_host = REMOTES[DEFAULT_REMOTE]["host"]
     local_path.mkdir(parents=True, exist_ok=True)
 
     args = list(RSYNC_BASE_ARGS)
+    if best_only:
+        # Descend into every directory, include best.pt, exclude
+        # everything else. Order matters: rsync applies the first
+        # matching rule per path.
+        args += ["--include=*/", "--include=best.pt", "--exclude=*"]
     if dry_run:
         args.append("--dry-run")
     args += [f"{remote_host}:{remote_path}", str(local_path) + "/"]
@@ -201,7 +210,8 @@ def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False,
 
 def sync_once(run_name: str | None = None, dry_run: bool = False,
               remote_name: str = DEFAULT_REMOTE,
-              bootstrap: bool = False) -> bool:
+              bootstrap: bool = False,
+              best_only: bool = False) -> bool:
     """Run a single sync cycle. Returns True on success.
 
     When ``bootstrap`` is True, syncs the full ``bootstrap_runs/`` tree
@@ -230,7 +240,8 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
         remote = remote_base
         local = local_base
 
-    return run_rsync(remote, local, dry_run=dry_run, remote_host=remote_host)
+    return run_rsync(remote, local, dry_run=dry_run, remote_host=remote_host,
+                     best_only=best_only)
 
 
 def main():
@@ -269,6 +280,13 @@ def main():
              "compose_bootstrap_agent.py. Combine with --run to sync "
              "a single bootstrap run id.",
     )
+    parser.add_argument(
+        "--best-only",
+        action="store_true",
+        help="Transfer only best.pt checkpoint files, preserving the "
+             "enclosing directory structure. Useful for composition / "
+             "evaluation when full training artifacts are not needed.",
+    )
     args = parser.parse_args()
 
     remote_cfg = REMOTES[args.remote]
@@ -283,7 +301,8 @@ def main():
             try:
                 sync_once(run_name=args.run, dry_run=args.dry_run,
                           remote_name=args.remote,
-                          bootstrap=args.bootstrap)
+                          bootstrap=args.bootstrap,
+                          best_only=args.best_only)
                 print(f"\nSleeping {args.interval}s until next sync...")
                 time.sleep(args.interval)
             except KeyboardInterrupt:
@@ -292,7 +311,8 @@ def main():
     else:
         ok = sync_once(run_name=args.run, dry_run=args.dry_run,
                        remote_name=args.remote,
-                       bootstrap=args.bootstrap)
+                       bootstrap=args.bootstrap,
+                       best_only=args.best_only)
         sys.exit(0 if ok else 1)
 
 
