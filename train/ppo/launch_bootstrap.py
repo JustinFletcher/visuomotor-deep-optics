@@ -77,6 +77,9 @@ def make_sbatch_script(phase, run_id, run_dir_base, wall_time=SLURM_TIME):
         #SBATCH --output=slurm-{run_id}-phase{phase:02d}-%j.out
         #SBATCH --error=slurm-{run_id}-phase{phase:02d}-%j.err
 
+        export PATH=$HOME/local/bin:$HOME/.local/bin:$PATH
+        export LD_LIBRARY_PATH=$HOME/local/lib:$HOME/local/lib64:${{LD_LIBRARY_PATH:-}}
+
         cd {HPC_WORKDIR}
         poetry run python train/ppo/train_ppo_elf_bootstrap.py \\
             --hpc --no-eval \\
