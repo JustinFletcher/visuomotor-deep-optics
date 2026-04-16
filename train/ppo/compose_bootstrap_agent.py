@@ -7,7 +7,10 @@ writes a YAML policy spec for use with rollout.py and sweep_tiptilt.py.
 Supports cherry-picking phases from different bootstrap runs.
 
 Usage:
-    # All 15 from one run
+    # Auto-detect the most recent bootstrap run in bootstrap_runs/
+    python train/ppo/compose_bootstrap_agent.py
+
+    # All 15 from one run (explicit)
     python train/ppo/compose_bootstrap_agent.py --run-id bootstrap_1742845200
 
     # Cherry-pick phases from different runs
@@ -46,6 +49,29 @@ def find_training_subdir(phase_dir):
     if not candidates:
         return None
     return max(candidates, key=os.path.getmtime)
+
+
+def discover_default_run_id():
+    """Return the most recently modified bootstrap run id, or None.
+
+    Looks inside ``bootstrap_runs/`` for directories matching
+    ``bootstrap_*`` and picks the one with the latest mtime. If there
+    is exactly one run the choice is unambiguous; with multiple, the
+    newest wins and a warning is printed so the caller can override
+    with ``--run-id`` if needed.
+    """
+    if not os.path.isdir(BOOTSTRAP_ROOT):
+        return None
+    candidates = [
+        d for d in os.listdir(BOOTSTRAP_ROOT)
+        if d.startswith("bootstrap_")
+        and os.path.isdir(os.path.join(BOOTSTRAP_ROOT, d))
+    ]
+    if not candidates:
+        return None
+    paths = [os.path.join(BOOTSTRAP_ROOT, d) for d in candidates]
+    latest = max(paths, key=os.path.getmtime)
+    return os.path.basename(latest)
 
 
 def find_checkpoint(phase_dir, checkpoint_name="best.pt"):
@@ -159,7 +185,16 @@ def main():
                           f"using {run_id}")
                 phase_map[p] = run_id
     else:
-        parser.error("Specify --run-id or --phase")
+        # No --run-id or --phase provided: auto-detect from bootstrap_runs/
+        auto_run_id = discover_default_run_id()
+        if auto_run_id is None:
+            parser.error(
+                f"No --run-id or --phase given and no bootstrap runs "
+                f"found in {BOOTSTRAP_ROOT}/. Sync a run first or pass "
+                f"one of --run-id / --phase explicitly.")
+        print(f"Auto-detected run id: {auto_run_id}")
+        for p in range(NUM_PHASES):
+            phase_map[p] = auto_run_id
 
     # Parse trigger
     try:
