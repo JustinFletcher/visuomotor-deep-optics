@@ -36,6 +36,12 @@ ELF_BOOTSTRAP_ENV_KWARGS = {
     "bootstrap_phase": True,
     "bootstrap_phased_count": 0,         # overridden by --phased-count
     "bootstrap_nontarget_penalty_multiplier": 10.0,
+    # Tight action bounds (~3x the wind disturbance magnitude) — same as
+    # ELF_PTT_TIGHT in the SMAES bootstrap pipeline.  This prevents the
+    # optimizer from wandering into off-axis pseudo-phased solutions.
+    "max_piston_correction_micron": 1.0,
+    "max_tip_correction_arcsec":    3.0,
+    "max_tilt_correction_arcsec":   3.0,
 }
 
 
