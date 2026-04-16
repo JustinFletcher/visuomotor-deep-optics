@@ -80,8 +80,7 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             "V5 does not support command_tensioners"
         assert not env_kwargs.get("command_dm", False), \
             "V5 does not support command_dm"
-        assert env_kwargs.get("incremental_control", True), \
-            "V5 requires incremental_control=True"
+        self._incremental_control = env_kwargs.get("incremental_control", True)
         assert not env_kwargs.get("ao_loop_active", False), \
             "V5 does not support ao_loop_active"
         assert not env_kwargs.get("discrete_control", False), \
@@ -173,6 +172,36 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Perfect image stats for Strehl
         self._perfect_peak_over_sum = v4._perfect_peak_over_sum
 
+        # Perfect image (for shape reward): normalised log on GPU
+        perfect_dn = v4._perfect_image_dn.astype(np.float32)
+        perfect_max = float(np.max(perfect_dn))
+        if perfect_max > 0:
+            norm_perfect = perfect_dn / perfect_max
+        else:
+            norm_perfect = perfect_dn
+        self._norm_perfect_t = torch.tensor(
+            norm_perfect, dtype=torch.float32, device=self.dev)
+        self._log_norm_perfect_t = torch.tensor(
+            np.log(norm_perfect + 1e-10), dtype=torch.float32, device=self.dev)
+
+        # --- DEBUG: show perfect image ---
+        if cfg.get("_debug_show_perfect", False):
+            import matplotlib.pyplot as plt
+            fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+            im0 = axes[0].imshow(perfect_dn, origin="lower")
+            axes[0].set_title(f"perfect_image_dn\nmax={perfect_max:.1f}  "
+                              f"shape={perfect_dn.shape}")
+            plt.colorbar(im0, ax=axes[0])
+            peak_y, peak_x = np.unravel_index(np.argmax(perfect_dn), perfect_dn.shape)
+            axes[0].plot(peak_x, peak_y, 'r+', markersize=12, markeredgewidth=2)
+            im1 = axes[1].imshow(np.log(norm_perfect + 1e-10), origin="lower")
+            axes[1].set_title("log(norm_perfect)")
+            plt.colorbar(im1, ax=axes[1])
+            axes[1].plot(peak_x, peak_y, 'r+', markersize=12, markeredgewidth=2)
+            plt.suptitle(f"V5 perfect image — peak at ({peak_y},{peak_x})")
+            plt.tight_layout()
+            plt.show()
+
         # Centering weight map [H, W]
         if hasattr(v4, '_centering_weight'):
             self._centering_weight_t = torch.tensor(
@@ -226,38 +255,91 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._phased_count = env_kwargs.get("bootstrap_phased_count", 0)
 
         # Per-DOF action penalty weights (bootstrap mode)
-        # V5 DOF layout: [p0..pN, tip0..tipN, tilt0..tiltN]
+        # Action layout is per-segment grouped: [p0,t0,tl0, p1,t1,tl1, ...]
+        # _prior_actions uses this layout, so the weight tensor must match.
         self._action_penalty_weights_t = None
         if self._bootstrap:
             n_seg = self._num_apertures
-            n_dof = n_seg * self._n_dof_per_seg
+            dof_per_seg = self._n_dof_per_seg
+            n_dof = n_seg * dof_per_seg
             multiplier = env_kwargs.get("bootstrap_nontarget_penalty_multiplier", 10.0)
             base_w = self._action_penalty_weight
             weights = np.ones(n_dof, dtype=np.float32) * base_w * multiplier
             target = self._phased_count
             if target < n_seg:
-                # Set target segment's piston DOF
-                weights[target] = base_w
-                # Set target segment's tip/tilt DOFs if active
+                # Target segment's DOFs in per-segment grouped layout
+                weights[target * dof_per_seg] = base_w          # piston
                 if self._command_tip_tilt:
-                    weights[n_seg + target] = base_w       # tip
-                    weights[2 * n_seg + target] = base_w   # tilt
+                    weights[target * dof_per_seg + 1] = base_w  # tip
+                    weights[target * dof_per_seg + 2] = base_w  # tilt
             self._action_penalty_weights_t = torch.tensor(
                 weights, dtype=torch.float32, device=self.dev)
 
         # Reward function config
         self._reward_function = cfg.get("reward_function", "factored")
+        # Vector reward: when enabled, _batched_reward always computes ALL
+        # raw reward components (regardless of their weights) and stashes
+        # them so step() can return them in infos["reward_components"].
+        # Each component is in "higher-is-better" form so the env's scalar
+        # reward equals sum_i(weight_i * component_i).
+        # Default off: zero overhead, output identical to legacy behavior.
+        self._reward_vector_enabled = bool(
+            cfg.get("reward_vector_enabled", False))
+        self._reward_components_t = {}   # name -> [N] tensor (when enabled)
         self._rw_centered_strehl = cfg.get("reward_weight_centered_strehl", 0.0)
         self._rw_strehl = cfg.get("reward_weight_strehl", 0.0)
         self._rw_centering = cfg.get("reward_weight_centering", 0.0)
         self._rw_flux = cfg.get("reward_weight_flux", 0.0)
         self._rw_peak = cfg.get("reward_weight_peak", 0.0)
+        self._rw_shape = cfg.get("reward_weight_shape", 0.0)
+        self._rw_image_quality = cfg.get("reward_weight_image_quality", 0.0)
+        self._rw_centering_l1 = cfg.get("reward_weight_centering_l1", 0.0)
+        self._rw_piston_noise_mse = cfg.get("reward_weight_piston_noise_mse", 0.0)
+        self._rw_piston_shape_alignment = cfg.get(
+            "reward_weight_piston_shape_alignment", 0.0)
+        self._rw_psf_rms_radius = cfg.get(
+            "reward_weight_psf_rms_radius", 0.0)
+        self._piston_noise_n_trials = cfg.get("piston_noise_n_trials", 1000)
+        self._piston_noise_sigma = cfg.get("piston_noise_sigma", 1.0)
 
         # Centering geometry (precomputed on GPU)
         cy, cx = self._H / 2.0, self._W / 2.0
         self._cy = cy
         self._cx = cx
         self._max_dist = math.sqrt(cy ** 2 + cx ** 2)
+
+        # Pixel coordinate meshes (used by psf_rms_radius reward)
+        _yy, _xx = torch.meshgrid(
+            torch.arange(self._H, dtype=torch.float32, device=self.dev),
+            torch.arange(self._W, dtype=torch.float32, device=self.dev),
+            indexing='ij')
+        self._pixel_yy_t = _yy            # [H, W]
+        self._pixel_xx_t = _xx            # [H, W]
+
+        # Reference R_rms for the psf_rms_radius reward.  Computed once
+        # from the perfect (fully cophased) PSF — this is the floor that
+        # the reward saturates against.  The ceiling is the half-diagonal
+        # of the focal plane (corresponds to a worst-case spread).
+        with torch.no_grad():
+            _norm_perfect = torch.exp(self._log_norm_perfect_t) - 1e-10
+            _norm_perfect = _norm_perfect.clamp(min=0.0)
+            _tot = _norm_perfect.sum().clamp(min=1e-30)
+            _cy_p = (_norm_perfect * _yy).sum() / _tot
+            _cx_p = (_norm_perfect * _xx).sum() / _tot
+            _r2_p = (_yy - _cy_p) ** 2 + (_xx - _cx_p) ** 2
+            _m2_p = (_norm_perfect * _r2_p).sum() / _tot
+            self._psf_rms_ref_min = float(torch.sqrt(_m2_p).item())
+        self._psf_rms_ref_max = float(
+            ((self._H ** 2 + self._W ** 2) ** 0.5) / 2.0)
+
+        # L1 distance map [H, W] normalised to [0, 1] — for L1-centering reward
+        yy_np, xx_np = np.mgrid[0:self._H, 0:self._W].astype(np.float32)
+        l1_map_np = (np.abs(yy_np - cy) + np.abs(xx_np - cx))
+        l1_max = float(l1_map_np.max())
+        if l1_max > 0:
+            l1_map_np /= l1_max
+        self._l1_dist_map_t = torch.tensor(
+            l1_map_np, dtype=torch.float32, device=self.dev)
 
         # OOB penalty
         self._oob_penalty = cfg.get("oob_penalty", False)
@@ -319,6 +401,15 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Discard V4 env
         v4.close()
         del v4, os4
+
+        # --- Piston-noise target image --------------------------------------
+        # Run n random piston-only perturbations (tip/tilt held at zero),
+        # average the resulting normalised frames to create a target shape.
+        # Used by both ``piston_noise_mse`` (pixelwise MSE penalty) and
+        # ``piston_shape_alignment`` (flux-weighted alignment score).
+        self._piston_noise_target_t = None
+        if self._rw_piston_noise_mse > 0 or self._rw_piston_shape_alignment > 0:
+            self._piston_noise_target_t = self._compute_piston_noise_target()
 
         if not silence:
             print(f"[optomech-v5] BatchedOptomechEnv ready: {num_envs} envs on {self.dev}")
@@ -385,6 +476,50 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         dn = n_electrons / self._det_gain
         return torch.clamp(dn, 0, self._det_max_dn)
 
+    def compute_surface_for_action(self, action, env_slot=0):
+        """Return the wavefront surface (OPD) for an arbitrary action
+        without advancing env state.
+
+        action : np.ndarray of shape (D,) or (N, D), in [-1, 1].
+        env_slot : which env's baseline to use as the reference (default 0).
+
+        Returns surface as a numpy array shaped (H, W) for a single
+        action, or (N, H, W) for a batch.  Units: meters of optical
+        path difference (matches the env's internal _actuators_t units
+        for piston DOFs; tip/tilt contributions enter via the influence
+        functions).
+
+        This intentionally does NOT clip, add noise, or write any env
+        state — it's purely a render helper.
+        """
+        a = torch.as_tensor(action, dtype=torch.float32, device=self.dev)
+        squeezed = (a.dim() == 1)
+        if squeezed:
+            a = a.unsqueeze(0)                  # [1, D]
+        N = a.shape[0]
+        n_seg = self._num_apertures
+        n_dof = self._n_dof_per_seg
+        n_active = n_seg * n_dof
+
+        # Per-segment grouping → blocked actuator order
+        a_reshaped = a.reshape(N, n_seg, n_dof)
+        a_reordered = a_reshaped.permute(0, 2, 1).reshape(N, -1)
+
+        delta_full = torch.zeros(
+            N, self._n_modes, dtype=torch.float32, device=self.dev)
+        delta_full[:, :n_active] = (
+            a_reordered * self._max_corr_t[:n_active].unsqueeze(0))
+
+        baseline = self._baselines_t[env_slot:env_slot + 1]   # [1, n_modes]
+        actuators = baseline + delta_full                       # [N, n_modes]
+
+        surface = torch.einsum(
+            'ni,ihw->nhw', actuators, self._influence_t)        # [N, H, W]
+        out = surface.detach().cpu().numpy()
+        if squeezed:
+            return out[0]
+        return out
+
     def _batched_command(self, actions_t):
         """Apply incremental commands to actuators. All on GPU.
 
@@ -413,8 +548,11 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         else:
             delta_full = action_reordered * self._max_corr_t.unsqueeze(0)
 
-        # Incremental: actuators += delta
-        pre_clip = self._actuators_t + delta_full
+        # Incremental: actuators += delta; Absolute: actuators = baseline + scaled_action
+        if self._incremental_control:
+            pre_clip = self._actuators_t + delta_full
+        else:
+            pre_clip = self._baselines_t + delta_full
 
         # Clip to [baseline - max, baseline + max]
         low = self._baselines_t - self._max_corr_t.unsqueeze(0)
@@ -443,16 +581,106 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
 
         self._actuators_t = post_clip
 
+    def _compute_piston_noise_target(self):
+        """Generate a target shape by averaging frames from random piston noise.
+
+        Runs ``piston_noise_n_trials`` piston-only perturbations (tip/tilt
+        held fixed at zero), normalises each frame by its own max, and
+        averages them.  This produces a fuzzy, nominally centered target
+        that can be compared via MSE.  Actuator / baseline / episode state
+        is saved and restored so this has no side-effect on future episodes.
+        """
+        N = self._num_envs
+        n_seg = self._num_apertures
+        n_trials = int(self._piston_noise_n_trials)
+        sigma = float(self._piston_noise_sigma)
+
+        if n_trials <= 0:
+            return None
+
+        # Save state that the warmup will perturb
+        saved_actuators = self._actuators_t.clone()
+        saved_baselines = self._baselines_t.clone()
+        saved_prior_actions = self._prior_actions.clone()
+        saved_obs_history = self._obs_history.clone()
+        saved_incremental = self._incremental_control
+
+        # Force absolute-control for warmup so each batch is independent
+        self._incremental_control = False
+        self._actuators_t.zero_()
+        self._baselines_t.zero_()
+
+        accum = torch.zeros(self._H, self._W, dtype=torch.float32, device=self.dev)
+        n_accumulated = 0
+
+        action_dim = n_seg * self._n_dof_per_seg
+        trials_remaining = n_trials
+        while trials_remaining > 0:
+            batch = min(N, trials_remaining)
+            # Random piston-only actions
+            actions = torch.zeros(N, action_dim, dtype=torch.float32, device=self.dev)
+            if self._n_dof_per_seg == 1:
+                # Piston-only env
+                actions[:batch, :n_seg] = (
+                    torch.rand(batch, n_seg, device=self.dev) * 2.0 - 1.0) * sigma
+            else:
+                # [p0, t0, tl0, p1, t1, tl1, ...] — set piston slots only
+                for s in range(n_seg):
+                    actions[:batch, s * self._n_dof_per_seg] = (
+                        torch.rand(batch, device=self.dev) * 2.0 - 1.0) * sigma
+
+            self._batched_command(actions)
+            frames = self._batched_simulate()
+            frames = self._batched_detector_model(frames)
+
+            # Normalise each frame by its own max before accumulating
+            fmax = frames.reshape(N, -1).amax(dim=1).clamp(min=1e-30)
+            norm_frames = frames / fmax.unsqueeze(1).unsqueeze(2)
+            accum += norm_frames[:batch].sum(dim=0)
+            n_accumulated += batch
+
+            trials_remaining -= batch
+
+        target = accum / max(n_accumulated, 1)
+        # Normalise the target itself so its max is 1.0 (for MSE comparison)
+        tmax = float(target.max().item())
+        if tmax > 0:
+            target = target / tmax
+
+        # Restore state
+        self._actuators_t = saved_actuators
+        self._baselines_t = saved_baselines
+        self._prior_actions = saved_prior_actions
+        self._obs_history = saved_obs_history
+        self._incremental_control = saved_incremental
+
+        if not self._silence:
+            peak_idx = torch.argmax(target.reshape(-1)).item()
+            py, px = peak_idx // self._W, peak_idx % self._W
+            print(f"[optomech-v5] piston-noise target: {n_accumulated} trials, "
+                  f"peak@({py},{px}), mean={float(target.mean()):.4f}")
+
+        return target
+
     def _batched_reward(self, frames):
         """Compute batched reward on GPU.
 
         frames: [N, H, W] detector output in DN.
         Returns: [N] reward tensor on GPU.
+
+        If self._reward_vector_enabled is True, every component is
+        computed (regardless of weight) and stashed in
+        self._reward_components_t as {name: [N] tensor}.  Each component
+        is "higher-is-better" so that the scalar reward equals
+        ``sum_i(weight_i * component_i)``.
         """
         N = self._num_envs
         H, W = self._H, self._W
 
         total = torch.zeros(N, dtype=torch.float32, device=self.dev)
+        vec = self._reward_vector_enabled
+        if vec:
+            self._reward_components_t = {}
 
         # --- Strehl computation (shared by multiple reward components) ---
         fpi_sum = frames.sum(dim=(1, 2))  # [N]
@@ -473,29 +701,166 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         dist = ((py - self._cy) ** 2 + (px - self._cx) ** 2).sqrt()
         centering = 1.0 - dist / self._max_dist  # [N]
 
-        # --- Reward components (factored) ---
-        if self._rw_centered_strehl > 0:
-            cs = -(1.0 - strehl * centering)
-            total += self._rw_centered_strehl * cs
+        # --- Pre-compute frequently shared image-wise quantities ---
+        if vec or self._rw_shape > 0 or self._rw_image_quality > 0 \
+                or self._rw_piston_noise_mse > 0:
+            frame_max_safe = fpi_max.clamp(min=1e-30).unsqueeze(1).unsqueeze(2)
+            norm_frames = frames / frame_max_safe  # [N, H, W]
 
-        if self._rw_strehl > 0:
-            total += self._rw_strehl * (-(1.0 - strehl))
+        # --- centered_strehl (component value: -(1 - s*c)) ---
+        cs_val = None
+        if self._rw_centered_strehl > 0 or vec:
+            cs_val = -(1.0 - strehl * centering)
+            if self._rw_centered_strehl > 0:
+                total += self._rw_centered_strehl * cs_val
 
-        if self._rw_centering > 0:
-            # Use centering_energy if weight map exists
+        # --- strehl ---
+        s_val = None
+        if self._rw_strehl > 0 or vec:
+            s_val = -(1.0 - strehl)
+            if self._rw_strehl > 0:
+                total += self._rw_strehl * s_val
+
+        # --- centering ---
+        cen_component = None
+        if self._rw_centering > 0 or vec:
             if self._centering_weight_t is not None:
                 weighted = (frames * self._centering_weight_t.unsqueeze(0)).sum(dim=(1, 2))
                 cen_val = (weighted / self._reference_centering_sum).clamp(max=1.0)
             else:
                 cen_val = centering
-            total += self._rw_centering * (-(1.0 - cen_val))
+            cen_component = -(1.0 - cen_val)
+            if self._rw_centering > 0:
+                total += self._rw_centering * cen_component
 
-        if self._rw_flux > 0:
-            total += self._rw_flux * (-(1.0 - flux_frac))
+        # --- flux ---
+        flux_component = None
+        if self._rw_flux > 0 or vec:
+            flux_component = -(1.0 - flux_frac)
+            if self._rw_flux > 0:
+                total += self._rw_flux * flux_component
 
-        if self._rw_peak > 0:
+        # --- peak ---
+        peak_component = None
+        if self._rw_peak > 0 or vec:
             peak_ratio = (fpi_max / self._reference_fpi_max).clamp(max=1.0)
-            total += self._rw_peak * (-(1.0 - peak_ratio))
+            peak_component = -(1.0 - peak_ratio)
+            if self._rw_peak > 0:
+                total += self._rw_peak * peak_component
+
+        # --- shape: log-space MSE vs perfect image ---
+        shape_component = None
+        if self._rw_shape > 0 or vec:
+            log_frames = torch.log(norm_frames + 1e-10)
+            diff = log_frames - self._log_norm_perfect_t.unsqueeze(0)
+            shape_mse = (diff ** 2).mean(dim=(1, 2))
+            shape_component = -shape_mse
+            if self._rw_shape > 0:
+                total += self._rw_shape * shape_component
+
+        # --- image_quality: linear-space MSE ---
+        iq_component = None
+        if self._rw_image_quality > 0 or vec:
+            diff = norm_frames - self._norm_perfect_t.unsqueeze(0)
+            iq_mse = (diff ** 2).mean(dim=(1, 2))
+            iq_component = -iq_mse
+            if self._rw_image_quality > 0:
+                total += self._rw_image_quality * iq_component
+
+        # --- centering_l1: flux-weighted mean L1 distance ---
+        l1_component = None
+        if self._rw_centering_l1 > 0 or vec:
+            safe = fpi_sum.clamp(min=1e-30).unsqueeze(1).unsqueeze(2)
+            prob = frames / safe
+            l1_mean = (prob * self._l1_dist_map_t.unsqueeze(0)).sum(dim=(1, 2))
+            l1_component = -l1_mean
+            if self._rw_centering_l1 > 0:
+                total += self._rw_centering_l1 * l1_component
+
+        # --- piston_noise_mse ---
+        pn_component = None
+        if (self._rw_piston_noise_mse > 0 or vec) \
+                and self._piston_noise_target_t is not None:
+            diff = norm_frames - self._piston_noise_target_t.unsqueeze(0)
+            pn_mse = (diff ** 2).mean(dim=(1, 2))
+            pn_component = -pn_mse
+            if self._rw_piston_noise_mse > 0:
+                total += self._rw_piston_noise_mse * pn_component
+
+        # --- piston_shape_alignment ---
+        # Flux-weighted alignment with the piston-noise target shape:
+        #   score = sum(I * T) / sum(I)
+        # i.e. the average target value at the locations weighted by
+        # image flux.  Bounded in [T.min(), T.max()] = [~0, 1.0] since
+        # the target is normalised to peak 1.0.  Reward = score - 1
+        # so 0 = all flux at the target peak, -1 = all flux outside
+        # the target's support.  Unlike piston_noise_mse, this does
+        # NOT penalise dark regions of the image — only flux that
+        # lands outside the target shape.
+        psa_component = None
+        if (self._rw_piston_shape_alignment > 0 or vec) \
+                and self._piston_noise_target_t is not None:
+            target = self._piston_noise_target_t.unsqueeze(0)  # [1,H,W]
+            flux_total = frames.sum(dim=(1, 2)).clamp(min=1e-30)
+            flux_weighted = (frames * target).sum(dim=(1, 2))
+            align_score = flux_weighted / flux_total            # ~[0, 1]
+            psa_component = align_score - 1.0                    # [-1, 0]
+            if self._rw_piston_shape_alignment > 0:
+                total += self._rw_piston_shape_alignment * psa_component
+
+        # --- psf_rms_radius ---
+        # Flux-weighted RMS radius of the focal plane image about its
+        # OWN centroid (translation-invariant).  This isolates the
+        # *spread* of the flux, which is dominated by tip/tilt error
+        # rather than piston: piston-only error keeps the speckles
+        # within the single-segment Airy disc, while TT errors push
+        # each segment's sub-PSF to a different position and inflate
+        # the second moment.
+        #
+        # Normalised against (R_min, R_max) where R_min is the perfect
+        # cophased PSF's R_rms (computed at env init) and R_max is the
+        # focal plane half-diagonal.  Reward in [-1, 0]: 0 = at the
+        # diffraction-limited floor, -1 = saturated wide.
+        prr_component = None
+        if self._rw_psf_rms_radius > 0 or vec:
+            fpi_safe = fpi_sum.clamp(min=1e-30)
+            cy_pred = (frames * self._pixel_yy_t.unsqueeze(0)).sum(
+                dim=(1, 2)) / fpi_safe                          # [N]
+            cx_pred = (frames * self._pixel_xx_t.unsqueeze(0)).sum(
+                dim=(1, 2)) / fpi_safe                          # [N]
+            dy = (self._pixel_yy_t.unsqueeze(0)
+                   - cy_pred.unsqueeze(1).unsqueeze(2))
+            dx = (self._pixel_xx_t.unsqueeze(0)
+                   - cx_pred.unsqueeze(1).unsqueeze(2))
+            r2 = dy * dy + dx * dx
+            m2 = (frames * r2).sum(dim=(1, 2)) / fpi_safe       # [N]
+            r_rms = torch.sqrt(m2.clamp(min=0.0))               # [N]
+            lo = self._psf_rms_ref_min
+            hi = self._psf_rms_ref_max
+            denom = max(hi - lo, 1e-9)
+            norm = ((r_rms - lo) / denom).clamp(0.0, 1.0)
+            prr_component = -norm                                # [-1, 0]
+            if self._rw_psf_rms_radius > 0:
+                total += self._rw_psf_rms_radius * prr_component
+
+        # --- Stash components for vector-reward output ----------------
+        if vec:
+            self._reward_components_t["centered_strehl"] = cs_val
+            self._reward_components_t["strehl"] = s_val
+            self._reward_components_t["centering"] = cen_component
+            self._reward_components_t["flux"] = flux_component
+            self._reward_components_t["peak"] = peak_component
+            if shape_component is not None:
+                self._reward_components_t["shape"] = shape_component
+            if iq_component is not None:
+                self._reward_components_t["image_quality"] = iq_component
+            self._reward_components_t["centering_l1"] = l1_component
+            if pn_component is not None:
+                self._reward_components_t["piston_noise_mse"] = pn_component
+            if psa_component is not None:
+                self._reward_components_t["piston_shape_alignment"] = psa_component
+            if prr_component is not None:
+                self._reward_components_t["psf_rms_radius"] = prr_component
 
         # Store raw reward before bonuses/penalties
         self._raw_reward = total.clone()
@@ -755,6 +1120,15 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             "oob_frac": oob_np,
             "reward_raw": raw_reward_np,
         }
+        # Vector reward: expose raw, unscaled "higher-is-better" components
+        # so callers can pick (or re-weight) the optimization signal.
+        if self._reward_vector_enabled and self._reward_components_t:
+            comps = {}
+            for name, t in self._reward_components_t.items():
+                if t is None:
+                    continue
+                comps[name] = t.detach().cpu().numpy().astype(np.float32)
+            infos["reward_components"] = comps
 
         if done_mask.any():
             # Store final info for done episodes
