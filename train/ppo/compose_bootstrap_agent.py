@@ -37,6 +37,7 @@ import yaml
 
 NUM_PHASES = 15
 BOOTSTRAP_ROOT = "bootstrap_runs"
+RUNS_ROOT = "runs"
 DEFAULT_OUTPUT_DIR = "train/ppo/specs/bootstrap_composed"
 
 
@@ -48,20 +49,15 @@ def find_training_subdir(phase_dir):
     return max(candidates, key=os.path.getmtime)
 
 
-def find_checkpoint(phase_dir, checkpoint_name="best.pt"):
-    """Locate the requested checkpoint in a phase directory."""
-    train_dir = find_training_subdir(phase_dir)
-    if train_dir is None:
+def _search_checkpoint(ckpt_dir, checkpoint_name):
+    """Return path to requested checkpoint in ``ckpt_dir``, or the latest
+    ``update_N.pt`` as a fallback when asked for ``best.pt``."""
+    if not os.path.isdir(ckpt_dir):
         return None
-    ckpt_path = os.path.join(train_dir, "checkpoints", checkpoint_name)
+    ckpt_path = os.path.join(ckpt_dir, checkpoint_name)
     if os.path.isfile(ckpt_path):
         return ckpt_path
-
-    # Fall back: if checkpoint_name is "best.pt" and not found, try latest
     if checkpoint_name == "best.pt":
-        ckpt_dir = os.path.join(train_dir, "checkpoints")
-        if not os.path.isdir(ckpt_dir):
-            return None
         pattern = re.compile(r"update_(\d+)\.pt$")
         best_num = -1
         best_path = None
@@ -71,6 +67,35 @@ def find_checkpoint(phase_dir, checkpoint_name="best.pt"):
                 best_num = int(m.group(1))
                 best_path = os.path.join(ckpt_dir, f)
         return best_path
+    return None
+
+
+def find_checkpoint(run_id, phase, checkpoint_name="best.pt"):
+    """Locate the requested checkpoint for (run_id, phase).
+
+    Tries two layouts in order:
+      1. Nested bootstrap layout:
+         ``bootstrap_runs/{run_id}/bootstrap_phase_NN/ppo_optomech_*/checkpoints/``
+      2. Flattened layout produced by ``sync_bootstrap_runs.py``:
+         ``runs/{run_id}_bootstrap_phase_NN/checkpoints/``
+    """
+    phase_name = f"bootstrap_phase_{phase:02d}"
+
+    # Layout 1: original nested bootstrap_runs structure
+    phase_dir = os.path.join(BOOTSTRAP_ROOT, run_id, phase_name)
+    train_dir = find_training_subdir(phase_dir)
+    if train_dir is not None:
+        ckpt = _search_checkpoint(
+            os.path.join(train_dir, "checkpoints"), checkpoint_name)
+        if ckpt:
+            return ckpt
+
+    # Layout 2: flattened runs/ structure (post sync_bootstrap_runs.py)
+    flat_dir = os.path.join(RUNS_ROOT, f"{run_id}_{phase_name}", "checkpoints")
+    ckpt = _search_checkpoint(flat_dir, checkpoint_name)
+    if ckpt:
+        return ckpt
+
     return None
 
 
@@ -179,9 +204,7 @@ def main():
 
     for phase in sorted(phase_map.keys()):
         run_id = phase_map[phase]
-        phase_dir = os.path.join(
-            BOOTSTRAP_ROOT, run_id, f"bootstrap_phase_{phase:02d}")
-        ckpt = find_checkpoint(phase_dir, cli.checkpoint_name)
+        ckpt = find_checkpoint(run_id, phase, cli.checkpoint_name)
 
         if ckpt:
             resolved[phase] = ckpt
