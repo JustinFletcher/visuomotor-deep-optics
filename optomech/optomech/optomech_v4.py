@@ -241,6 +241,13 @@ DEFAULT_CONFIG = {
     # bootstrap.  Applied to all segments except the target (phased_count).
     # Set to 0.0 to disable (only the base action_penalty_weight applies).
     "bootstrap_nontarget_penalty_multiplier": 10.0,
+    # Override the number of segments treated as "aligned" when the
+    # reference image / reference flux is computed at env init. Defaults
+    # to None, which means "use bootstrap_phased_count + 1" (the training
+    # goal state of phase N). Set to num_apertures to force an all-
+    # aligned reference during composite rollouts where the target for
+    # Strehl should be the full co-phased PSF, not an intermediate goal.
+    "bootstrap_reference_phased_count": None,
 }
 
 
@@ -643,17 +650,26 @@ class OpticalSystem(object):
         _bootstrap = cfg.get('bootstrap_phase', False)
         _phased_count = cfg.get('bootstrap_phased_count', 0)
         if _bootstrap:
+            # Reference image uses the goal-state of phase N
+            # (phased_count + 1 segments aligned) by default, unless
+            # bootstrap_reference_phased_count is set explicitly. The
+            # explicit override is used for composite rollouts where
+            # the Strehl target should be the full co-phased PSF
+            # (= num_apertures aligned), not an intermediate goal.
+            _ref_override = cfg.get('bootstrap_reference_phased_count', None)
+            if _ref_override is None:
+                _ref_pc = _phased_count + 1
+            else:
+                _ref_pc = int(_ref_override)
+            _ref_pc = max(0, min(_ref_pc, self.num_apertures))
             _v3("Bootstrap mode: %d co-phased at start, target=%d, "
-                "%d excluded at start; reference uses goal state "
-                "(%d co-phased)"
+                "%d excluded at start; reference uses %d co-phased"
                 % (_phased_count, _phased_count,
                    self.num_apertures - _phased_count - 1,
-                   _phased_count + 1))
-            # phased_count + 1 here → segs (phased_count+1)..N-1 off-axis,
-            # segs 0..phased_count aligned (the goal for phase N).
-            # Clamps inside _init_bootstrap_segments via range(); when
-            # phased_count+1 == num_apertures the off-axis loop is empty.
-            self._init_bootstrap_segments(_phased_count + 1, noisy=False)
+                   _ref_pc))
+            # When _ref_pc == num_apertures the off-axis loop in
+            # _init_bootstrap_segments is empty → all-aligned reference.
+            self._init_bootstrap_segments(_ref_pc, noisy=False)
 
         # --- Perfect (reference) image -------------------------------
         # Polychromatic perfect PSF: average across all sampled wavelengths

@@ -49,13 +49,20 @@ from train.ppo.rollout import (
 from train.ppo.train_ppo_elf_bootstrap import ELF_BOOTSTRAP_ENV_KWARGS
 
 
-# The bootstrap env perturbs segments 0..14 off-axis at reset when
-# bootstrap_phased_count=0, which is the starting condition for an
-# end-to-end composite rollout. Explicitly pin the env to phase 0 here
-# so the eval doesn't inherit any training-time override.
+# End-to-end composite rollout env:
+#   - bootstrap_phased_count=0 keeps the reset state as "everything
+#     off-axis" so the composite starts from the same condition phase 0
+#     was trained on.
+#   - bootstrap_reference_phased_count=15 forces the reference image /
+#     reference flux to be computed with all 15 segments aligned, so
+#     Strehl actually reads 0..1 against the ultimate goal state rather
+#     than against phase 0's intermediate "1 aligned + 14 off-axis"
+#     reference (which would let Strehl exceed 1 as more segments
+#     co-phase during the rollout).
 ROLLOUT_ENV_KWARGS = {
     **ELF_BOOTSTRAP_ENV_KWARGS,
     "bootstrap_phased_count": 0,
+    "bootstrap_reference_phased_count": 15,
 }
 
 DEFAULT_SPEC = "train/ppo/specs/bootstrap_composed.yaml"
