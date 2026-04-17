@@ -633,15 +633,27 @@ class OpticalSystem(object):
         self.aperture = aperture_field
 
         # --- Bootstrap: push excluded segments off focal plane -------
-        # For the perfect image, excluded segments must already be
-        # off-axis so the reference represents the goal state.
+        # For the perfect-image and reference-flux computation, use the
+        # GOAL state of phase N: segments 0..phased_count (inclusive —
+        # i.e. phased_count+1 segments) are aligned, the rest are
+        # off-axis. This matches the start state of phase N+1, so a
+        # composite rollout can chain phase N's "goal" straight into
+        # phase N+1's "start" without discontinuity. The reset-time
+        # training setup uses phased_count directly (start state).
         _bootstrap = cfg.get('bootstrap_phase', False)
         _phased_count = cfg.get('bootstrap_phased_count', 0)
         if _bootstrap:
-            _v3("Bootstrap mode: %d co-phased, target=%d, %d excluded"
+            _v3("Bootstrap mode: %d co-phased at start, target=%d, "
+                "%d excluded at start; reference uses goal state "
+                "(%d co-phased)"
                 % (_phased_count, _phased_count,
-                   self.num_apertures - _phased_count - 1))
-            self._init_bootstrap_segments(_phased_count, noisy=False)
+                   self.num_apertures - _phased_count - 1,
+                   _phased_count + 1))
+            # phased_count + 1 here → segs (phased_count+1)..N-1 off-axis,
+            # segs 0..phased_count aligned (the goal for phase N).
+            # Clamps inside _init_bootstrap_segments via range(); when
+            # phased_count+1 == num_apertures the off-axis loop is empty.
+            self._init_bootstrap_segments(_phased_count + 1, noisy=False)
 
         # --- Perfect (reference) image -------------------------------
         # Polychromatic perfect PSF: average across all sampled wavelengths
