@@ -73,7 +73,12 @@ LOCAL_CONFIG = dict(
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.005,
+    # Entropy is summed across 45 DOFs (dist.entropy().sum(dim=-1)), so
+    # the bonus scales linearly with action_dim. The action penalty is
+    # averaged across DOFs, so the entropy/penalty ratio grew by 45²/6²
+    # ≈ 56× relative to NanoELF. Scale ent_coef by 6/45 to restore the
+    # per-DOF balance that worked at the smaller aperture.
+    ent_coef=0.001,
     vf_coef=0.5,
     max_grad_norm=1.0,
     anneal_lr=False,
@@ -112,7 +117,12 @@ HPC_CONFIG = dict(
     gamma=0.99,
     gae_lambda=0.95,
     clip_coef=0.2,
-    ent_coef=0.005,
+    # Entropy is summed across 45 DOFs (dist.entropy().sum(dim=-1)), so
+    # the bonus scales linearly with action_dim. The action penalty is
+    # averaged across DOFs, so the entropy/penalty ratio grew by 45²/6²
+    # ≈ 56× relative to NanoELF. Scale ent_coef by 6/45 to restore the
+    # per-DOF balance that worked at the smaller aperture.
+    ent_coef=0.001,
     vf_coef=0.5,
     max_grad_norm=1.0,
     anneal_lr=False,
