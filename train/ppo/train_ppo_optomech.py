@@ -183,6 +183,141 @@ def _run_random_action_episode(eval_env, seed):
     return sum(rewards), rewards
 
 
+def log_startup_visualization(writer, envs, obs_np, env_version, config=None):
+    """Log a one-shot figure of initial state to TensorBoard under
+    ``startup/initial_state``.
+
+    Three panels:
+      1. Start observation (env 0, last frame of the window) in log-DN.
+      2. Reference ("perfect") focal-plane image in log-DN.
+      3. Start wavefront OPD (env 0) as a diverging colormap.
+
+    Panels whose backing attributes aren't exposed by the current env
+    version are silently skipped (v3/v4 don't expose the OPD helper).
+
+    This is a diagnostic-only hook — errors are swallowed so a TB
+    logging failure can never kill a training run.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.colors as mcolors
+    except Exception:
+        return
+
+    try:
+        # Locate the underlying physics env.
+        if env_version == "v5":
+            base = envs  # BatchedOptomechEnv itself
+        else:
+            base = None
+            if hasattr(envs, "envs") and len(envs.envs) > 0:
+                inner = envs.envs[0]
+                if hasattr(inner, "unwrapped"):
+                    inner = inner.unwrapped
+                if hasattr(inner, "optical_system"):
+                    base = inner.optical_system
+                else:
+                    base = inner
+
+        # Panel 1: start observation (env 0, latest frame).
+        start_obs = np.asarray(obs_np)
+        if start_obs.ndim == 4:      # (N, window, H, W) -> env 0, last frame
+            start_obs = start_obs[0, -1]
+        elif start_obs.ndim == 3:    # (window, H, W) or (N, H, W)
+            start_obs = start_obs[-1]
+
+        # Panel 2: perfect / reference image.
+        perfect_img = None
+        if base is not None:
+            if hasattr(base, "_norm_perfect_t"):
+                perfect_img = base._norm_perfect_t.detach().cpu().numpy()
+            elif hasattr(base, "_perfect_image_dn"):
+                perfect_img = np.asarray(base._perfect_image_dn)
+            elif hasattr(base, "_norm_perfect_image"):
+                perfect_img = np.asarray(base._norm_perfect_image)
+
+        # Panel 3: start OPD (v5 only for now).
+        opd = None
+        if base is not None and hasattr(base, "compute_surface_for_action"):
+            try:
+                action_shape = envs.single_action_space.shape
+                n_dof = int(np.prod(action_shape))
+                opd = base.compute_surface_for_action(
+                    np.zeros(n_dof, dtype=np.float32), env_slot=0)
+            except Exception as e:
+                print(f"  [startup viz] OPD unavailable: {e}")
+
+        n_panels = 1 + (perfect_img is not None) + (opd is not None)
+        fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 4.5))
+        if n_panels == 1:
+            axes = [axes]
+
+        idx = 0
+        obs_max = float(np.max(start_obs))
+        norm_obs = mcolors.LogNorm(vmin=1.0, vmax=max(obs_max, 2.0))
+        im = axes[idx].imshow(np.maximum(start_obs, 1.0),
+                              cmap="inferno", norm=norm_obs, origin="lower")
+        axes[idx].set_title(
+            f"start observation (env 0)\nmax={obs_max:.1f}  "
+            f"sum={float(np.sum(start_obs)):.1f}", fontsize=9)
+        axes[idx].axis("off")
+        fig.colorbar(im, ax=axes[idx], fraction=0.046, pad=0.04)
+        idx += 1
+
+        if perfect_img is not None:
+            pi_arr = np.asarray(perfect_img)
+            pi_max = float(np.max(pi_arr))
+            pi_sum = float(np.sum(pi_arr))
+            # Display in log scale if dynamic range is large.
+            if pi_max > 10 * max(float(np.median(pi_arr)), 1e-9):
+                disp = np.maximum(pi_arr, max(pi_max * 1e-6, 1e-9))
+                norm_p = mcolors.LogNorm(vmin=disp.min(), vmax=disp.max())
+                im = axes[idx].imshow(disp, cmap="inferno",
+                                      norm=norm_p, origin="lower")
+            else:
+                im = axes[idx].imshow(pi_arr, cmap="inferno", origin="lower")
+            axes[idx].set_title(
+                f"reference perfect image\nmax={pi_max:.3g}  sum={pi_sum:.3g}",
+                fontsize=9)
+            axes[idx].axis("off")
+            fig.colorbar(im, ax=axes[idx], fraction=0.046, pad=0.04)
+            idx += 1
+
+        if opd is not None:
+            opd_arr = np.asarray(opd)
+            # Mask regions outside the aperture for display (value 0).
+            mask = np.abs(opd_arr) < 1e-12
+            disp = np.where(mask, np.nan, opd_arr)
+            vmax = float(np.nanmax(np.abs(disp))) if np.any(~mask) else 1.0
+            im = axes[idx].imshow(
+                disp, cmap="RdBu_r", vmin=-vmax, vmax=vmax, origin="lower")
+            rms = float(np.sqrt(np.nanmean(disp ** 2))) if np.any(~mask) else 0.0
+            axes[idx].set_title(
+                f"start OPD (m)\nRMS={rms:.3e}  max|·|={vmax:.3e}",
+                fontsize=9)
+            axes[idx].axis("off")
+            fig.colorbar(im, ax=axes[idx], fraction=0.046, pad=0.04)
+            idx += 1
+
+        # Annotate with bootstrap phase info when available.
+        if config is not None:
+            env_kwargs = config.get("env_kwargs", {})
+            if env_kwargs.get("bootstrap_phase"):
+                pc = env_kwargs.get("bootstrap_phased_count", 0)
+                fig.suptitle(
+                    f"bootstrap phase — phased_count={pc}  "
+                    f"(segs 0..{pc-1} aligned, seg {pc} target, "
+                    f"segs {pc+1}..14 off-axis)",
+                    fontsize=10)
+
+        fig.tight_layout()
+        writer.add_figure("startup/initial_state", fig, 0)
+        plt.close(fig)
+        print("  [startup viz] Wrote startup/initial_state to TensorBoard")
+    except Exception as e:
+        print(f"  [startup viz] Failed to log startup figure: {e}")
+
+
 def evaluate_with_visualization(
     agent: RecurrentActorCritic,
     config: dict,
@@ -1265,6 +1400,10 @@ def run_ppo_training(config: dict, run_dir: str):
     # Initialise environment state
     # ------------------------------------------------------------------
     obs_np, _ = envs.reset(seed=seed)
+
+    # One-shot TensorBoard figure: start observation, reference PSF, start OPD.
+    log_startup_visualization(writer, envs, obs_np, env_version, config=config)
+
     obs_np = normalize_obs_fixed(obs_np, obs_ref_max)
     next_obs = torch.from_numpy(obs_np).float()
     next_done = torch.zeros(num_envs)
@@ -1279,6 +1418,12 @@ def run_ppo_training(config: dict, run_dir: str):
     running_prior_action = torch.zeros(num_envs, *action_shape)
     running_prior_reward = torch.zeros(num_envs)
     running_episode_start = torch.ones(num_envs)
+
+    # Per-env start-of-episode Strehl. First step of each new episode
+    # captures that episode's reference; subsequent steps log the ratio
+    # current_strehl / start_strehl as train/step_strehl_improvement.
+    episode_start_strehl = np.zeros(num_envs, dtype=np.float32)
+    needs_start_strehl = np.ones(num_envs, dtype=bool)
 
     best_eval_return = -np.inf
     global_step = 0
@@ -1447,9 +1592,24 @@ def run_ppo_training(config: dict, run_dir: str):
 
             # Per-step diagnostic metrics from env info dict (mean across envs)
             if "strehl" in infos:
+                step_strehl = np.asarray(infos["strehl"], dtype=np.float32)
+
+                # First step of each new episode: capture reference Strehl.
+                if needs_start_strehl.any():
+                    episode_start_strehl[needs_start_strehl] = step_strehl[needs_start_strehl]
+                    needs_start_strehl[:] = False
+
+                # Improvement = current / start (ε-guarded).
+                denom = np.maximum(np.abs(episode_start_strehl), 1e-6)
+                step_strehl_improvement = step_strehl / denom
+
                 writer.add_scalar(
                     "train/step_strehl",
-                    float(np.mean(infos["strehl"])), global_step,
+                    float(np.mean(step_strehl)), global_step,
+                )
+                writer.add_scalar(
+                    "train/step_strehl_improvement",
+                    float(np.mean(step_strehl_improvement)), global_step,
                 )
                 writer.add_scalar(
                     "train/step_mse",
@@ -1467,6 +1627,12 @@ def run_ppo_training(config: dict, run_dir: str):
                     "train/step_reward_raw",
                     float(np.mean(infos["reward_raw"])), global_step,
                 )
+
+                # Envs that finished this step need a fresh start_strehl
+                # captured on the next step (which will be the first step
+                # of their new episode).
+                if dones_step.any():
+                    needs_start_strehl[dones_step] = True
 
         rollout_end_time = time.time()
         rollout_dt = rollout_end_time - rollout_start_time

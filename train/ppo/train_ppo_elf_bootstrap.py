@@ -35,7 +35,12 @@ ELF_BOOTSTRAP_ENV_KWARGS = {
     "command_tip_tilt": True,            # full 45 DOF
     "bootstrap_phase": True,
     "bootstrap_phased_count": 0,         # overridden by --phased-count
-    "bootstrap_nontarget_penalty_multiplier": 10.0,
+    # Non-target DOFs get a 1000× heavier L1 action penalty than the
+    # target segment's 3 DOFs. This is the soft analog of SMAES's hard
+    # free_segments=[target] constraint — it has to be overwhelming to
+    # beat PPO's entropy bonus and force the policy to leave non-target
+    # segments alone.
+    "bootstrap_nontarget_penalty_multiplier": 1000.0,
     # Tight action bounds (~3x the wind disturbance magnitude) — same as
     # ELF_PTT_TIGHT in the SMAES bootstrap pipeline.  This prevents the
     # optimizer from wandering into off-axis pseudo-phased solutions.

@@ -932,9 +932,13 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
 
         if self._bootstrap:
             # --- Bootstrap mode ---
-            # Target segment gets wind perturbation; excluded segments
-            # get tipped/tilted off the focal plane; co-phased segments
-            # stay at zero.
+            # Co-phased segments (0..target-1) stay at zero. The target
+            # segment AND every later segment (target..n_seg-1) are tipped
+            # off the focal plane so the only on-axis light at reset comes
+            # from the already-aligned segments. The policy's job is to
+            # bring the target segment from off-axis back to aligned; it
+            # is also given a random piston kick drawn from the wind
+            # disturbance model so it has a non-trivial piston to resolve.
             target = self._phased_count
             off_axis = self._bootstrap_off_axis
             seg_angles = self._bootstrap_seg_angles  # [n_seg] on GPU
@@ -943,14 +947,15 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             tip = torch.zeros(n_reset, n_seg, device=self.dev)
             tilt = torch.zeros(n_reset, n_seg, device=self.dev)
 
-            # Excluded segments: push off-axis with ±10% noise
-            for seg_id in range(target + 1, n_seg):
+            # Off-axis push: applies to the target AND all later segments.
+            for seg_id in range(target, n_seg):
                 noise = 1.0 + (torch.rand(n_reset, device=self.dev) * 0.2 - 0.1)
                 theta = seg_angles[seg_id]
                 tip[:, seg_id] = off_axis * torch.sin(theta) * noise
                 tilt[:, seg_id] = off_axis * torch.cos(theta) * noise
 
-            # Target segment: wind perturbation (same as normal mode)
+            # Random piston kick on the target (wind disturbance model).
+            # Does NOT touch tip/tilt — those carry the off-axis push above.
             if self._init_diff_motion and self._model_wind:
                 wl = self._wl
                 piston_mean = wl / 4.0
@@ -961,20 +966,6 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
                 signs = torch.where(signs == 0, torch.ones_like(signs), signs)
                 p_target = signs * (piston_mean + torch.randn(n_reset, device=self.dev) * piston_std)
                 piston[:, target] = p_target.clamp(-clip_m, clip_m)
-
-                if self._command_tip_tilt and self._init_tip_std > 0:
-                    t_sign = torch.sign(torch.randn(n_reset, device=self.dev))
-                    t_sign = torch.where(t_sign == 0, torch.ones_like(t_sign), t_sign)
-                    tip[:, target] = t_sign * (
-                        self._init_tip_std + torch.randn(n_reset, device=self.dev) * self._init_tip_std / 3.0
-                    ) * math.pi / (180 * 3600)
-
-                if self._command_tip_tilt and self._init_tilt_std > 0:
-                    tl_sign = torch.sign(torch.randn(n_reset, device=self.dev))
-                    tl_sign = torch.where(tl_sign == 0, torch.ones_like(tl_sign), tl_sign)
-                    tilt[:, target] = tl_sign * (
-                        self._init_tilt_std + torch.randn(n_reset, device=self.dev) * self._init_tilt_std / 3.0
-                    ) * math.pi / (180 * 3600)
 
             actuators = torch.cat([piston, tip, tilt], dim=1)
             self._actuators_t[env_mask] = actuators

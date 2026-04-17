@@ -433,21 +433,28 @@ class ObjectPlane(object):
                 "'binary', 'usaf1951' and 'flat' are implemented." % object_type)
 
     def _make_binary_object(self, **kwargs):
-        """Two Gaussian blobs separated by ~0.6 arcsec (binary star)."""
-        std = 1.0
-        kernel_extent = 8 * std
-        ifov = 0.0165012
-        separation_pixels = int(0.6 / ifov)
-        mu_x = self.extent_pixels // 2
+        """Two point sources separated by a configurable angular distance.
 
-        mu_y_primary = (self.extent_pixels // 2) - (separation_pixels // 2)
-        primary = offset_gaussian(self.extent_pixels, mu_x, mu_y_primary,
-                                  std, kernel_extent, normalised=True)
-
-        mu_y_secondary = (self.extent_pixels // 2) + (separation_pixels // 2)
-        secondary = offset_gaussian(self.extent_pixels, mu_x, mu_y_secondary,
-                                    std, kernel_extent, normalised=True)
-        return primary + secondary
+        Parameters (via kwargs)
+        -----------------------
+        binary_separation_arcsec : float
+            Angular separation between the two sources in arcseconds.
+            Default 0.2 arcsec.
+        ifov : float
+            Instantaneous field of view in arcsec/pixel.  If not provided
+            the legacy NanoELF value (0.0165012) is used.
+        """
+        sep_arcsec = kwargs.get("binary_separation_arcsec", 0.2)
+        ifov = kwargs.get("ifov", 0.0165012)
+        separation_pixels = max(2, int(round(sep_arcsec / ifov)))
+        cx = self.extent_pixels // 2
+        cy = self.extent_pixels // 2
+        half_sep = separation_pixels // 2
+        array_value = 1.02e-8
+        arr = np.zeros((self.extent_pixels, self.extent_pixels))
+        arr[cx, cy - half_sep] = array_value
+        arr[cx, cy + half_sep] = array_value
+        return arr
 
     def _make_single_object(self, **kwargs):
         """Point source at the centre of the field."""
@@ -588,6 +595,7 @@ class OpticalSystem(object):
             object_plane_extent_pixels=num_px,
             object_plane_extent_meters=cfg['object_plane_extent_meters'],
             object_plane_distance_meters=cfg['object_plane_distance_meters'],
+            ifov=self.ifov,
         )
 
         # [v3-opt] Pre-compute object spectrum (object never changes within episode)
@@ -1485,8 +1493,11 @@ class OpticalSystem(object):
         off_axis = self._bootstrap_off_axis_angle()
         seg_angles = self._bootstrap_segment_angles()
 
+        # Off-axis push applies to the target segment AND every later
+        # segment (target..n_seg-1). Only the already-co-phased segments
+        # (0..target-1) stay at zero PTT.
         ptt = np.zeros((self.num_apertures, 3))
-        for seg_id in range(phased_count + 1, self.num_apertures):
+        for seg_id in range(phased_count, self.num_apertures):
             scale = 1.0
             if noisy:
                 scale += np.random.uniform(-0.1, 0.1)
@@ -1497,11 +1508,13 @@ class OpticalSystem(object):
         self._apply_ptt_displacements(ptt)
 
     def _init_bootstrap_target_perturbation(self, phased_count):
-        """Apply initial perturbation to the target segment only.
+        """Apply an additional random piston kick to the target segment.
 
-        Uses the same wind-driven perturbation logic as
-        _init_natural_diff_motion, but restricted to segment
-        ``phased_count``.
+        The target's tip/tilt is already set by ``_init_bootstrap_segments``
+        (off-axis push); this function only adds a piston disturbance
+        drawn from the wind model so the policy has a non-trivial piston
+        to resolve alongside the off-axis tip/tilt. Tip/tilt are
+        intentionally NOT touched here so the off-axis push survives.
         """
         cfg = self._cfg
         _wl = self.wavelength
@@ -1514,16 +1527,6 @@ class OpticalSystem(object):
         ptt[seg, 0] = sign * (_piston_mean + np.random.randn() * _piston_std)
         clip_m = cfg["init_wind_piston_clip_m"]
         ptt[seg, 0] = np.clip(ptt[seg, 0], -clip_m, clip_m)
-
-        if self.command_tip_tilt:
-            tip_std = cfg["init_wind_tip_arcsec_std_tt"]
-            tilt_std = cfg["init_wind_tilt_arcsec_std_tt"]
-            ptt[seg, 1] = (np.random.choice([-1.0, 1.0])
-                           * (tip_std + np.random.randn() * tip_std / 3.0)
-                           * np.pi / (180 * 3600))
-            ptt[seg, 2] = (np.random.choice([-1.0, 1.0])
-                           * (tilt_std + np.random.randn() * tilt_std / 3.0)
-                           * np.pi / (180 * 3600))
 
         self._apply_ptt_displacements(ptt, incremental=True)
 
