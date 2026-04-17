@@ -47,6 +47,13 @@ ELF_BOOTSTRAP_ENV_KWARGS = {
     "max_piston_correction_micron": 1.0,
     "max_tip_correction_arcsec":    3.0,
     "max_tilt_correction_arcsec":   3.0,
+    # 1 ms timing throughout: AO sub-step, control command, detector
+    # frame, and agent decision all cadence at 1 kHz. Overrides the
+    # 100 ms defaults inherited from ELF_PISTON_ENV_KWARGS.
+    "ao_interval_ms": 1.0,
+    "control_interval_ms": 1.0,
+    "frame_interval_ms": 1.0,
+    "decision_interval_ms": 1.0,
 }
 
 
