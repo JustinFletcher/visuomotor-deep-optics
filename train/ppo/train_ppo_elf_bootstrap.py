@@ -35,12 +35,12 @@ ELF_BOOTSTRAP_ENV_KWARGS = {
     "command_tip_tilt": True,            # full 45 DOF
     "bootstrap_phase": True,
     "bootstrap_phased_count": 0,         # overridden by --phased-count
-    # Non-target DOFs get a 1000× heavier L1 action penalty than the
+    # Non-target DOFs get a 50× heavier L1 action penalty than the
     # target segment's 3 DOFs. This is the soft analog of SMAES's hard
-    # free_segments=[target] constraint — it has to be overwhelming to
-    # beat PPO's entropy bonus and force the policy to leave non-target
-    # segments alone.
-    "bootstrap_nontarget_penalty_multiplier": 1000.0,
+    # free_segments=[target] constraint — it needs to beat PPO's
+    # entropy bonus and force the policy to leave non-target segments
+    # alone without crushing exploration on the target.
+    "bootstrap_nontarget_penalty_multiplier": 50.0,
     # Tight action bounds (~3x the wind disturbance magnitude) — same as
     # ELF_PTT_TIGHT in the SMAES bootstrap pipeline.  This prevents the
     # optimizer from wandering into off-axis pseudo-phased solutions.
@@ -136,6 +136,11 @@ HPC_CONFIG = dict(
     seed=1,
     # --- Model saving ---
     model_save_interval=100,
+    # --- TensorBoard ---
+    # Downsample per-step scalars by 32x. With num_steps=128 we emit 4
+    # step-logs per rollout instead of 128 — roughly 30x smaller TB
+    # event files without losing per-update visibility.
+    tb_step_log_interval=32,
     # --- Env kwargs ---
     env_kwargs=ELF_BOOTSTRAP_ENV_KWARGS,
 )

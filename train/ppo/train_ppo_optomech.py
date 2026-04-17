@@ -1345,6 +1345,9 @@ def run_ppo_training(config: dict, run_dir: str):
     reward_scale = config.get("reward_scale", 1.0)
     save_interval = config.get("model_save_interval", 0)
     max_keep_checkpoints = config.get("max_keep_checkpoints", 10)
+    # Per-step TB scalar downsample interval (1 = log every env step).
+    # Set higher to shrink TB event files on long HPC runs.
+    tb_step_log_interval = max(1, int(config.get("tb_step_log_interval", 1)))
 
     run_name = f"ppo_optomech_{seed}_{int(time.time())}"
     this_run_dir = os.path.join(run_dir, run_name)
@@ -1585,12 +1588,8 @@ def run_ppo_training(config: dict, run_dir: str):
                         "train/episodic_length", ep_length, global_step
                     )
 
-            # Per-step instantaneous SPS
-            step_dt = time.time() - step_start_time
-            step_sps = num_envs / step_dt if step_dt > 0 else 0
-            writer.add_scalar("performance/step_SPS", step_sps, global_step)
-
-            # Per-step diagnostic metrics from env info dict (mean across envs)
+            # Per-step state updates (must run every step regardless of
+            # whether we're logging: these maintain episode boundaries).
             if "strehl" in infos:
                 step_strehl = np.asarray(infos["strehl"], dtype=np.float32)
 
@@ -1598,41 +1597,48 @@ def run_ppo_training(config: dict, run_dir: str):
                 if needs_start_strehl.any():
                     episode_start_strehl[needs_start_strehl] = step_strehl[needs_start_strehl]
                     needs_start_strehl[:] = False
+            else:
+                step_strehl = None
 
-                # Improvement = current / start (ε-guarded).
-                denom = np.maximum(np.abs(episode_start_strehl), 1e-6)
-                step_strehl_improvement = step_strehl / denom
+            # Per-step diagnostic scalars — downsampled by tb_step_log_interval
+            # to keep TB event files manageable on long HPC runs. With 128
+            # num_steps and interval=32, we emit 4 step-logs per rollout.
+            if step % tb_step_log_interval == 0:
+                step_dt = time.time() - step_start_time
+                step_sps = num_envs / step_dt if step_dt > 0 else 0
+                writer.add_scalar("performance/step_SPS", step_sps, global_step)
 
-                writer.add_scalar(
-                    "train/step_strehl",
-                    float(np.mean(step_strehl)), global_step,
-                )
-                writer.add_scalar(
-                    "train/step_strehl_improvement",
-                    float(np.mean(step_strehl_improvement)), global_step,
-                )
-                writer.add_scalar(
-                    "train/step_mse",
-                    float(np.mean(infos["mse"])), global_step,
-                )
-                writer.add_scalar(
-                    "train/step_oob_frac",
-                    float(np.mean(infos["oob_frac"])), global_step,
-                )
-                writer.add_scalar(
-                    "train/step_reward",
-                    float(np.mean(rewards_np)), global_step,
-                )
-                writer.add_scalar(
-                    "train/step_reward_raw",
-                    float(np.mean(infos["reward_raw"])), global_step,
-                )
+                if step_strehl is not None:
+                    # Improvement = current / start (ε-guarded).
+                    denom = np.maximum(np.abs(episode_start_strehl), 1e-6)
+                    step_strehl_improvement = step_strehl / denom
 
-                # Envs that finished this step need a fresh start_strehl
-                # captured on the next step (which will be the first step
-                # of their new episode).
-                if dones_step.any():
-                    needs_start_strehl[dones_step] = True
+                    writer.add_scalar(
+                        "train/step_strehl",
+                        float(np.mean(step_strehl)), global_step,
+                    )
+                    writer.add_scalar(
+                        "train/step_strehl_improvement",
+                        float(np.mean(step_strehl_improvement)), global_step,
+                    )
+                    writer.add_scalar(
+                        "train/step_oob_frac",
+                        float(np.mean(infos["oob_frac"])), global_step,
+                    )
+                    writer.add_scalar(
+                        "train/step_reward",
+                        float(np.mean(rewards_np)), global_step,
+                    )
+                    writer.add_scalar(
+                        "train/step_reward_raw",
+                        float(np.mean(infos["reward_raw"])), global_step,
+                    )
+
+            # Envs that finished this step need a fresh start_strehl
+            # captured on the next step (must run every step — does not
+            # depend on whether we logged).
+            if step_strehl is not None and dones_step.any():
+                needs_start_strehl[dones_step] = True
 
         rollout_end_time = time.time()
         rollout_dt = rollout_end_time - rollout_start_time
