@@ -137,6 +137,22 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
     """
     agent = _wrap_as_agent(agent, device)
 
+    # Reconfigure the env to the first phase's training-time
+    # phased_count BEFORE any reset. CompositeAgent transitions update
+    # the env's cfg in place, so without this every episode after the
+    # first would inherit the previous episode's *last* phased_count
+    # and reset to that phase's start state — the agent would then
+    # see a partially-phased aperture from its phase-0 perspective and
+    # dephase it. Idempotent for SingleModelAgent (no _phases) and for
+    # checkpoints that don't carry bootstrap metadata.
+    base_env = env.unwrapped if hasattr(env, "unwrapped") else env
+    phases = getattr(agent, "_phases", None)
+    if phases:
+        first_bp = getattr(phases[0], "bootstrap_phased_count", None)
+        if (first_bp is not None and
+                hasattr(base_env, "reconfigure_for_bootstrap_phase")):
+            base_env.reconfigure_for_bootstrap_phase(first_bp)
+
     # Zero-action baseline
     zero_return, _, zero_rewards = _run_zero_action_episode(env, seed)
 
