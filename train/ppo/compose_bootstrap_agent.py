@@ -27,6 +27,13 @@ Usage:
     # Allow partial (fewer than 15 phases)
     python train/ppo/compose_bootstrap_agent.py \\
         --run-id bootstrap_1742845200 --allow-partial
+
+    # Per-phase checkpoint name override (default is --checkpoint-name
+    # for all phases; override bakes into the spec so the result is
+    # portable without further flags at rollout time):
+    python train/ppo/compose_bootstrap_agent.py \\
+        --phase-checkpoint 0=history_update_2500.pt \\
+        --phase-checkpoint 7=history_update_9800.pt
 """
 
 import argparse
@@ -161,11 +168,36 @@ def main():
              "'metric_below KEY VAL', 'episode_fraction F'")
     parser.add_argument(
         "--checkpoint-name", type=str, default="best.pt",
-        help="Checkpoint filename to use per phase (default: best.pt)")
+        help="Default checkpoint filename per phase (default: best.pt). "
+             "Per-phase overrides via --phase-checkpoint.")
+    parser.add_argument(
+        "--phase-checkpoint", action="append", default=[], metavar="N=NAME",
+        help="Override the checkpoint filename for phase N. NAME is "
+             "resolved inside that phase's checkpoints/ directory "
+             "(e.g. 0=history_update_2500.pt) — or an absolute/"
+             "repo-relative path to use that file verbatim. Repeatable. "
+             "Bakes the selection into the output spec so rollouts are "
+             "portable without further flags.")
     parser.add_argument(
         "--allow-partial", action="store_true",
         help="Proceed even if some phases are missing")
     cli = parser.parse_args()
+
+    # Parse --phase-checkpoint entries into {int: str}.
+    phase_ckpt_overrides: dict[int, str] = {}
+    for entry in cli.phase_checkpoint:
+        if "=" not in entry:
+            parser.error(
+                f"--phase-checkpoint expects N=NAME, got {entry!r}")
+        k, v = entry.split("=", 1)
+        try:
+            idx = int(k)
+        except ValueError:
+            parser.error(f"Phase index must be int, got {k!r}")
+        if not 0 <= idx < NUM_PHASES:
+            parser.error(
+                f"Phase index {idx} out of range [0, {NUM_PHASES-1}]")
+        phase_ckpt_overrides[idx] = v
 
     # Build phase → run_id mapping
     phase_map = {}  # phase_num -> run_id
@@ -216,15 +248,28 @@ def main():
         run_id = phase_map[phase]
         phase_dir = os.path.join(
             BOOTSTRAP_ROOT, run_id, f"bootstrap_phase_{phase:02d}")
-        ckpt = find_checkpoint(phase_dir, cli.checkpoint_name)
+
+        # Pick the checkpoint name for this phase: override wins over
+        # the global default.
+        ckpt_name = phase_ckpt_overrides.get(phase, cli.checkpoint_name)
+        tag = "" if phase not in phase_ckpt_overrides else " [override]"
+
+        # Override value may be an explicit path (absolute or containing
+        # a directory separator); otherwise treat as a bare filename
+        # inside the phase's checkpoints/ directory.
+        if os.path.sep in ckpt_name or os.path.isabs(ckpt_name):
+            ckpt = ckpt_name if os.path.isfile(ckpt_name) else None
+        else:
+            ckpt = find_checkpoint(phase_dir, ckpt_name)
 
         if ckpt:
             resolved[phase] = ckpt
             size_mb = os.path.getsize(ckpt) / (1024 * 1024)
-            print(f"  Phase {phase:2d}: {ckpt} ({size_mb:.1f} MB)")
+            print(f"  Phase {phase:2d}: {ckpt} ({size_mb:.1f} MB){tag}")
         else:
             missing.append(phase)
-            print(f"  Phase {phase:2d}: MISSING (run={run_id})")
+            print(f"  Phase {phase:2d}: MISSING (run={run_id}, "
+                  f"wanted {ckpt_name}){tag}")
 
     print()
 
