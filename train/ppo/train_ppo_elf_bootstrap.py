@@ -65,6 +65,13 @@ ELF_BOOTSTRAP_ENV_KWARGS = {
     # to 1.0 against the full-aligned reference — less dynamic range
     # for PPO to exploit.
     "bootstrap_rescale_reward": True,
+    # Both holding bonus and action penalty cut 100x below the piston
+    # defaults. At full strength (1.0 / 0.5) the policies converged to
+    # a trivial "do-nothing" basin by 10M steps — stopping beats
+    # acting, and the entropy bonus isn't enough to keep exploring.
+    # Walk these back up later if the policy instead wanders.
+    "holding_bonus_weight": 0.01,
+    "action_penalty_weight": 0.005,
 }
 
 

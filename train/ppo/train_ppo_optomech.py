@@ -595,16 +595,18 @@ def evaluate_with_visualization(
         _log_observation_filmstrip(writer, best_episode_data, global_step,
                                    tag_prefix, dpi=fig_dpi)
 
-    # Aggregate reward traces across all eval episodes
-    _log_aggregate_reward_figure(
-        writer,
-        all_agent_reward_traces,
-        all_zero_reward_traces,
-        all_random_reward_traces,
-        global_step,
-        tag_prefix,
-        dpi=fig_dpi,
-    )
+    # Aggregate-reward figure disabled: redundant with the rollout
+    # summary figure and adds non-trivial bytes to TB. Traces are still
+    # computed above in case we want to re-enable it later.
+    # _log_aggregate_reward_figure(
+    #     writer,
+    #     all_agent_reward_traces,
+    #     all_zero_reward_traces,
+    #     all_random_reward_traces,
+    #     global_step,
+    #     tag_prefix,
+    #     dpi=fig_dpi,
+    # )
 
     # Generate GIFs for best / worst / median episodes
     if run_dir:
@@ -787,13 +789,20 @@ def _log_observation_filmstrip(
 ):
     """
     Filmstrip of focal-plane observations sampled uniformly from the episode.
-    Shows raw DN values with log-scale colorbars for signal-level visibility.
+
+    Three rows per column:
+      Row 0: focal-plane image in log DN, shared color scale across columns.
+      Row 1: horizontal bar chart of the action that produced this frame
+             (raw policy action, [-1, 1]).
+      Row 2: per-frame text metrics (reward, cumulative, Strehl, max/sum).
     """
     obs_raw = ep_data["obs_raw"]
     rewards = np.array(ep_data["rewards"])
+    actions = np.asarray(ep_data.get("actions", []))
     strehls = ep_data.get("strehls", [])
     cumulative = np.cumsum(rewards)
     T = len(obs_raw)
+    action_dim = int(actions.shape[1]) if actions.ndim == 2 else 0
 
     if T <= num_frames:
         frame_indices = list(range(T))
@@ -809,24 +818,55 @@ def _log_observation_filmstrip(
 
     n = len(frame_indices)
     fig, axes = plt.subplots(
-        2, n, figsize=(3.0 * n, 6.0), dpi=dpi,
-        gridspec_kw={"height_ratios": [3, 1]},
+        3, n, figsize=(2.2 * n, 5.2), dpi=dpi,
+        gridspec_kw={"height_ratios": [4, 2, 1],
+                     "hspace": 0.12, "wspace": 0.08},
     )
     if n == 1:
-        axes = axes.reshape(2, 1)
+        axes = axes.reshape(3, 1)
 
     norm = mcolors.LogNorm(vmin=1.0, vmax=global_max)
 
+    # Colors for action bars: repeat a 6-color palette enough times to
+    # cover any action_dim (45 for ELF).
+    palette = (["#4a90d9", "#d94a4a", "#4ad94a",
+                "#d9d94a", "#d94ad9", "#4ad9d9"] * 16)[:max(action_dim, 1)]
+
     for col, idx in enumerate(frame_indices):
+        # --- Row 0: image ---
         ax_img = axes[0, col]
         img_dn = raw_imgs[col]
-        # Clip floor to 1 DN for log display (zeros -> 1)
         im = ax_img.imshow(np.maximum(img_dn, 1.0), cmap="inferno", norm=norm)
-        ax_img.set_title(f"t={idx}", fontsize=9, fontweight="bold")
+        ax_img.set_title(f"t={idx}", fontsize=8, fontweight="bold", pad=2)
         ax_img.axis("off")
-        fig.colorbar(im, ax=ax_img, fraction=0.046, pad=0.04)
+        # Only colorbar on the rightmost column to save horizontal space.
+        if col == n - 1:
+            fig.colorbar(im, ax=ax_img, fraction=0.046, pad=0.02)
 
-        ax_txt = axes[1, col]
+        # --- Row 1: action bars for the action that produced this frame ---
+        ax_act = axes[1, col]
+        if idx > 0 and action_dim > 0 and idx - 1 < len(actions):
+            act = actions[idx - 1]
+            ax_act.barh(range(action_dim), act, color=palette, height=0.9)
+            ax_act.set_xlim(-1.05, 1.05)
+            ax_act.set_ylim(-0.5, action_dim - 0.5)
+            ax_act.invert_yaxis()  # DOF 0 at top
+            ax_act.axvline(x=0, color="gray", linestyle=":", alpha=0.5, linewidth=0.5)
+            ax_act.set_xticks([])
+            ax_act.set_yticks([])
+            for spine in ax_act.spines.values():
+                spine.set_linewidth(0.3)
+        else:
+            ax_act.text(0.5, 0.5, "(initial)", ha="center", va="center",
+                        fontsize=6, transform=ax_act.transAxes,
+                        color="gray")
+            ax_act.set_xticks([])
+            ax_act.set_yticks([])
+            for spine in ax_act.spines.values():
+                spine.set_visible(False)
+
+        # --- Row 2: text metrics ---
+        ax_txt = axes[2, col]
         ax_txt.axis("off")
 
         dn_max = float(np.max(img_dn))
@@ -837,26 +877,23 @@ def _log_observation_filmstrip(
             r = rewards[idx - 1]
             c = cumulative[idx - 1]
             s_txt = f"\nS={strehls[idx-1]:.3f}" if strehls else ""
-            text = (f"r={r:.4f}  \u03a3r={c:.3f}{s_txt}"
+            text = (f"r={r:.3f}  \u03a3={c:.2f}{s_txt}"
                     f"\nmax={dn_max:.0f}  sum={dn_sum:.0f}")
         ax_txt.text(
-            0.5,
-            0.5,
-            text,
+            0.5, 0.5, text,
             transform=ax_txt.transAxes,
-            ha="center",
-            va="center",
-            fontsize=7,
-            fontfamily="monospace",
+            ha="center", va="center",
+            fontsize=6, fontfamily="monospace",
         )
 
     fig.suptitle(
         f"Focal-Plane Filmstrip (DN, log scale)  |  "
         f"Return: {ep_data['return']:.3f}  |  Step: {global_step}",
-        fontsize=11,
-        fontweight="bold",
+        fontsize=10, fontweight="bold", y=0.995,
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    # Tight whitespace: tiny outer margins, explicit subplots_adjust
+    # cooperates with the gridspec hspace/wspace above.
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.02)
 
     writer.add_figure(f"{tag_prefix}/observation_filmstrip", fig, global_step)
     plt.close(fig)
