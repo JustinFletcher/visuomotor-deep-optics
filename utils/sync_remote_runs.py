@@ -59,6 +59,7 @@ SSH_CONTROL_DIR = Path("/tmp/sync_remote_runs_ssh")  # kept for cleanup on start
 SSH_CMD = (
     "ssh"
     " -o ControlMaster=no"            # do NOT share connections
+    " -o Compression=no"              # rsync handles compression (and we don't)
     " -o ServerAliveInterval=15"
     " -o ServerAliveCountMax=3"
     " -o ConnectTimeout=15"
@@ -72,15 +73,30 @@ RSYNC_BASE_ARGS = [
     # Checkpoints are already compressed (torch .pt), so the only
     # thing -z helped was tensorboard event files, which compress fine
     # but aren't worth the deadlock risk.
+    #
+    # --whole-file: skip rsync's block-level delta-transfer protocol.
+    # On this HPC the remote Lustre fs is cheap to stream-read but
+    # expensive for random I/O, which is what the delta-transfer
+    # checksum phase does. --whole-file makes rsync always ship the
+    # full file and lets the sender cruise through sequential reads.
+    # Over a 200 Mbps home link with cheap bytes, the old delta math
+    # was costing us 20 MB/s of throughput to save KB/s of bytes.
+    # It also kills the generator-timeout failure mode we saw
+    # mid-transfer on a 4 GB file (io timeout @137s, exit 30).
+    "--whole-file",
+    # --inplace: write directly to the destination file instead of to
+    # a temp-and-rename. Cheaper on the destination filesystem and
+    # avoids extra metadata ops. Implies --partial (resume picks up
+    # mid-file on interrupt).
+    "--inplace",
     # Rsync 3.x progress reporting. progress2 = one global transfer
     # line (bytes, rate, ETA); name0 = current file name; stats2 =
     # post-transfer summary; flist2 = file-list enumeration during
     # handshake. Survives remote MOTD / module-load banner noise.
     "--info=progress2,name0,stats2,flist2",
-    "--partial",
     "--no-motd",         # suppress rsync daemon MOTD banner
-    "--timeout=120",     # generous IO timeout for flaky links
-    "--partial-dir=.rsync-partial",  # keep partial files for resume
+    "--timeout=600",     # generous IO timeout; slow HPC Lustre can
+                         # stall for minutes during checksum phase
     "--exclude=__pycache__/",
     "--exclude=*.pyc",
     "-e", SSH_CMD,
