@@ -49,17 +49,19 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCAL_RUNS = _REPO_ROOT / "runs"
 LOCAL_BOOTSTRAP_RUNS = _REPO_ROOT / "bootstrap_runs"
 
-# SSH ControlMaster: keep a persistent connection open so we only
-# authenticate once. All subsequent rsync calls multiplex over it.
-SSH_CONTROL_DIR = Path("/tmp/sync_remote_runs_ssh")
-SSH_CONTROL_PATH = SSH_CONTROL_DIR / "ctrl-%r@%h:%p"
+# SSH: fresh connection per rsync invocation. We previously used
+# ControlMaster multiplexing to avoid repeated auth, but stale/broken
+# sockets in /tmp silently stalled rsync file-list exchanges for
+# hours. Kerberos ticket caching already makes reconnects fast (no
+# smartcard re-prompt while the ticket is valid), so the only cost of
+# dropping multiplexing is a ~1 s TCP + shell-init overhead per call.
+SSH_CONTROL_DIR = Path("/tmp/sync_remote_runs_ssh")  # kept for cleanup on startup
 SSH_CMD = (
     "ssh"
-    " -o ControlMaster=auto"
-    f" -o ControlPath={SSH_CONTROL_PATH}"
-    " -o ControlPersist=600"          # keep socket alive 10 min after last use
+    " -o ControlMaster=no"            # do NOT share connections
     " -o ServerAliveInterval=15"
     " -o ServerAliveCountMax=3"
+    " -o ConnectTimeout=15"
 )
 
 RSYNC_BASE_ARGS = [
@@ -225,7 +227,15 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
     of the regular ``runs/`` tree. This preserves the nested directory
     structure expected by ``compose_bootstrap_agent.py``.
     """
-    SSH_CONTROL_DIR.mkdir(parents=True, exist_ok=True)
+    # Wipe any stale multiplexing sockets left over from earlier
+    # versions of this script — they can silently stall new rsyncs.
+    if SSH_CONTROL_DIR.exists():
+        import shutil as _shutil
+        try:
+            _shutil.rmtree(SSH_CONTROL_DIR)
+        except OSError:
+            pass
+
     if not ensure_ticket():
         return False
 
