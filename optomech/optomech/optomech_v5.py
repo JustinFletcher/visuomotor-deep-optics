@@ -905,20 +905,39 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             else:
                 quality = raw_quality
 
-            action_l1 = self._prior_actions.abs().mean(dim=1)  # [N]
-            stillness = 1.0 - action_l1
+            # When the bootstrap mask is active, the 42 non-target DOFs
+            # are structurally zero in _prior_actions. Averaging over
+            # all 45 makes stillness ~1 even when the target is
+            # pegged, erasing the differential between "moving" and
+            # "stopped". Normalize by the number of actually-actuating
+            # DOFs (sum of the mask) so stillness reflects what the
+            # policy is commanding.
+            if self._bootstrap_action_mask_t is not None:
+                n_eff = self._bootstrap_action_mask_t.sum().clamp(min=1.0)
+                action_l1 = self._prior_actions.abs().sum(dim=1) / n_eff
+            else:
+                action_l1 = self._prior_actions.abs().mean(dim=1)  # [N]
+            stillness = (1.0 - action_l1).clamp(min=0.0)
             total = total + self._holding_bonus_weight * quality * stillness
 
         # --- Action penalty ---
         if self._action_penalty:
             abs_actions = self._prior_actions.abs()  # [N, action_dim]
             if self._action_penalty_weights_t is not None:
-                # Per-DOF weighted penalty (bootstrap mode)
+                # Per-DOF weighted penalty (bootstrap mode, legacy path
+                # when mask is disabled).
                 action_penalty = (self._action_penalty_weights_t * abs_actions).mean(dim=1)
                 total = total - action_penalty
             else:
-                # Uniform scalar penalty (standard mode)
-                action_l1 = abs_actions.mean(dim=1)  # [N]
+                # Uniform scalar penalty. Same dilution story as
+                # holding bonus above: when the mask pins 42 DOFs to
+                # zero, averaging over 45 gives ~15x too small a
+                # penalty. Normalize by the active DOFs only.
+                if self._bootstrap_action_mask_t is not None:
+                    n_eff = self._bootstrap_action_mask_t.sum().clamp(min=1.0)
+                    action_l1 = abs_actions.sum(dim=1) / n_eff
+                else:
+                    action_l1 = abs_actions.mean(dim=1)  # [N]
                 total = total - self._action_penalty_weight * action_l1
 
         # --- OOB penalty ---

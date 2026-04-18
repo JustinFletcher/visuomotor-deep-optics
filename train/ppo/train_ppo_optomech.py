@@ -583,9 +583,17 @@ def evaluate_with_visualization(
         f"{tag_prefix}/mean_final_mse", mean_final_mse, global_step
     )
 
+    # Figure DPI for TB-embedded eval figures. Lowering this (e.g. 48)
+    # cuts per-figure byte size roughly as dpi^2 on long HPC runs while
+    # keeping legibility for quick TB scanning. Default preserves
+    # pre-existing behavior (matplotlib's own default ~100).
+    fig_dpi = config.get("eval_figure_dpi", 100)
+
     if best_episode_data is not None:
-        _log_rollout_summary_figure(writer, best_episode_data, global_step, tag_prefix)
-        _log_observation_filmstrip(writer, best_episode_data, global_step, tag_prefix)
+        _log_rollout_summary_figure(writer, best_episode_data, global_step,
+                                    tag_prefix, dpi=fig_dpi)
+        _log_observation_filmstrip(writer, best_episode_data, global_step,
+                                   tag_prefix, dpi=fig_dpi)
 
     # Aggregate reward traces across all eval episodes
     _log_aggregate_reward_figure(
@@ -595,6 +603,7 @@ def evaluate_with_visualization(
         all_random_reward_traces,
         global_step,
         tag_prefix,
+        dpi=fig_dpi,
     )
 
     # Generate GIFs for best / worst / median episodes
@@ -628,6 +637,7 @@ def _log_rollout_summary_figure(
     ep_data: dict,
     global_step: int,
     tag_prefix: str,
+    dpi: int = 100,
 ):
     """
     2x2 summary:
@@ -643,7 +653,7 @@ def _log_rollout_summary_figure(
     cumulative = np.cumsum(rewards)
     timesteps = np.arange(len(rewards))
 
-    fig = plt.figure(figsize=(14, 10))
+    fig = plt.figure(figsize=(14, 10), dpi=dpi)
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.3)
 
     # --- Top-left: step-wise reward ---
@@ -773,6 +783,7 @@ def _log_observation_filmstrip(
     global_step: int,
     tag_prefix: str,
     num_frames: int = 8,
+    dpi: int = 100,
 ):
     """
     Filmstrip of focal-plane observations sampled uniformly from the episode.
@@ -798,7 +809,8 @@ def _log_observation_filmstrip(
 
     n = len(frame_indices)
     fig, axes = plt.subplots(
-        2, n, figsize=(3.0 * n, 6.0), gridspec_kw={"height_ratios": [3, 1]}
+        2, n, figsize=(3.0 * n, 6.0), dpi=dpi,
+        gridspec_kw={"height_ratios": [3, 1]},
     )
     if n == 1:
         axes = axes.reshape(2, 1)
@@ -947,6 +959,7 @@ def _log_aggregate_reward_figure(
     random_traces: list,
     global_step: int,
     tag_prefix: str,
+    dpi: int = 100,
 ):
     """
     1x2 aggregate figure across all eval episodes:
@@ -978,7 +991,7 @@ def _log_aggregate_reward_figure(
     T = agent_mat.shape[1]
     timesteps = np.arange(T)
 
-    fig, (ax_rew, ax_cum) = plt.subplots(1, 2, figsize=(16, 5))
+    fig, (ax_rew, ax_cum) = plt.subplots(1, 2, figsize=(16, 5), dpi=dpi)
 
     # --- Left: step-wise reward mean +/- std ---
     def _plot_mean_std(ax, mat, color, label, alpha_fill=0.15):

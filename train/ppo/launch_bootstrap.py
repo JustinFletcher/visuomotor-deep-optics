@@ -82,7 +82,7 @@ def make_sbatch_script(phase, run_id, run_dir_base, wall_time=SLURM_TIME):
 
         cd {HPC_WORKDIR}
         poetry run python train/ppo/train_ppo_elf_bootstrap.py \\
-            --hpc --no-eval \\
+            --hpc \\
             --phased-count {phase} \\
             --run-dir {run_dir}
     """)

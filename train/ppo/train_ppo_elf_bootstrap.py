@@ -155,6 +155,12 @@ HPC_CONFIG = dict(
     # step-logs per rollout instead of 128 — roughly 30x smaller TB
     # event files without losing per-update visibility.
     tb_step_log_interval=32,
+    # Eval-time figure DPI. Default 100; dropping to 48 cuts each
+    # embedded TB figure roughly 4x in bytes (area scales as dpi^2).
+    # With 3 figures per eval round and ~25 eval rounds over a 100M-
+    # step run at eval_interval=100, this keeps figure bloat under
+    # ~40 MB per phase.
+    eval_figure_dpi=48,
     # --- Env kwargs ---
     env_kwargs=ELF_BOOTSTRAP_ENV_KWARGS,
 )
