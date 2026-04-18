@@ -153,6 +153,13 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
                 hasattr(base_env, "reconfigure_for_bootstrap_phase")):
             base_env.reconfigure_for_bootstrap_phase(first_bp)
 
+    # Refresh the obs normalisation scalar from the (possibly just-
+    # reconfigured) env. Each phase reconfigure rebuilds the reference
+    # PSF, so its peak DN — and therefore the obs_ref_max we should
+    # use to match training — changes per phase.
+    if hasattr(base_env, "reference_fpi_max"):
+        obs_ref_max = float(base_env.reference_fpi_max)
+
     # Zero-action baseline
     zero_return, _, zero_rewards = _run_zero_action_episode(env, seed)
 
@@ -217,8 +224,10 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
 
             # If the env supports it, reconfigure the env to the new
             # phase's training-time phased_count. This shifts the
-            # rescale baselines and any DOF-mask state so the incoming
-            # phase sees the reward distribution it was trained on.
+            # rescale baselines, rebuilds the reference image, and
+            # refreshes the action-mask state so the incoming phase
+            # sees the same env distribution it was trained on
+            # (start state, obs scale, reward scale).
             new_phase_idx = getattr(agent, "active_phase_index", None)
             if new_phase_idx is not None:
                 phases = getattr(agent, "_phases", None)
@@ -229,6 +238,13 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
                     if (bp_count is not None and
                             hasattr(base_env, "reconfigure_for_bootstrap_phase")):
                         base_env.reconfigure_for_bootstrap_phase(bp_count)
+                        # Refresh obs normalization to the new phase's
+                        # reference PSF. CRITICAL — without this the
+                        # CNN encoder receives obs values from a
+                        # different distribution than the new phase's
+                        # policy was trained on.
+                        if hasattr(base_env, "reference_fpi_max"):
+                            obs_ref_max = float(base_env.reference_fpi_max)
         else:
             prior_action = action_t.clone()
             prior_reward = torch.tensor(

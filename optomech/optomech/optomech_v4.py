@@ -1506,6 +1506,61 @@ class OpticalSystem(object):
         half_extent = self._focal_plane_image_size_meters / (2.0 * self._focal_length)
         return half_extent * 1.5
 
+    def rebuild_reference_for_phase(self, ref_pc):
+        """Rebuild the perfect image and the reference flux quantities
+        for a different bootstrap reference state. Used by composite
+        rollouts so that on a phase transition, obs normalization and
+        Strehl computation use the same reference each phase saw at
+        training time. Non-destructive — saves and restores actuator
+        state.
+
+        Updates: perfect_image, perfect_image_max, target_image,
+        _reference_fpi_sum, _reference_fpi_max, _reference_centering_sum,
+        _reference_dist_score, _reference_concentration,
+        _bootstrap_reference_phased_count.
+        """
+        ref_pc = max(0, min(int(ref_pc), self.num_apertures))
+
+        # Snapshot current actuator state.
+        saved_ptt = [self.segmented_mirror.get_segment_actuators(i)
+                     for i in range(self.num_apertures)]
+
+        try:
+            # Set actuators to ref_pc-aligned config (no noise).
+            self._init_bootstrap_segments(ref_pc, noisy=False)
+            self._bootstrap_reference_phased_count = ref_pc
+
+            # Rebuild perfect_image (polychromatic average).
+            cfg = self._cfg
+            _perfect_wavelengths = _centered_wavelengths(
+                self.wavelength,
+                cfg['bandwidth_nanometers'],
+                cfg['bandwidth_sampling'])
+            perfect_accum = None
+            for _pwl in _perfect_wavelengths:
+                wf = hcipy.Wavefront(self.aperture, _pwl)
+                img_wf = self.pupil_to_focal_propagator(
+                    self.segmented_mirror(wf))
+                if perfect_accum is None:
+                    perfect_accum = np.array(img_wf.intensity, dtype=np.float64)
+                else:
+                    perfect_accum += np.array(img_wf.intensity, dtype=np.float64)
+            perfect_accum /= len(_perfect_wavelengths)
+            self.perfect_image = perfect_accum
+            self.perfect_image_max = float(np.max(self.perfect_image))
+            side = int(np.sqrt(self.perfect_image.size))
+            self.target_image = self.perfect_image.reshape((side, side))
+
+            # Recompute the reference flux suite (sets _reference_fpi_*,
+            # _reference_centering_sum, _reference_dist_score, etc.).
+            self._compute_reference_flux(cfg)
+        finally:
+            # Restore actuator state.
+            ptt_arr = np.zeros((self.num_apertures, 3))
+            for i, (p, t, tl) in enumerate(saved_ptt):
+                ptt_arr[i] = (p, t, tl)
+            self._apply_ptt_displacements(ptt_arr, incremental=False)
+
     def _bootstrap_segment_angles(self):
         """Return angular position (radians) of each segment on the ring."""
         return np.array([2.0 * np.pi * i / self.num_apertures
@@ -2341,20 +2396,42 @@ class OptomechEnv(gym.Env):
 
     def reconfigure_for_bootstrap_phase(self, phased_count):
         """Public API for the composite-rollout driver: shift the env's
-        active phase index (and the rescale baselines that depend on
-        it) without rebuilding the optical system.
+        active phase index, rebuild the reference image to that phase's
+        training reference, and recompute the rescale baselines.
 
         Used between phase transitions in a composite rollout so the
-        incoming phase sees the reward distribution it was trained on.
-        Does NOT rebuild the reference image — that is set once at
-        init from bootstrap_reference_phased_count.
+        incoming phase sees the same env distribution it was trained
+        on (start state, obs normalization scale, reward distribution).
+
+        Reference is rebuilt at phased_count + 1 (the goal state of
+        this phase = the same reference each phase trained against).
+        Cost: one polychromatic forward pass + one reference-flux pass
+        per call. ~100 ms locally; negligible in rollout context.
         """
         self.cfg['bootstrap_phased_count'] = int(phased_count)
         # Reset the cached action mask so it gets rebuilt for the new
         # target on the next step (target index changed).
         self._bootstrap_action_mask = None
+
+        # Rebuild the reference image / flux for this phase. Uses
+        # phased_count + 1 = phase N's training reference (the
+        # post-success goal state).
+        n_seg = self.optical_system.num_apertures
+        new_ref_pc = max(0, min(int(phased_count) + 1, n_seg))
+        self.optical_system.rebuild_reference_for_phase(new_ref_pc)
+        # Refresh cached normalised perfect / target images and the
+        # _perfect_image_dn / _perfect_peak_over_sum that feed Strehl.
+        self._cache_reward_images()
+
         if self._bootstrap_rescale_reward:
             self._compute_rescale_baselines(phased_count)
+
+    @property
+    def reference_fpi_max(self):
+        """Current reference peak DN — the obs_ref_max for normalizing
+        observations at this phase. Re-read after each call to
+        reconfigure_for_bootstrap_phase."""
+        return self.optical_system._reference_fpi_max
 
     def _build_bootstrap_penalty(self):
         """Build per-DOF action penalty weights for bootstrap training.
