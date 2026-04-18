@@ -66,7 +66,12 @@ SSH_CMD = (
 
 RSYNC_BASE_ARGS = [
     "rsync",
-    "-ahz",              # archive, human-readable, compress (no -v; --info replaces)
+    "-ah",               # archive, human-readable (no -v; --info replaces)
+    # Compression (-z) removed: caused silent file-list stalls on this
+    # remote (verified by side-by-side dry-runs with and without -z).
+    # Checkpoints are already compressed (torch .pt), so the only
+    # thing -z helped was tensorboard event files, which compress fine
+    # but aren't worth the deadlock risk.
     # Rsync 3.x progress reporting. progress2 = one global transfer
     # line (bytes, rate, ETA); name0 = current file name; stats2 =
     # post-transfer summary; flist2 = file-list enumeration during
