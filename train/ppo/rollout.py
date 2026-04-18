@@ -335,8 +335,16 @@ def run_rollouts(
 # ============================================================================
 
 
-def render_episode_gif(ep_data, save_path, label="", dpi=72, frame_duration=0.2):
-    """Render a single episode as an animated GIF."""
+def render_episode_gif(ep_data, save_path, label="", dpi=72,
+                       frame_duration=0.2, lowres=False):
+    """Render a single episode as an animated GIF.
+
+    When ``lowres=True``: drops dpi 72->48, shrinks figsize, tightens
+    gridspec spacing, and trims subplot padding. All frames retained
+    (you said you needed the evolution dynamics). The output GIF is
+    roughly 5-10x smaller and ~5-8x faster to render. The action /
+    text panels still fit but with smaller labels.
+    """
     obs_raw = ep_data["obs_raw"]
     rewards = ep_data["rewards"]
     actions = np.array(ep_data["actions"])
@@ -345,6 +353,16 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72, frame_duration=0.2)
     T = len(rewards)
     action_dim = actions.shape[1] if len(actions) > 0 else 0
 
+    if lowres:
+        dpi = 48
+        figsize = (3.2, 3.6)
+        hspace, wspace = 0.20, 0.20
+        title_fs, tick_fs, txt_fs = 6, 5, 6
+    else:
+        figsize = (5, 5.5)
+        hspace, wspace = 0.35, 0.40
+        title_fs, tick_fs, txt_fs = 7, 6, 7
+
     all_raw = [_prepare_obs_raw(obs_raw[t]) for t in range(T + 1)]
     global_max = max(float(np.max(img)) for img in all_raw)
     global_max = max(global_max, 1.0)
@@ -352,9 +370,13 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72, frame_duration=0.2)
 
     frames = []
     for t in range(T + 1):
-        fig = plt.figure(figsize=(5, 5.5), dpi=dpi)
+        fig = plt.figure(figsize=figsize, dpi=dpi)
         gs = gridspec.GridSpec(2, 2, figure=fig,
-                               height_ratios=[3, 1], hspace=0.35, wspace=0.4)
+                               height_ratios=[3, 1],
+                               hspace=hspace, wspace=wspace,
+                               left=0.04, right=0.96,
+                               top=0.92 if lowres else 0.93,
+                               bottom=0.06)
 
         ax_obs = fig.add_subplot(gs[0, :])
         img_dn = all_raw[t]
@@ -365,26 +387,37 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72, frame_duration=0.2)
         ax_obs.set_title(
             f"{label} | seed={ep_data['seed']} | R={ep_data['return']:.3f}"
             f"\nmax={dn_max:.0f}  sum={dn_sum:.0f}",
-            fontsize=7)
-        fig.colorbar(im, ax=ax_obs, fraction=0.046, pad=0.04, label="DN")
+            fontsize=title_fs)
+        fig.colorbar(im, ax=ax_obs, fraction=0.046, pad=0.02, label="DN")
 
         ax_act = fig.add_subplot(gs[1, 0])
         if t > 0 and action_dim > 0:
             act = actions[t - 1]
             colors = (["#4a90d9", "#d94a4a", "#4ad94a",
-                       "#d9d94a", "#d94ad9", "#4ad9d9"] * 2)[:action_dim]
+                       "#d9d94a", "#d94ad9", "#4ad9d9"] * 16)[:action_dim]
             ax_act.barh(range(action_dim), act, color=colors)
             ax_act.set_xlim(-1.1, 1.1)
-            ax_act.set_yticks(range(action_dim))
-            ax_act.set_yticklabels([f"a[{i}]" for i in range(action_dim)],
-                                   fontsize=6)
+            if lowres and action_dim > 12:
+                # 45-DOF case in lowres: show every Nth tick label.
+                stride = max(1, action_dim // 8)
+                ax_act.set_yticks(range(0, action_dim, stride))
+                ax_act.set_yticklabels(
+                    [f"a[{i}]" for i in range(0, action_dim, stride)],
+                    fontsize=tick_fs)
+            else:
+                ax_act.set_yticks(range(action_dim))
+                ax_act.set_yticklabels(
+                    [f"a[{i}]" for i in range(action_dim)],
+                    fontsize=tick_fs)
+            ax_act.tick_params(axis="x", labelsize=tick_fs)
             ax_act.axvline(x=0, color="gray", linestyle=":", alpha=0.5)
         else:
             ax_act.text(0.5, 0.5, "t=0\n(initial)", ha="center",
-                        va="center", fontsize=7, transform=ax_act.transAxes)
+                        va="center", fontsize=txt_fs,
+                        transform=ax_act.transAxes)
             ax_act.set_xticks([])
             ax_act.set_yticks([])
-        ax_act.set_title("Action", fontsize=7)
+        ax_act.set_title("Action", fontsize=title_fs)
 
         ax_txt = fig.add_subplot(gs[1, 1])
         ax_txt.axis("off")
@@ -397,7 +430,7 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72, frame_duration=0.2)
             text = (f"t = {t} / {T}\nr = {r:.4f}  R = {c:.3f}{s_txt}"
                     f"\nmax DN = {dn_max:.0f}\nsum DN = {dn_sum:.0f}")
         ax_txt.text(0.5, 0.5, text, ha="center", va="center",
-                    fontsize=7, fontfamily="monospace",
+                    fontsize=txt_fs, fontfamily="monospace",
                     transform=ax_txt.transAxes)
 
         fig.canvas.draw()
@@ -408,7 +441,7 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72, frame_duration=0.2)
     imageio.mimsave(save_path, frames, duration=frame_duration)
 
 
-def save_episode_gifs(episodes, output_dir):
+def save_episode_gifs(episodes, output_dir, lowres=False):
     """Save best, worst, and median episode GIFs."""
     os.makedirs(output_dir, exist_ok=True)
     worst = episodes[0]
@@ -417,7 +450,7 @@ def save_episode_gifs(episodes, output_dir):
 
     for ep, label in [(best, "best"), (worst, "worst"), (median, "median")]:
         path = os.path.join(output_dir, f"{label}.gif")
-        render_episode_gif(ep, path, label=label.upper())
+        render_episode_gif(ep, path, label=label.upper(), lowres=lowres)
         print(f"  GIF: {path}")
 
 

@@ -98,30 +98,50 @@ def _count_phases_and_steps(spec_path: str, override_steps: int | None):
     return len(phases), per_phase, per_phase * len(phases)
 
 
-def _maybe_rewrite_spec_steps(spec_path: str, steps_per_phase: int) -> str:
-    """If the user overrode steps-per-phase, write a temp spec with new triggers."""
+def _maybe_rewrite_spec(spec_path: str,
+                        steps_per_phase: int | None,
+                        run_through_phase: int | None) -> str:
+    """Rewrite the composite spec with optional overrides.
+
+    - ``steps_per_phase`` (int): force every phase's ``step`` trigger
+      to this value.
+    - ``run_through_phase`` (int): truncate the spec to phases
+      0..run_through_phase inclusive (drop later phases entirely).
+
+    Returns the path to use (original if no rewrite needed).
+    """
+    if steps_per_phase is None and run_through_phase is None:
+        return spec_path
+
     with open(spec_path, "r") as f:
         spec = yaml.safe_load(f)
     if spec.get("type") != "composite":
         return spec_path
 
-    changed = False
-    for ph in spec["phases"]:
-        until = ph.get("until")
-        if until and "step" in until and int(until["step"]) != steps_per_phase:
-            until["step"] = steps_per_phase
-            changed = True
-    if not changed:
-        return spec_path
+    suffix = ""
+    if run_through_phase is not None:
+        N = len(spec["phases"])
+        if not 0 <= run_through_phase < N:
+            raise ValueError(
+                f"--run-through-phase {run_through_phase} out of range "
+                f"[0, {N-1}] for spec with {N} phases")
+        spec["phases"] = spec["phases"][: run_through_phase + 1]
+        suffix += f"_p{run_through_phase}"
+
+    if steps_per_phase is not None:
+        for ph in spec["phases"]:
+            until = ph.get("until")
+            if until and "step" in until:
+                until["step"] = steps_per_phase
+        suffix += f"_s{steps_per_phase}"
 
     tmp_dir = os.path.join(_REPO_ROOT, "test_output", "_tmp_specs")
     os.makedirs(tmp_dir, exist_ok=True)
-    tmp_path = os.path.join(
-        tmp_dir, f"{os.path.basename(spec_path).replace('.yaml', '')}"
-                 f"_s{steps_per_phase}.yaml")
+    base = os.path.basename(spec_path).replace(".yaml", "")
+    tmp_path = os.path.join(tmp_dir, f"{base}{suffix}.yaml")
     with open(tmp_path, "w") as f:
         yaml.dump(spec, f, default_flow_style=False, sort_keys=False)
-    print(f"  Rewrote spec with steps-per-phase={steps_per_phase}: {tmp_path}")
+    print(f"  Rewrote spec ({suffix.lstrip('_')}): {tmp_path}")
     return tmp_path
 
 
@@ -138,12 +158,21 @@ def main():
         help="Override per-phase step trigger in the spec. When omitted, "
              "use whatever the spec says.")
     parser.add_argument(
+        "--run-through-phase", type=int, default=None,
+        help="Stop the rollout at the end of this phase index (0-based, "
+             "inclusive). E.g. --run-through-phase 7 runs phases 0..7 "
+             "and ends. Cuts both wall time and GIF render time.")
+    parser.add_argument(
         "--env-version", type=str, default="v4",
         choices=["v1", "v2", "v3", "v4"])
     parser.add_argument(
         "--output-dir", type=str, default=_DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--no-gifs", action="store_true")
+    parser.add_argument(
+        "--lowres-gifs", action="store_true",
+        help="Render GIFs at lower resolution and tighter layout. ~5-10x "
+             "smaller files and ~5-8x faster rendering. Keeps every frame.")
     args = parser.parse_args()
 
     if not os.path.isabs(args.policy_spec):
@@ -152,12 +181,18 @@ def main():
     if not os.path.isfile(args.policy_spec):
         parser.error(f"Policy spec not found: {args.policy_spec}")
 
-    # Figure out how long an episode needs to be.
-    num_phases, per_phase, max_steps = _count_phases_and_steps(
+    # Figure out how long an episode needs to be (size against the
+    # ORIGINAL spec; we'll apply --run-through-phase truncation below).
+    num_phases, per_phase, _ = _count_phases_and_steps(
         args.policy_spec, args.steps_per_phase)
+    effective_phases = (args.run_through_phase + 1
+                        if args.run_through_phase is not None
+                        else num_phases)
+    max_steps = per_phase * effective_phases
 
     print(f"Spec:              {args.policy_spec}")
-    print(f"Phases:            {num_phases}")
+    print(f"Phases (spec):     {num_phases}")
+    print(f"Phases (this run): {effective_phases}")
     print(f"Steps per phase:   {per_phase}")
     print(f"Max episode steps: {max_steps}")
     print(f"Env version:       {args.env_version}")
@@ -165,12 +200,14 @@ def main():
     print(f"Focal plane:       {ROLLOUT_ENV_KWARGS['focal_plane_image_size_pixels']}px")
     print()
 
-    # If the user overrode steps-per-phase, rewrite a temp spec so the
-    # CompositeAgent's triggers match the evaluation horizon.
-    effective_spec = args.policy_spec
-    if args.steps_per_phase is not None:
-        effective_spec = _maybe_rewrite_spec_steps(
-            args.policy_spec, args.steps_per_phase)
+    # Rewrite the spec when either steps-per-phase or run-through-phase
+    # is overridden. CompositeAgent's triggers and phase list must
+    # match the evaluation horizon.
+    effective_spec = _maybe_rewrite_spec(
+        args.policy_spec,
+        steps_per_phase=args.steps_per_phase,
+        run_through_phase=args.run_through_phase,
+    )
 
     # Timestamped output directory.
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -206,7 +243,8 @@ def main():
     print(f"Metrics: {metrics_path}")
 
     if not args.no_gifs:
-        save_episode_gifs(episodes, os.path.join(test_dir, "gifs"))
+        save_episode_gifs(episodes, os.path.join(test_dir, "gifs"),
+                          lowres=args.lowres_gifs)
 
     save_summary_figures(episodes, metrics, os.path.join(test_dir, "figures"))
 
