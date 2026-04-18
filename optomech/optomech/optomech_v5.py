@@ -253,6 +253,15 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Bootstrap config
         self._bootstrap = env_kwargs.get("bootstrap_phase", False)
         self._phased_count = env_kwargs.get("bootstrap_phased_count", 0)
+        # Rescale centered_strehl reward so -1.0 corresponds to the
+        # prior phase's solved state (phase N's ideal episode start) and
+        # 0.0 corresponds to this phase's solved state. Restores the
+        # full [-1, 0] learnable range for high phases whose raw reward
+        # is otherwise compressed into a narrow slice near zero.
+        self._bootstrap_rescale_reward = bool(
+            env_kwargs.get("bootstrap_rescale_reward", False))
+        self._rescale_start = 0.0   # populated in _measure_rescale_baselines
+        self._rescale_end = 1.0
         # Hard DOF mask: when True, zero out every action DOF except
         # the target segment's. Applied before _batched_command and
         # before _prior_actions is stored, so the agent's outputs on
@@ -435,6 +444,14 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         if self._rw_piston_noise_mse > 0 or self._rw_piston_shape_alignment > 0:
             self._piston_noise_target_t = self._compute_piston_noise_target()
 
+        # Bootstrap reward-rescale baselines (after everything else is set).
+        if self._bootstrap and self._bootstrap_rescale_reward:
+            self._measure_rescale_baselines()
+            print(f"[optomech-v5] Bootstrap reward rescale: "
+                  f"s_prior={self._rescale_start:.4f}, "
+                  f"s_goal={self._rescale_end:.4f}  "
+                  f"(phase {self._phased_count})")
+
         if not silence:
             print(f"[optomech-v5] BatchedOptomechEnv ready: {num_envs} envs on {self.dev}")
             print(f"[optomech-v5]   {self._num_apertures} segments, {self._n_modes} modes")
@@ -605,6 +622,81 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
 
         self._actuators_t = post_clip
 
+    def _measure_rescale_baselines(self):
+        """Measure (strehl * centering) at this phase's prior-solved
+        and goal-solved states, used to rescale the centered_strehl
+        reward into a full [-1, 0] per-phase range.
+
+        prior-solved = segs 0..phased_count-1 aligned, segs
+                       phased_count..n-1 off-axis. This is the state
+                       phase N-1 is supposed to produce (and phase N's
+                       ideal starting condition).
+        goal-solved  = segs 0..phased_count aligned, segs
+                       phased_count+1..n-1 off-axis. This is what phase
+                       N is supposed to achieve.
+
+        Both configurations are built WITHOUT the ±10% off-axis noise
+        and WITHOUT the wind-piston kick on the target, so the
+        measurements are fully deterministic. All envs are set to the
+        same state, so the mean across envs is a clean scalar.
+
+        Side effect: temporarily overwrites _actuators_t (restored
+        before return). Safe to call at the tail of __init__ before
+        reset() has ever run.
+        """
+        saved_actuators = self._actuators_t.clone()
+        try:
+            for tag, target in (
+                ("start", self._phased_count),
+                ("end", self._phased_count + 1),
+            ):
+                self._set_deterministic_bootstrap_state(target)
+                frames = self._batched_simulate()
+                frames = self._batched_detector_model(frames)
+
+                # Same strehl + centering math as _batched_reward.
+                fpi_sum = frames.sum(dim=(1, 2))
+                fpi_max = frames.amax(dim=(1, 2))
+                safe_sum = fpi_sum.clamp(min=1e-30)
+                obs_peak_over_sum = fpi_max / safe_sum
+                raw_strehl = obs_peak_over_sum / self._perfect_peak_over_sum
+                flux_frac = (fpi_sum / self._reference_fpi_sum).clamp(0.0, 1.0)
+                strehl = raw_strehl * flux_frac
+
+                H, W = frames.shape[-2], frames.shape[-1]
+                peak_flat = frames.reshape(self._num_envs, -1).argmax(dim=1)
+                py = (peak_flat // W).float()
+                px = (peak_flat % W).float()
+                dist = ((py - self._cy) ** 2 + (px - self._cx) ** 2).sqrt()
+                centering = 1.0 - dist / self._max_dist
+
+                s_c = float((strehl * centering).mean().item())
+                if tag == "start":
+                    self._rescale_start = s_c
+                else:
+                    self._rescale_end = s_c
+        finally:
+            self._actuators_t = saved_actuators
+
+    def _set_deterministic_bootstrap_state(self, target):
+        """Set _actuators_t so segs [0..target-1] are aligned (zero PTT)
+        and segs [target..n-1] carry the deterministic off-axis tip/tilt
+        push (no ±10% noise, no wind kick).
+        """
+        n_seg = self._num_apertures
+        N = self._num_envs
+        off_axis = self._bootstrap_off_axis
+        seg_angles = self._bootstrap_seg_angles
+
+        piston = torch.zeros(N, n_seg, device=self.dev)
+        tip = torch.zeros(N, n_seg, device=self.dev)
+        tilt = torch.zeros(N, n_seg, device=self.dev)
+        for seg_id in range(target, n_seg):
+            theta = seg_angles[seg_id]
+            tip[:, seg_id] = off_axis * torch.sin(theta)
+            tilt[:, seg_id] = off_axis * torch.cos(theta)
+        self._actuators_t = torch.cat([piston, tip, tilt], dim=1)
+
     def _compute_piston_noise_target(self):
         """Generate a target shape by averaging frames from random piston noise.
 
@@ -732,9 +824,20 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             norm_frames = frames / frame_max_safe  # [N, H, W]
 
         # --- centered_strehl (component value: -(1 - s*c)) ---
+        # Under bootstrap_rescale_reward, the component is rescaled so
+        # -1 corresponds to this phase's prior-solved state (N aligned)
+        # and 0 corresponds to this phase's goal-solved state (N+1
+        # aligned). Gives every phase the full [-1, 0] range regardless
+        # of starting strehl ceiling. Values below -1 are clamped at
+        # -5 so catastrophic states don't produce huge advantage spikes.
         cs_val = None
         if self._rw_centered_strehl > 0 or vec:
-            cs_val = -(1.0 - strehl * centering)
+            s_c = strehl * centering
+            if self._bootstrap_rescale_reward:
+                denom = max(self._rescale_end - self._rescale_start, 1e-3)
+                cs_val = ((s_c - self._rescale_end) / denom).clamp(min=-5.0)
+            else:
+                cs_val = -(1.0 - s_c)
             if self._rw_centered_strehl > 0:
                 total += self._rw_centered_strehl * cs_val
 

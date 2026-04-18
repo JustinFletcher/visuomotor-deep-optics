@@ -58,6 +58,13 @@ ELF_BOOTSTRAP_ENV_KWARGS = {
     "control_interval_ms": 1.0,
     "frame_interval_ms": 1.0,
     "decision_interval_ms": 1.0,
+    # Rescale centered_strehl reward per phase so -1.0 corresponds to
+    # the prior phase's solved state and 0.0 corresponds to this
+    # phase's solved state. Without this, higher phases see a narrow
+    # [~-0.13, 0] reward window because start strehl is already close
+    # to 1.0 against the full-aligned reference — less dynamic range
+    # for PPO to exploit.
+    "bootstrap_rescale_reward": True,
 }
 
 
