@@ -74,7 +74,7 @@ LOCAL_CONFIG = dict(
     update_epochs=4,
     seq_len=32,
     learning_rate=3e-4,
-    gamma=0.99,
+    gamma=0.98,
     gae_lambda=0.95,
     clip_coef=0.2,
     # Entropy is summed across 45 DOFs (dist.entropy().sum(dim=-1)), so
@@ -96,7 +96,7 @@ LOCAL_CONFIG = dict(
     init_log_std=-2.0,
     action_scale=1.0,
     # --- Environment ---
-    max_episode_steps=256,
+    max_episode_steps=64,
     # --- Evaluation ---
     eval_interval=100,
     eval_episodes=8,
@@ -118,7 +118,7 @@ HPC_CONFIG = dict(
     update_epochs=4,
     seq_len=32,
     learning_rate=3e-4,
-    gamma=0.99,
+    gamma=0.98,
     gae_lambda=0.95,
     clip_coef=0.2,
     # Entropy is summed across 45 DOFs (dist.entropy().sum(dim=-1)), so
@@ -140,7 +140,7 @@ HPC_CONFIG = dict(
     init_log_std=-2.0,
     action_scale=1.0,
     # --- Environment ---
-    max_episode_steps=256,
+    max_episode_steps=64,
     env_version="v5",
     # --- Evaluation ---
     eval_interval=100,
