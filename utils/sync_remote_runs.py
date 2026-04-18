@@ -64,9 +64,14 @@ SSH_CMD = (
 
 RSYNC_BASE_ARGS = [
     "rsync",
-    "-avhzP",            # archive, verbose, human-readable, compress, progress+partial
-    "--stats",
-    "--no-motd",         # suppress remote MOTD/module-load banner
+    "-ahz",              # archive, human-readable, compress (no -v; --info replaces)
+    # Rsync 3.x progress reporting. progress2 = one global transfer
+    # line (bytes, rate, ETA); name0 = current file name; stats2 =
+    # post-transfer summary; flist2 = file-list enumeration during
+    # handshake. Survives remote MOTD / module-load banner noise.
+    "--info=progress2,name0,stats2,flist2",
+    "--partial",
+    "--no-motd",         # suppress rsync daemon MOTD banner
     "--timeout=120",     # generous IO timeout for flaky links
     "--partial-dir=.rsync-partial",  # keep partial files for resume
     "--exclude=__pycache__/",
