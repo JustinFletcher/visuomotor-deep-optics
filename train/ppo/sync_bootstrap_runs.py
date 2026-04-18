@@ -1,15 +1,21 @@
 #!/usr/bin/env python
 """Sync bootstrap training outputs into runs/ for local inspection.
 
-Copies only TensorBoard logs and the latest checkpoint from
-bootstrap_runs/{run_id}/ into runs/, keeping the bulk training data
-out of the main runs directory.
+By default copies only TensorBoard event files from
+bootstrap_runs/{run_id}/ into runs/. This is the cheap path for
+rsync-ing to a laptop: TB files are a few MB per phase whereas
+checkpoints are ~93 MB each. Pass --include-checkpoints to also
+pull best.pt and the latest history checkpoint per phase.
 
 Usage:
-    # Sync a specific run
+    # TB-only sync of a specific run (default)
     python train/ppo/sync_bootstrap_runs.py --run-id bootstrap_1742845200
 
-    # Sync all bootstrap runs
+    # Include checkpoints too (best.pt + latest history)
+    python train/ppo/sync_bootstrap_runs.py --run-id bootstrap_1742845200 \\
+        --include-checkpoints
+
+    # Sync all bootstrap runs (TB only)
     python train/ppo/sync_bootstrap_runs.py --all
 
     # Dry run
@@ -54,8 +60,9 @@ def find_latest_checkpoint(ckpt_dir):
     return best_path
 
 
-def sync_phase(phase_dir, dest_dir, dry_run=False):
-    """Sync one phase's TB logs and latest checkpoint into dest_dir.
+def sync_phase(phase_dir, dest_dir, dry_run=False,
+               include_checkpoints=False):
+    """Sync one phase's TB logs (and optionally checkpoints) into dest_dir.
 
     Returns dict with sync status info.
     """
@@ -90,7 +97,11 @@ def sync_phase(phase_dir, dest_dir, dry_run=False):
                         shutil.copy2(src, dst)
         info["tb_synced"] = True
 
-    # Sync checkpoints: best.pt + latest update_N.pt
+    # Checkpoints are opt-in: the sync is usually downstream of rsync
+    # to a laptop, and each .pt is ~93 MB. Skip unless asked.
+    if not include_checkpoints:
+        return info
+
     ckpt_src = os.path.join(train_dir, "checkpoints")
     ckpt_dst = os.path.join(dest_dir, "checkpoints")
 
@@ -116,7 +127,7 @@ def sync_phase(phase_dir, dest_dir, dry_run=False):
     return info
 
 
-def sync_run(run_id, dry_run=False):
+def sync_run(run_id, dry_run=False, include_checkpoints=False):
     """Sync all phases of a bootstrap run."""
     run_dir = os.path.join(BOOTSTRAP_ROOT, run_id)
     if not os.path.isdir(run_dir):
@@ -129,7 +140,8 @@ def sync_run(run_id, dry_run=False):
         print(f"No phases found in {run_dir}")
         return False
 
-    print(f"Syncing run '{run_id}' ({len(phase_dirs)} phases found)")
+    mode = "TB + checkpoints" if include_checkpoints else "TB only"
+    print(f"Syncing run '{run_id}' ({len(phase_dirs)} phases found, {mode})")
     if dry_run:
         print("  (dry run — no files will be copied)")
     print()
@@ -147,14 +159,15 @@ def sync_run(run_id, dry_run=False):
         dest_name = f"{run_id}_{phase_name}"
         dest_dir = os.path.join(RUNS_ROOT, dest_name)
 
-        info = sync_phase(phase_dir, dest_dir, dry_run=dry_run)
+        info = sync_phase(phase_dir, dest_dir, dry_run=dry_run,
+                          include_checkpoints=include_checkpoints)
         results.append(info)
 
         # Extract short phase label
         phase_num = phase_name.replace("bootstrap_phase_", "")
         tb_mark = "yes" if info["tb_synced"] else "no"
-        best_mark = "yes" if info["has_best"] else "no"
-        ckpt_name = info["latest_ckpt"] or "-"
+        best_mark = "yes" if info["has_best"] else "no" if include_checkpoints else "skip"
+        ckpt_name = info["latest_ckpt"] or ("-" if include_checkpoints else "skipped")
 
         print(f"  {phase_num:>7}  {info['status']:>8}  {tb_mark:>4}  "
               f"{best_mark:>5}  {ckpt_name:<25}")
@@ -176,6 +189,11 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Print what would be synced without copying files")
+    parser.add_argument(
+        "--include-checkpoints", action="store_true",
+        help="Also copy best.pt and the latest history checkpoint. "
+             "Default is TB only — checkpoints are ~93 MB each and "
+             "usually aren't needed for monitoring a training run.")
     cli = parser.parse_args()
 
     if not cli.run_id and not cli.all:
@@ -207,10 +225,12 @@ def main():
             if os.path.isdir(os.path.join(BOOTSTRAP_ROOT, d))
         ])
         for run_id in run_ids:
-            sync_run(run_id, dry_run=cli.dry_run)
+            sync_run(run_id, dry_run=cli.dry_run,
+                     include_checkpoints=cli.include_checkpoints)
             print()
     else:
-        sync_run(cli.run_id, dry_run=cli.dry_run)
+        sync_run(cli.run_id, dry_run=cli.dry_run,
+                 include_checkpoints=cli.include_checkpoints)
 
 
 if __name__ == "__main__":
