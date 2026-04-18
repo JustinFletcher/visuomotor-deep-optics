@@ -53,20 +53,26 @@ from train.ppo.train_ppo_elf_bootstrap import ELF_BOOTSTRAP_ENV_KWARGS
 #   - bootstrap_phased_count=0 keeps the reset state as "everything
 #     off-axis" so the composite starts from the same condition phase 0
 #     was trained on.
-#   - bootstrap_reference_phased_count=15 forces the reference image /
-#     reference flux to be computed with all 15 segments aligned, so
-#     Strehl actually reads 0..1 against the ultimate goal state rather
-#     than against phase 0's intermediate "1 aligned + 14 off-axis"
-#     reference (which would let Strehl exceed 1 as more segments
-#     co-phase during the rollout).
+#   - bootstrap_reference_phased_count is left UNSET so the env
+#     defaults to (phased_count + 1) — the same reference each phase
+#     was trained against. This matters for two reasons:
+#       1. obs is normalised by _reference_fpi_max, so a different
+#          reference produces obs values orders of magnitude off-
+#          distribution from what the CNN encoder was trained on.
+#          (Old override ref=15 made phase-0 rollout obs ~225x dimmer
+#          than training, so the policy never recognised convergence.)
+#       2. The bootstrap_rescale_reward formula cancels out the
+#          reference choice for the rescaled cs_val, so prior_reward
+#          remains in the correct training distribution.
+#     Trade-off: Strehl readout becomes per-phase relative (always
+#     [0, 1] against that phase's reference), not a global Strehl.
+#   - bootstrap_mask_nontarget=False because CompositeAgent applies
+#     a per-phase DOF mask externally — a single env-side mask tied
+#     to a fixed phased_count would clobber the dynamic per-phase
+#     masking when phases switch.
 ROLLOUT_ENV_KWARGS = {
     **ELF_BOOTSTRAP_ENV_KWARGS,
     "bootstrap_phased_count": 0,
-    "bootstrap_reference_phased_count": 15,
-    # During composite rollout the CompositeAgent applies a per-phase
-    # DOF mask built from each checkpoint's training config, so the env
-    # itself must NOT mask. A single env-side mask (tied to a single
-    # phased_count) would clobber the dynamic per-phase masks.
     "bootstrap_mask_nontarget": False,
 }
 
