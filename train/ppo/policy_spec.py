@@ -50,6 +50,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+import torch
 import yaml
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -84,12 +86,51 @@ def _resolve_path(path: str, spec_dir: str) -> str:
     return path  # return as-is; load_agent will give a clear error
 
 
-def _load_single_model(checkpoint_path: str, env, device: str) -> SingleModelAgent:
-    """Load a single checkpoint into a SingleModelAgent."""
+def _load_single_model(checkpoint_path: str, env, device: str):
+    """Load a single checkpoint into a SingleModelAgent.
+
+    Returns (SingleModelAgent, obs_ref_max, config). The config dict is
+    the one stored in the checkpoint — callers can inspect it to build
+    per-phase action masks for bootstrap composite rollouts.
+    """
     from train.ppo.rollout import load_agent
     agent, config, obs_ref_max = load_agent(checkpoint_path, env, device)
     wrapper = PPOActorWrapper(agent)
-    return SingleModelAgent(wrapper, device), obs_ref_max
+    return SingleModelAgent(wrapper, device), obs_ref_max, config
+
+
+def _build_bootstrap_action_mask(config: dict, action_dim: int,
+                                 num_apertures_hint: int = 15):
+    """Return a torch float mask [action_dim] if this checkpoint's env
+    config has bootstrap_mask_nontarget (or equivalent bootstrap-phase
+    markers) set; otherwise None.
+
+    Action layout is per-segment grouped: [p0, t0, tl0, p1, t1, tl1, ...].
+    """
+    env_kwargs = (config or {}).get("env_kwargs", {}) or {}
+    if not env_kwargs.get("bootstrap_phase", False):
+        return None
+    if not env_kwargs.get("bootstrap_mask_nontarget", False):
+        return None
+
+    target = int(env_kwargs.get("bootstrap_phased_count", 0))
+    command_tip_tilt = bool(env_kwargs.get("command_tip_tilt", False))
+    dof_per_seg = 3 if command_tip_tilt else 1
+    if dof_per_seg <= 0 or action_dim <= 0:
+        return None
+
+    n_seg = action_dim // dof_per_seg
+    if n_seg * dof_per_seg != action_dim:
+        # Action dim doesn't evenly tile segments — skip masking to be safe.
+        return None
+
+    mask = np.zeros(action_dim, dtype=np.float32)
+    if 0 <= target < n_seg:
+        mask[target * dof_per_seg] = 1.0
+        if command_tip_tilt:
+            mask[target * dof_per_seg + 1] = 1.0
+            mask[target * dof_per_seg + 2] = 1.0
+    return torch.from_numpy(mask)
 
 
 def _parse_trigger(until_spec: Optional[dict], max_episode_steps: int):
@@ -155,7 +196,8 @@ def load_policy_spec(
 
     if policy_type == "single":
         ckpt = _resolve_path(spec["checkpoint"], spec_dir)
-        return _load_single_model(ckpt, env, device)
+        model, obs_ref_max, _cfg = _load_single_model(ckpt, env, device)
+        return model, obs_ref_max
 
     elif policy_type == "composite":
         phase_specs = spec["phases"]
@@ -166,13 +208,22 @@ def load_policy_spec(
         obs_ref_max = None
         for idx, ps in enumerate(phase_specs):
             ckpt = _resolve_path(ps["checkpoint"], spec_dir)
-            model, orm = _load_single_model(ckpt, env, device)
+            model, orm, ckpt_cfg = _load_single_model(ckpt, env, device)
             if obs_ref_max is None:
                 obs_ref_max = orm
 
             trigger = _parse_trigger(ps.get("until"), max_steps)
             name = ps.get("name", os.path.basename(ckpt))
-            phases.append(Phase(model, trigger, name=name))
+
+            # Build a hard DOF mask from this checkpoint's training env
+            # config so the composite rollout enforces the same
+            # structural constraint that training did (only the target
+            # segment's 3 DOFs can actuate for this phase).
+            action_mask = _build_bootstrap_action_mask(
+                ckpt_cfg, model.action_dim)
+
+            phases.append(Phase(model, trigger, name=name,
+                                action_mask=action_mask))
 
         agent = CompositeAgent(phases, device=device)
         return agent, obs_ref_max

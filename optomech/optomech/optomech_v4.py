@@ -240,7 +240,13 @@ DEFAULT_CONFIG = {
     # Per-DOF action penalty multiplier for non-target segments during
     # bootstrap.  Applied to all segments except the target (phased_count).
     # Set to 0.0 to disable (only the base action_penalty_weight applies).
+    # Ignored when bootstrap_mask_nontarget is True.
     "bootstrap_nontarget_penalty_multiplier": 10.0,
+    # Hard mask: when True, zero every action DOF except the target
+    # segment's PTT before the action enters the optical system. This
+    # is the strict equivalent of SMAES's free_segments=[target]
+    # constraint and supersedes the soft penalty above when enabled.
+    "bootstrap_mask_nontarget": False,
     # Override the number of segments treated as "aligned" when the
     # reference image / reference flux is computed at env init. Defaults
     # to None, which means "use bootstrap_phased_count + 1" (the training
@@ -1843,6 +1849,16 @@ class OptomechEnv(gym.Env):
         # vector, or None when uniform penalty applies (non-bootstrap).
         self._action_penalty_weights = None  # built in _build_bootstrap_penalty
 
+        # --- Bootstrap hard DOF mask --------------------------------------
+        # When bootstrap_mask_nontarget is True, every action DOF except
+        # the target segment's is zeroed before the action reaches the
+        # optical system. This is the strict equivalent of SMAES's hard
+        # free_segments=[target] constraint. Built lazily on first step
+        # since we need the action_space to be known first.
+        self._bootstrap_mask_nontarget = bool(
+            cfg.get('bootstrap_mask_nontarget', False))
+        self._bootstrap_action_mask = None  # set on first step when shape known
+
         self.reward_function = cfg['reward_function']
 
         # --- Composite reward weights --------------------------------
@@ -2571,6 +2587,27 @@ class OptomechEnv(gym.Env):
         _min_abs = self._minimum_absolute_action
         if _min_abs > 0.0:
             action[np.abs(action) < _min_abs] = 0.0
+
+        # Bootstrap hard DOF mask: zero every non-target action DOF.
+        # Applied before _raw_action is stashed so downstream penalty
+        # and shape consumers see only the masked action.
+        if self._bootstrap_mask_nontarget:
+            if self._bootstrap_action_mask is None:
+                # Build on first use (action_space layout is per-segment
+                # grouped: [p0,t0,tl0, p1,t1,tl1, ...]).
+                _os = self.optical_system
+                n_seg = _os.num_apertures
+                dof_per_seg = 3 if self.command_tip_tilt else 1
+                n_dof = n_seg * dof_per_seg
+                mask = np.zeros(n_dof, dtype=np.float32)
+                target = int(self.cfg.get('bootstrap_phased_count', 0))
+                if target < n_seg:
+                    mask[target * dof_per_seg] = 1.0
+                    if self.command_tip_tilt:
+                        mask[target * dof_per_seg + 1] = 1.0
+                        mask[target * dof_per_seg + 2] = 1.0
+                self._bootstrap_action_mask = mask
+            action = action * self._bootstrap_action_mask
 
         # Stash the raw (pre-scale) action for the L1 penalty later.
         self._raw_action = action

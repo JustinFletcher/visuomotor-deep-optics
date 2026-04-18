@@ -63,6 +63,11 @@ ROLLOUT_ENV_KWARGS = {
     **ELF_BOOTSTRAP_ENV_KWARGS,
     "bootstrap_phased_count": 0,
     "bootstrap_reference_phased_count": 15,
+    # During composite rollout the CompositeAgent applies a per-phase
+    # DOF mask built from each checkpoint's training config, so the env
+    # itself must NOT mask. A single env-side mask (tied to a single
+    # phased_count) would clobber the dynamic per-phase masks.
+    "bootstrap_mask_nontarget": False,
 }
 
 DEFAULT_SPEC = "train/ppo/specs/bootstrap_composed.yaml"

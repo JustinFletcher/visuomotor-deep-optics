@@ -253,12 +253,36 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Bootstrap config
         self._bootstrap = env_kwargs.get("bootstrap_phase", False)
         self._phased_count = env_kwargs.get("bootstrap_phased_count", 0)
+        # Hard DOF mask: when True, zero out every action DOF except
+        # the target segment's. Applied before _batched_command and
+        # before _prior_actions is stored, so the agent's outputs on
+        # non-target DOFs are structurally inert. This is the strict
+        # equivalent of SMAES's hard free_segments=[target] constraint
+        # and replaces the soft action-penalty approach.
+        self._bootstrap_mask_nontarget = bool(
+            env_kwargs.get("bootstrap_mask_nontarget", False))
+        self._bootstrap_action_mask_t = None
+        if self._bootstrap and self._bootstrap_mask_nontarget:
+            n_seg = self._num_apertures
+            dof_per_seg = self._n_dof_per_seg
+            n_dof = n_seg * dof_per_seg
+            mask = np.zeros(n_dof, dtype=np.float32)
+            target = self._phased_count
+            if target < n_seg:
+                mask[target * dof_per_seg] = 1.0           # piston
+                if self._command_tip_tilt:
+                    mask[target * dof_per_seg + 1] = 1.0   # tip
+                    mask[target * dof_per_seg + 2] = 1.0   # tilt
+            self._bootstrap_action_mask_t = torch.tensor(
+                mask, dtype=torch.float32, device=self.dev).unsqueeze(0)  # [1, n_dof]
 
         # Per-DOF action penalty weights (bootstrap mode)
         # Action layout is per-segment grouped: [p0,t0,tl0, p1,t1,tl1, ...]
         # _prior_actions uses this layout, so the weight tensor must match.
+        # Skipped when bootstrap_mask_nontarget is on (the mask already
+        # makes non-target DOFs inert; no per-DOF penalty needed).
         self._action_penalty_weights_t = None
-        if self._bootstrap:
+        if self._bootstrap and not self._bootstrap_mask_nontarget:
             n_seg = self._num_apertures
             dof_per_seg = self._n_dof_per_seg
             n_dof = n_seg * dof_per_seg
@@ -1067,6 +1091,12 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             actions_t = torch.where(
                 actions_t.abs() < self._minimum_absolute_action,
                 torch.zeros_like(actions_t), actions_t)
+
+        # Bootstrap hard DOF mask: zero out every non-target action DOF.
+        # Applied here so _prior_actions, _batched_command, and every
+        # downstream consumer see only the masked action.
+        if self._bootstrap_action_mask_t is not None:
+            actions_t = actions_t * self._bootstrap_action_mask_t
 
         # Store raw action for penalty computation
         raw_actions_t = actions_t.clone()

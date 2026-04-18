@@ -188,12 +188,25 @@ class NeverTrigger(Trigger):
 # ---------------------------------------------------------------------------
 
 class Phase:
-    """One phase of a composite policy."""
+    """One phase of a composite policy.
 
-    def __init__(self, agent: SingleModelAgent, trigger: Trigger, name: str = ""):
+    Attributes
+    ----------
+    action_mask : torch.Tensor or None
+        Optional per-DOF mask (shape [action_dim]) multiplied into the
+        agent's action before it's returned to the caller. Used by the
+        bootstrap composite rollout to mirror the hard DOF mask the
+        training env applies: only the target segment's 3 DOFs are
+        non-zero, everything else is forced to zero. None means no
+        masking.
+    """
+
+    def __init__(self, agent: SingleModelAgent, trigger: Trigger, name: str = "",
+                 action_mask: Optional[torch.Tensor] = None):
         self.agent = agent
         self.trigger = trigger
         self.name = name
+        self.action_mask = action_mask
 
 
 class CompositeAgent(BaseAgent):
@@ -230,6 +243,8 @@ class CompositeAgent(BaseAgent):
         phase = self._phases[self._active]
         h = hidden.phase_hiddens[self._active]
         action, new_h = phase.agent(obs, prior_action, prior_reward, h)
+        if phase.action_mask is not None:
+            action = action * phase.action_mask.to(action.device)
         hidden.phase_hiddens[self._active] = new_h
         return action, hidden
 
