@@ -100,17 +100,26 @@ def _count_phases_and_steps(spec_path: str, override_steps: int | None):
 
 def _maybe_rewrite_spec(spec_path: str,
                         steps_per_phase: int | None,
+                        start_at_phase: int | None,
                         run_through_phase: int | None) -> str:
     """Rewrite the composite spec with optional overrides.
 
     - ``steps_per_phase`` (int): force every phase's ``step`` trigger
       to this value.
+    - ``start_at_phase`` (int): drop phases 0..start_at_phase-1 so
+      the composite begins at phase ``start_at_phase``.
     - ``run_through_phase`` (int): truncate the spec to phases
       0..run_through_phase inclusive (drop later phases entirely).
 
+    The slicing rules are evaluated against the ORIGINAL spec phase
+    indices (so --start-at-phase 3 --run-through-phase 7 keeps phases
+    3, 4, 5, 6, 7 in their original named order).
+
     Returns the path to use (original if no rewrite needed).
     """
-    if steps_per_phase is None and run_through_phase is None:
+    if (steps_per_phase is None
+            and start_at_phase is None
+            and run_through_phase is None):
         return spec_path
 
     with open(spec_path, "r") as f:
@@ -118,15 +127,25 @@ def _maybe_rewrite_spec(spec_path: str,
     if spec.get("type") != "composite":
         return spec_path
 
+    N = len(spec["phases"])
+    lo = 0 if start_at_phase is None else start_at_phase
+    hi = (N - 1) if run_through_phase is None else run_through_phase
+    if not 0 <= lo < N:
+        raise ValueError(
+            f"--start-at-phase {lo} out of range [0, {N-1}] for spec "
+            f"with {N} phases")
+    if not 0 <= hi < N:
+        raise ValueError(
+            f"--run-through-phase {hi} out of range [0, {N-1}] for spec "
+            f"with {N} phases")
+    if lo > hi:
+        raise ValueError(
+            f"--start-at-phase ({lo}) must be <= --run-through-phase ({hi})")
+
     suffix = ""
-    if run_through_phase is not None:
-        N = len(spec["phases"])
-        if not 0 <= run_through_phase < N:
-            raise ValueError(
-                f"--run-through-phase {run_through_phase} out of range "
-                f"[0, {N-1}] for spec with {N} phases")
-        spec["phases"] = spec["phases"][: run_through_phase + 1]
-        suffix += f"_p{run_through_phase}"
+    if start_at_phase is not None or run_through_phase is not None:
+        spec["phases"] = spec["phases"][lo : hi + 1]
+        suffix += f"_p{lo}-{hi}"
 
     if steps_per_phase is not None:
         for ph in spec["phases"]:
@@ -158,6 +177,14 @@ def main():
         help="Override per-phase step trigger in the spec. When omitted, "
              "use whatever the spec says.")
     parser.add_argument(
+        "--start-at-phase", type=int, default=None,
+        help="Begin the rollout at this phase index (0-based) instead "
+             "of phase 0. The env starts in phase N's training-time "
+             "start state: segs 0..N-1 already aligned, seg N perturbed, "
+             "segs N+1..14 off-axis. Phases 0..N-1 are dropped from the "
+             "composite. Combine with --run-through-phase to inspect a "
+             "specific slice.")
+    parser.add_argument(
         "--run-through-phase", type=int, default=None,
         help="Stop the rollout at the end of this phase index (0-based, "
              "inclusive). E.g. --run-through-phase 7 runs phases 0..7 "
@@ -182,30 +209,47 @@ def main():
         parser.error(f"Policy spec not found: {args.policy_spec}")
 
     # Figure out how long an episode needs to be (size against the
-    # ORIGINAL spec; we'll apply --run-through-phase truncation below).
+    # ORIGINAL spec; slicing flags are applied below).
     num_phases, per_phase, _ = _count_phases_and_steps(
         args.policy_spec, args.steps_per_phase)
-    effective_phases = (args.run_through_phase + 1
-                        if args.run_through_phase is not None
-                        else num_phases)
+    lo = 0 if args.start_at_phase is None else args.start_at_phase
+    hi = (num_phases - 1 if args.run_through_phase is None
+          else args.run_through_phase)
+    effective_phases = hi - lo + 1
+    if effective_phases <= 0:
+        parser.error(
+            f"--start-at-phase ({lo}) must be <= --run-through-phase ({hi})")
     max_steps = per_phase * effective_phases
+
+    # Env starts in phase ``lo``'s training-time condition. With
+    # bootstrap_phased_count = lo: segs 0..lo-1 already aligned, seg lo
+    # perturbed, segs lo+1..14 off-axis. Reference image stays at all-
+    # 15-aligned so Strehl still reads against the ultimate goal.
+    env_kwargs = dict(ROLLOUT_ENV_KWARGS)
+    env_kwargs["bootstrap_phased_count"] = lo
 
     print(f"Spec:              {args.policy_spec}")
     print(f"Phases (spec):     {num_phases}")
-    print(f"Phases (this run): {effective_phases}")
+    print(f"Phases (this run): {effective_phases}  [{lo}..{hi}]")
     print(f"Steps per phase:   {per_phase}")
     print(f"Max episode steps: {max_steps}")
+    print(f"Env start state:   bootstrap_phased_count = {lo}  "
+          f"(segs 0..{lo-1} aligned, seg {lo} target, "
+          f"segs {lo+1}..14 off-axis)" if lo > 0 else
+          f"Env start state:   bootstrap_phased_count = 0  "
+          f"(seg 0 target, segs 1..14 off-axis)")
     print(f"Env version:       {args.env_version}")
-    print(f"Aperture:          {ROLLOUT_ENV_KWARGS['aperture_type']}")
-    print(f"Focal plane:       {ROLLOUT_ENV_KWARGS['focal_plane_image_size_pixels']}px")
+    print(f"Aperture:          {env_kwargs['aperture_type']}")
+    print(f"Focal plane:       {env_kwargs['focal_plane_image_size_pixels']}px")
     print()
 
-    # Rewrite the spec when either steps-per-phase or run-through-phase
-    # is overridden. CompositeAgent's triggers and phase list must
-    # match the evaluation horizon.
+    # Rewrite the spec when slicing or step-trigger overrides apply.
+    # CompositeAgent's phase list and triggers must match the
+    # evaluation horizon.
     effective_spec = _maybe_rewrite_spec(
         args.policy_spec,
         steps_per_phase=args.steps_per_phase,
+        start_at_phase=args.start_at_phase,
         run_through_phase=args.run_through_phase,
     )
 
@@ -218,7 +262,7 @@ def main():
 
     episodes, metrics = run_rollouts(
         policy_spec_path=effective_spec,
-        env_kwargs=ROLLOUT_ENV_KWARGS,
+        env_kwargs=env_kwargs,
         env_version=args.env_version,
         num_episodes=args.num_episodes,
         max_episode_steps=max_steps,

@@ -201,8 +201,8 @@ def load_policy_spec(
 
     elif policy_type == "composite":
         phase_specs = spec["phases"]
-        if len(phase_specs) < 2:
-            raise ValueError("Composite policy requires at least 2 phases")
+        if len(phase_specs) < 1:
+            raise ValueError("Composite policy requires at least 1 phase")
 
         phases = []
         obs_ref_max = None
