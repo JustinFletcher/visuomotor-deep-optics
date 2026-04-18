@@ -221,6 +221,37 @@ def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False,
     return False
 
 
+def _purge_stale_partials(local_base: Path) -> int:
+    """Remove any `.rsync-partial*` directories under ``local_base``.
+
+    These get left behind when an earlier rsync was killed mid-transfer.
+    On the next run, rsync tries to resume against those partial files
+    by exchanging block checksums with the remote, and that handshake
+    can silently hang indefinitely (observed on this HPC). Wiping them
+    costs us one retransmission of whatever file was mid-flight; the
+    alternative is a deadlock. Returns the count removed.
+    """
+    import shutil as _shutil
+    if not local_base.exists():
+        return 0
+    removed = 0
+    # The partial-dir flag used below is ``--partial-dir=.rsync-partial``,
+    # which creates that directory as a sibling inside each destination
+    # subtree. Walk the base and nuke any match.
+    for path in local_base.rglob(".rsync-partial*"):
+        try:
+            if path.is_dir():
+                _shutil.rmtree(path)
+            else:
+                path.unlink()
+            removed += 1
+        except OSError as exc:
+            print(f"  Warning: could not remove stale {path}: {exc}")
+    if removed:
+        print(f"  Cleaned {removed} stale .rsync-partial entr{'y' if removed == 1 else 'ies'} under {local_base}")
+    return removed
+
+
 def sync_once(run_name: str | None = None, dry_run: bool = False,
               remote_name: str = DEFAULT_REMOTE,
               bootstrap: bool = False,
@@ -260,6 +291,11 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
     else:
         remote = remote_base
         local = local_base
+
+    # Clean up any leftover partial-transfer state before rsync runs —
+    # stale .rsync-partial/ dirs from killed prior syncs will hang the
+    # block-checksum handshake against the remote.
+    _purge_stale_partials(local)
 
     return run_rsync(remote, local, dry_run=dry_run, remote_host=remote_host,
                      best_only=best_only)
