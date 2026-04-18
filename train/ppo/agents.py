@@ -224,14 +224,23 @@ class Phase:
         training env applies: only the target segment's 3 DOFs are
         non-zero, everything else is forced to zero. None means no
         masking.
+    bootstrap_phased_count : int or None
+        The phase index this checkpoint was trained at (from its
+        training-time env_kwargs). The composite rollout uses this on
+        phase transitions to call env.reconfigure_for_bootstrap_phase
+        so the incoming phase sees the env in the configuration it was
+        trained on (start state + reward rescale baselines). None when
+        the underlying checkpoint isn't a bootstrap-trained model.
     """
 
     def __init__(self, agent: SingleModelAgent, trigger: Trigger, name: str = "",
-                 action_mask: Optional[torch.Tensor] = None):
+                 action_mask: Optional[torch.Tensor] = None,
+                 bootstrap_phased_count: Optional[int] = None):
         self.agent = agent
         self.trigger = trigger
         self.name = name
         self.action_mask = action_mask
+        self.bootstrap_phased_count = bootstrap_phased_count
 
 
 class CompositeAgent(BaseAgent):
@@ -312,6 +321,11 @@ class CompositeAgent(BaseAgent):
     @property
     def just_transitioned(self) -> bool:
         return self._just_transitioned
+
+    @property
+    def active_phase_index(self) -> int:
+        """Index of the currently active phase in the spec order."""
+        return self._active
 
     @property
     def action_dim(self) -> int:

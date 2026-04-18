@@ -198,6 +198,21 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
         if agent.just_transitioned:
             prior_action = torch.zeros_like(prior_action)
             prior_reward = torch.zeros_like(prior_reward)
+
+            # If the env supports it, reconfigure the env to the new
+            # phase's training-time phased_count. This shifts the
+            # rescale baselines and any DOF-mask state so the incoming
+            # phase sees the reward distribution it was trained on.
+            new_phase_idx = getattr(agent, "active_phase_index", None)
+            if new_phase_idx is not None:
+                phases = getattr(agent, "_phases", None)
+                if phases and 0 <= new_phase_idx < len(phases):
+                    bp_count = getattr(phases[new_phase_idx],
+                                       "bootstrap_phased_count", None)
+                    base_env = env.unwrapped if hasattr(env, "unwrapped") else env
+                    if (bp_count is not None and
+                            hasattr(base_env, "reconfigure_for_bootstrap_phase")):
+                        base_env.reconfigure_for_bootstrap_phase(bp_count)
         else:
             prior_action = action_t.clone()
             prior_reward = torch.tensor(

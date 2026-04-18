@@ -668,6 +668,8 @@ class OpticalSystem(object):
             else:
                 _ref_pc = int(_ref_override)
             _ref_pc = max(0, min(_ref_pc, self.num_apertures))
+            # Stash for the analytical rescale baselines below.
+            self._bootstrap_reference_phased_count = _ref_pc
             _v3("Bootstrap mode: %d co-phased at start, target=%d, "
                 "%d excluded at start; reference uses %d co-phased"
                 % (_phased_count, _phased_count,
@@ -1859,6 +1861,27 @@ class OptomechEnv(gym.Env):
             cfg.get('bootstrap_mask_nontarget', False))
         self._bootstrap_action_mask = None  # set on first step when shape known
 
+        # --- Bootstrap reward rescale ----------------------------------
+        # When True, the centered_strehl reward component is affinely
+        # mapped so -1 = prior-phase-solved state and 0 = this-phase-
+        # solved state. Mirrors the v5 implementation so v4 rollouts
+        # see the same reward distribution the policy was trained on.
+        # Baselines computed analytically as (N/ref)^2: empirically
+        # matches v5's per-init measurement to within ~1% (e.g. v5
+        # measured s_prior=0.864 at phase 14, analytical = 0.871).
+        # The rescale formula is invariant to the choice of reference
+        # (numerator and denominator scale together), so this gives the
+        # same prior_reward distribution the policy saw at training
+        # time regardless of whether the rollout env's reference is
+        # the per-phase goal or the all-aligned goal.
+        self._bootstrap_rescale_reward = bool(
+            cfg.get('bootstrap_rescale_reward', False))
+        self._rescale_start = 0.0
+        self._rescale_end = 1.0
+        # Note: actual baseline computation happens after the optical
+        # system is built (in __init__ tail) since we read the
+        # reference phased_count off self.optical_system.
+
         self.reward_function = cfg['reward_function']
 
         # --- Composite reward weights --------------------------------
@@ -1989,6 +2012,14 @@ class OptomechEnv(gym.Env):
 
         # --- Build optical system ------------------------------------
         self._build_optical_system()
+
+        # --- Bootstrap reward rescale baselines ----------------------
+        # Read off the optical_system's reference phased_count, so this
+        # has to come after _build_optical_system().
+        if (self._bootstrap_rescale_reward
+                and cfg.get('bootstrap_phase', False)):
+            self._compute_rescale_baselines(
+                cfg.get('bootstrap_phased_count', 0))
 
         # --- Episode clock -------------------------------------------
         self.episode_time_ms = 0.0
@@ -2279,6 +2310,51 @@ class OptomechEnv(gym.Env):
             act_space = spaces.Box(low=lo, high=hi, shape=(1,), dtype=np.float32)
             return spaces.Tuple(
                 tuple([act_space] * len(self.optical_system.dm.actuators)))
+
+    def _compute_rescale_baselines(self, phased_count):
+        """Compute analytical s_prior / s_goal for the centered_strehl
+        rescale, given a phase index.
+
+        For N coherent identical segments aligned on-frame:
+            sum ~ N * (per-segment flux)
+            peak ~ N^2 * (per-segment peak)
+            peak/sum ~ N
+        So strehl (= peak/sum / perfect_peak/sum * flux_frac) at
+        ``n`` aligned segments measured against a reference of
+        ``ref`` aligned segments is approximately:
+            (n / ref) ^ 2
+
+        s_prior at this phase = N segments aligned (= prior phase's goal).
+        s_goal  at this phase = N+1 segments aligned (= this phase's goal).
+
+        Reference count is read off the optical_system attribute set
+        during its __init__ from bootstrap_reference_phased_count.
+        """
+        ref = max(int(getattr(self.optical_system,
+                              "_bootstrap_reference_phased_count",
+                              1)), 1)
+        n_seg = self.optical_system.num_apertures
+        n_prior = max(0, min(int(phased_count), n_seg))
+        n_goal = max(0, min(int(phased_count) + 1, n_seg))
+        self._rescale_start = (n_prior / float(ref)) ** 2
+        self._rescale_end = (n_goal / float(ref)) ** 2
+
+    def reconfigure_for_bootstrap_phase(self, phased_count):
+        """Public API for the composite-rollout driver: shift the env's
+        active phase index (and the rescale baselines that depend on
+        it) without rebuilding the optical system.
+
+        Used between phase transitions in a composite rollout so the
+        incoming phase sees the reward distribution it was trained on.
+        Does NOT rebuild the reference image — that is set once at
+        init from bootstrap_reference_phased_count.
+        """
+        self.cfg['bootstrap_phased_count'] = int(phased_count)
+        # Reset the cached action mask so it gets rebuilt for the new
+        # target on the next step (target index changed).
+        self._bootstrap_action_mask = None
+        if self._bootstrap_rescale_reward:
+            self._compute_rescale_baselines(phased_count)
 
     def _build_bootstrap_penalty(self):
         """Build per-DOF action penalty weights for bootstrap training.
@@ -3096,6 +3172,10 @@ class OptomechEnv(gym.Env):
         # S × centering is only high when both Strehl and centering are good.
         # centering = 1 - dist/max_dist ∈ [0, 1] (1 = centered, 0 = corner).
         # Result is in [-1, 0], zero only when perfectly aligned and centered.
+        # Under bootstrap_rescale_reward, the component is affinely
+        # rescaled so -1 = prior-phase-solved state and 0 = this-phase-
+        # solved state. Mirrors the v5 implementation so v4 rollouts
+        # see the same reward distribution the policy was trained on.
         if self._reward_weight_centered_strehl > 0:
             cs_vals = []
             for fpi in self.focal_plane_images:
@@ -3107,7 +3187,12 @@ class OptomechEnv(gym.Env):
                 py, px = np.unravel_index(peak_idx, fpi.shape[-2:])
                 dist = ((py - cy) ** 2 + (px - cx) ** 2) ** 0.5
                 centering = 1.0 - dist / max_dist
-                cs_vals.append(-(1.0 - s * centering))
+                s_c = s * centering
+                if self._bootstrap_rescale_reward:
+                    denom = max(self._rescale_end - self._rescale_start, 1e-3)
+                    cs_vals.append(max((s_c - self._rescale_end) / denom, -5.0))
+                else:
+                    cs_vals.append(-(1.0 - s_c))
             total += self._reward_weight_centered_strehl * float(np.mean(cs_vals))
 
         # --- Peak pixel: -(1 - max(I)/max(I_ref)), zero when merged ---

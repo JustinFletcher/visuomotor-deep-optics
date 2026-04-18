@@ -222,8 +222,17 @@ def load_policy_spec(
             action_mask = _build_bootstrap_action_mask(
                 ckpt_cfg, model.action_dim)
 
+            # Pull the original training-time phased_count off the
+            # checkpoint so the rollout driver can reconfigure the env
+            # at each phase transition.
+            ck_env = (ckpt_cfg or {}).get("env_kwargs", {}) or {}
+            bp_count = (int(ck_env["bootstrap_phased_count"])
+                        if "bootstrap_phased_count" in ck_env
+                        else None)
+
             phases.append(Phase(model, trigger, name=name,
-                                action_mask=action_mask))
+                                action_mask=action_mask,
+                                bootstrap_phased_count=bp_count))
 
         agent = CompositeAgent(phases, device=device)
         return agent, obs_ref_max
