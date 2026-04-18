@@ -101,7 +101,8 @@ def _count_phases_and_steps(spec_path: str, override_steps: int | None):
 def _maybe_rewrite_spec(spec_path: str,
                         steps_per_phase: int | None,
                         start_at_phase: int | None,
-                        run_through_phase: int | None) -> str:
+                        run_through_phase: int | None,
+                        phase_checkpoints: dict[int, str] | None = None) -> str:
     """Rewrite the composite spec with optional overrides.
 
     - ``steps_per_phase`` (int): force every phase's ``step`` trigger
@@ -110,6 +111,10 @@ def _maybe_rewrite_spec(spec_path: str,
       the composite begins at phase ``start_at_phase``.
     - ``run_through_phase`` (int): truncate the spec to phases
       0..run_through_phase inclusive (drop later phases entirely).
+    - ``phase_checkpoints`` (dict[int, str]): per-phase checkpoint
+      path overrides, keyed by ORIGINAL spec phase index (so phase 0
+      in the original spec is key 0, even if --start-at-phase slices
+      it away).
 
     The slicing rules are evaluated against the ORIGINAL spec phase
     indices (so --start-at-phase 3 --run-through-phase 7 keeps phases
@@ -119,7 +124,8 @@ def _maybe_rewrite_spec(spec_path: str,
     """
     if (steps_per_phase is None
             and start_at_phase is None
-            and run_through_phase is None):
+            and run_through_phase is None
+            and not phase_checkpoints):
         return spec_path
 
     with open(spec_path, "r") as f:
@@ -143,6 +149,19 @@ def _maybe_rewrite_spec(spec_path: str,
             f"--start-at-phase ({lo}) must be <= --run-through-phase ({hi})")
 
     suffix = ""
+
+    # Apply per-phase checkpoint overrides FIRST (against original
+    # indices), then slice.
+    if phase_checkpoints:
+        bad = [k for k in phase_checkpoints if not 0 <= k < N]
+        if bad:
+            raise ValueError(
+                f"Phase override index {bad} out of range [0, {N-1}] "
+                f"for spec with {N} phases")
+        for idx, ckpt_path in phase_checkpoints.items():
+            spec["phases"][idx]["checkpoint"] = ckpt_path
+        suffix += "_ck" + "-".join(str(k) for k in sorted(phase_checkpoints))
+
     if start_at_phase is not None or run_through_phase is not None:
         spec["phases"] = spec["phases"][lo : hi + 1]
         suffix += f"_p{lo}-{hi}"
@@ -200,7 +219,31 @@ def main():
         "--lowres-gifs", action="store_true",
         help="Render GIFs at lower resolution and tighter layout. ~5-10x "
              "smaller files and ~5-8x faster rendering. Keeps every frame.")
+    parser.add_argument(
+        "--phase-checkpoint", action="append", default=[], metavar="N=PATH",
+        help="Override the checkpoint for phase N (0-based, original "
+             "spec index). May be passed multiple times to override "
+             "several phases. Example: --phase-checkpoint "
+             "0=runs/my_phase0/best.pt --phase-checkpoint "
+             "3=bootstrap_runs/.../history_update_5000.pt")
     args = parser.parse_args()
+
+    # Parse --phase-checkpoint entries into {int: str}.
+    phase_checkpoints: dict[int, str] = {}
+    for entry in args.phase_checkpoint:
+        if "=" not in entry:
+            parser.error(
+                f"--phase-checkpoint expects N=PATH, got {entry!r}")
+        k, v = entry.split("=", 1)
+        try:
+            idx = int(k)
+        except ValueError:
+            parser.error(f"Phase index must be int, got {k!r}")
+        if not os.path.isabs(v):
+            v = os.path.join(_REPO_ROOT, v)
+        if not os.path.isfile(v):
+            parser.error(f"Phase {idx} checkpoint not found: {v}")
+        phase_checkpoints[idx] = v
 
     if not os.path.isabs(args.policy_spec):
         args.policy_spec = os.path.join(_REPO_ROOT, args.policy_spec)
@@ -251,6 +294,7 @@ def main():
         steps_per_phase=args.steps_per_phase,
         start_at_phase=args.start_at_phase,
         run_through_phase=args.run_through_phase,
+        phase_checkpoints=phase_checkpoints or None,
     )
 
     # Timestamped output directory.
