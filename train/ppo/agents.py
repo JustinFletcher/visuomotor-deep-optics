@@ -53,7 +53,16 @@ class CompositeHidden:
 # ---------------------------------------------------------------------------
 
 class BaseAgent(ABC):
-    """Interface every agent must satisfy."""
+    """Interface every agent must satisfy.
+
+    Note on action masking:
+        ``__call__`` returns the policy's *unmasked* action (after scale
+        and clamp). The caller is responsible for applying any env-
+        facing mask via ``apply_action_mask`` before stepping the env.
+        This mirrors training, where the policy's own ``prior_action``
+        input is the pre-mask scaled-and-clamped action; the env-side
+        mask is applied only to what the optical system actuates.
+    """
 
     @abstractmethod
     def get_zero_hidden(self) -> Any:
@@ -69,9 +78,25 @@ class BaseAgent(ABC):
     ) -> Tuple[torch.Tensor, Any]:
         ...
 
+    def apply_action_mask(self, action: torch.Tensor) -> torch.Tensor:
+        """Return the env-facing action (mask-applied). Default is a
+        no-op; CompositeAgent overrides with per-phase masking."""
+        return action
+
     def notify_step(self, step_info: dict) -> None:
         """Post env.step hook.  Default is a no-op."""
         pass
+
+    @property
+    def just_transitioned(self) -> bool:
+        """True on the step immediately after a phase transition fired.
+
+        Caller is expected to zero ``prior_action`` and ``prior_reward``
+        when this is True so the incoming phase starts from the same
+        (zero, zero) baseline it saw at training step 0. Cleared on the
+        next ``__call__``. Default False; only CompositeAgent sets it.
+        """
+        return False
 
     @property
     @abstractmethod
@@ -217,8 +242,17 @@ class CompositeAgent(BaseAgent):
       - On a switch, the new phase's hidden is freshly zeroed (the LSTM
         representations are not transferable across independently trained
         models).
-      - prior_action and prior_reward carry over naturally since they are
-        managed by the caller.
+      - prior_action and prior_reward are ALSO reset to zero on switch,
+        because each phase was trained from step 0 with zero prior
+        action and zero prior reward. The caller reads ``just_transitioned``
+        after ``notify_step`` and zeros its prior_* tensors accordingly.
+
+    Action masking:
+      - ``__call__`` returns the *unmasked* scale-and-clamped action
+        (matches training, where the policy's own prior_action input is
+        the pre-mask value).
+      - ``apply_action_mask`` multiplies by the current phase's per-DOF
+        mask and returns the env-facing action.
     """
 
     def __init__(self, phases: List[Phase], device: str = "cpu"):
@@ -228,6 +262,10 @@ class CompositeAgent(BaseAgent):
         self._device = device
         self._active = 0
         self._global_step = 0
+        # Latched True on the step a phase switch happens. Read by the
+        # caller immediately after notify_step and cleared on the next
+        # __call__ (which is the first __call__ of the new phase).
+        self._just_transitioned = False
 
     # -- public interface ---------------------------------------------------
 
@@ -235,18 +273,29 @@ class CompositeAgent(BaseAgent):
         hiddens = [p.agent.get_zero_hidden() for p in self._phases]
         self._active = 0
         self._global_step = 0
+        self._just_transitioned = False
         for p in self._phases:
             p.trigger.reset()
         return CompositeHidden(hiddens, active_phase=0)
 
     def __call__(self, obs, prior_action, prior_reward, hidden: CompositeHidden):
+        # First call following a transition — clear the flag so the
+        # caller's reset (if any) only fires once per transition.
+        self._just_transitioned = False
         phase = self._phases[self._active]
         h = hidden.phase_hiddens[self._active]
         action, new_h = phase.agent(obs, prior_action, prior_reward, h)
-        if phase.action_mask is not None:
-            action = action * phase.action_mask.to(action.device)
         hidden.phase_hiddens[self._active] = new_h
+        # NOTE: the mask is NOT applied here. Caller must call
+        # apply_action_mask(action) before stepping the env.
         return action, hidden
+
+    def apply_action_mask(self, action: torch.Tensor) -> torch.Tensor:
+        """Multiply action by the current phase's DOF mask (if any)."""
+        phase = self._phases[self._active]
+        if phase.action_mask is None:
+            return action
+        return action * phase.action_mask.to(action.device)
 
     def notify_step(self, step_info: dict) -> None:
         self._global_step += 1
@@ -256,8 +305,13 @@ class CompositeAgent(BaseAgent):
                 old_name = phase.name or f"phase-{self._active}"
                 self._active += 1
                 new_name = self._phases[self._active].name or f"phase-{self._active}"
+                self._just_transitioned = True
                 print(f"  [composite] step {self._global_step}: "
                       f"{old_name} -> {new_name}")
+
+    @property
+    def just_transitioned(self) -> bool:
+        return self._just_transitioned
 
     @property
     def action_dim(self) -> int:

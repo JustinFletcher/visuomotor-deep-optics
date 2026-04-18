@@ -162,26 +162,46 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
     step = 0
     while not done:
         obs_t = torch.from_numpy(obs_np).float().to(device)
+        # Pre-mask action: what the policy emits (after scale+clamp).
+        # This is what the policy expects to see as prior_action next
+        # step, matching training.
         action_t, hidden = agent(obs_t, prior_action, prior_reward, hidden)
-        action = action_t.cpu().numpy()[0]
+        # Env-facing action: mask applied. For SingleModelAgent this
+        # is a no-op; for CompositeAgent it multiplies by the current
+        # phase's per-DOF mask so only the target segment's DOFs move.
+        env_action_t = agent.apply_action_mask(action_t)
+        env_action = env_action_t.cpu().numpy()[0]
 
-        next_obs_raw, reward, terminated, truncated, info = env.step(action)
+        next_obs_raw, reward, terminated, truncated, info = env.step(env_action)
         done = terminated or truncated
         step += 1
 
         ep_rewards.append(float(reward))
-        ep_actions.append(action.copy())
+        ep_actions.append(env_action.copy())
         ep_obs_raw.append(next_obs_raw.copy())
         ep_strehls.append(float(info.get("strehl", 0.0)))
         ep_mses.append(float(info.get("mse", 0.0)))
         ep_oob_fracs.append(float(info.get("oob_frac", 0.0)))
 
-        # Notify the agent (triggers phase transitions in composite agents)
+        # Notify the agent (triggers phase transitions in composite agents).
         agent.notify_step(info)
 
         obs_np = normalize_obs_fixed(next_obs_raw[np.newaxis], obs_ref_max)
-        prior_action = action_t.clone()
-        prior_reward = torch.tensor([reward], dtype=torch.float32, device=device)
+
+        # If notify_step triggered a phase switch, reset prior_action
+        # and prior_reward to zero. The incoming phase was trained
+        # from step 0 with both at zero, and its LSTM hidden is already
+        # zero (initialised at get_zero_hidden). Without this reset the
+        # new phase's first call sees the outgoing phase's last action
+        # and reward — off-distribution and a major source of the
+        # train/rollout performance gap.
+        if agent.just_transitioned:
+            prior_action = torch.zeros_like(prior_action)
+            prior_reward = torch.zeros_like(prior_reward)
+        else:
+            prior_action = action_t.clone()
+            prior_reward = torch.tensor(
+                [reward], dtype=torch.float32, device=device)
 
     ep_return = sum(ep_rewards)
     return {
