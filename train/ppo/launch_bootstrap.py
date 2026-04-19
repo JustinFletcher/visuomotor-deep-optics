@@ -31,12 +31,16 @@ Usage:
 
 import argparse
 import os
+import secrets
 import subprocess
 import sys
 import textwrap
 import time
 
 NUM_PHASES = 15
+# 32-bit cap so the seed survives PyTorch / numpy seed-setting paths
+# that internally call seed % 2**32.
+MAX_SEED = 2**31 - 1
 
 # SLURM defaults (match run_elf_bootstrap.sbatch)
 SLURM_ACCOUNT = "MHPCC38870258"
@@ -61,7 +65,8 @@ def parse_phases(phases_str):
     return sorted(result)
 
 
-def make_sbatch_script(phase, run_id, run_dir_base, wall_time=SLURM_TIME):
+def make_sbatch_script(phase, run_id, run_dir_base, seed,
+                       wall_time=SLURM_TIME):
     """Generate sbatch script contents for one phase."""
     run_dir = os.path.join(run_dir_base, f"bootstrap_phase_{phase:02d}")
     job_name = f"boot-{run_id[-8:]}-{phase:02d}"
@@ -84,6 +89,7 @@ def make_sbatch_script(phase, run_id, run_dir_base, wall_time=SLURM_TIME):
         poetry run python train/ppo/train_ppo_elf_bootstrap.py \\
             --hpc \\
             --phased-count {phase} \\
+            --seed {seed} \\
             --run-dir {run_dir}
     """)
 
@@ -107,6 +113,13 @@ def main():
     parser.add_argument(
         "--time", type=str, default=SLURM_TIME,
         help=f"SLURM wall time (default: {SLURM_TIME})")
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Apply this seed to EVERY launched phase (use to "
+             "reproduce a known run). Default behaviour draws a "
+             "fresh random seed per phase from os.urandom, so each "
+             "launch gets a distinct trajectory even at the same "
+             "phase index.")
     cli = parser.parse_args()
 
     # Generate or use provided run ID
@@ -120,11 +133,25 @@ def main():
             print(f"Error: phase {p} out of range [0, {NUM_PHASES - 1}]")
             sys.exit(1)
 
+    # Per-phase seed assignment. When --seed is given, apply it
+    # verbatim to every phase (reproduces a known-good run). When
+    # omitted, draw a fresh random seed per phase from the OS entropy
+    # pool — independent of run_id and independent across phases.
+    if cli.seed is not None:
+        seeds = {p: int(cli.seed) for p in phases}
+        seed_mode = f"explicit ({cli.seed})"
+    else:
+        seeds = {p: secrets.randbelow(MAX_SEED) for p in phases}
+        seed_mode = "random per-phase"
+
     wall_time = cli.time
 
     print(f"Run ID:     {run_id}")
     print(f"Output dir: {run_dir_base}")
     print(f"Phases:     {phases}")
+    print(f"Seeds:      {seed_mode}")
+    for p in phases:
+        print(f"            phase {p:2d}: {seeds[p]}")
     print(f"Mode:       {'local' if cli.local else 'sbatch'}"
           f"{' (dry-run)' if cli.dry_run else ''}")
     print()
@@ -137,6 +164,7 @@ def main():
                 sys.executable,
                 "train/ppo/train_ppo_elf_bootstrap.py",
                 "--phased-count", str(phase),
+                "--seed", str(seeds[phase]),
                 "--run-dir", run_dir,
             ]
             print(f"Phase {phase:2d}: {' '.join(cmd)}")
@@ -148,6 +176,7 @@ def main():
         job_ids = []
         for phase in phases:
             script = make_sbatch_script(phase, run_id, run_dir_base,
+                                       seed=seeds[phase],
                                        wall_time=wall_time)
 
             if cli.dry_run:

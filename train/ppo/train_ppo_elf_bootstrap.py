@@ -181,19 +181,25 @@ HPC_CONFIG = dict(
 
 
 if __name__ == "__main__":
-    # Parse --phased-count before run_main sees the args
+    # Parse --phased-count and --seed before run_main sees the args.
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument(
         "--phased-count", type=int, default=0,
         help="Number of already co-phased segments [0..14]")
+    pre_parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Override the PPO seed (default: from config = 1).")
     pre_args, remaining = pre_parser.parse_known_args()
 
-    # Inject phased_count into env_kwargs for both configs
+    # Inject phased_count into env_kwargs and (when provided) seed
+    # into both configs.
     for cfg in (LOCAL_CONFIG, HPC_CONFIG):
         cfg["env_kwargs"] = dict(cfg["env_kwargs"])
         cfg["env_kwargs"]["bootstrap_phased_count"] = pre_args.phased_count
+        if pre_args.seed is not None:
+            cfg["seed"] = int(pre_args.seed)
 
-    # Remove --phased-count from sys.argv so run_main's parser doesn't choke
+    # Remove pre-parser flags from sys.argv so run_main's parser doesn't choke.
     sys.argv = [sys.argv[0]] + remaining
 
     run_main(LOCAL_CONFIG, HPC_CONFIG)
