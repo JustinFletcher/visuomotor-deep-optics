@@ -38,12 +38,14 @@ REMOTES = {
         "runs": "/p/home/fletch/visuomotor-deep-optics/runs/",
         "bootstrap_runs": "/p/home/fletch/visuomotor-deep-optics/bootstrap_runs/",
         "test_output": "/p/home/fletch/visuomotor-deep-optics/test_output/",
+        "agents": "/p/home/fletch/visuomotor-deep-optics/agents/",
     },
     "coral": {
         "host": "fletch@coral.mhpcc.hpc.mil",
         "runs": "/wdata/home/fletch/visuomotor-deep-optics/runs/",
         "bootstrap_runs": "/wdata/home/fletch/visuomotor-deep-optics/bootstrap_runs/",
         "test_output": "/wdata/home/fletch/visuomotor-deep-optics/test_output/",
+        "agents": "/wdata/home/fletch/visuomotor-deep-optics/agents/",
     },
 }
 DEFAULT_REMOTE = "makau"
@@ -51,6 +53,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCAL_RUNS = _REPO_ROOT / "runs"
 LOCAL_BOOTSTRAP_RUNS = _REPO_ROOT / "bootstrap_runs"
 LOCAL_TEST_OUTPUT = _REPO_ROOT / "test_output"
+LOCAL_AGENTS = _REPO_ROOT / "agents"
 
 # SSH: fresh connection per rsync invocation. We previously used
 # ControlMaster multiplexing to avoid repeated auth, but stale/broken
@@ -275,11 +278,12 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
               remote_name: str = DEFAULT_REMOTE,
               bootstrap: bool = False,
               test_output: bool = False,
+              agents: bool = False,
               best_only: bool = False) -> bool:
     """Run a single sync cycle. Returns True on success.
 
-    Exactly one of ``bootstrap`` and ``test_output`` should be True; if
-    neither is set we sync the regular ``runs/`` tree.
+    Exactly one of ``bootstrap`` / ``test_output`` / ``agents`` should
+    be True; if none are set we sync the regular ``runs/`` tree.
 
     - ``bootstrap=True`` syncs the full ``bootstrap_runs/`` tree (or a
       specific bootstrap run id when ``run_name`` is given). Preserves
@@ -288,9 +292,13 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
     - ``test_output=True`` syncs the ``test_output/`` tree where the
       rollout / sweep scripts drop evaluation artifacts (metrics.json,
       GIFs, figures).
+    - ``agents=True`` syncs the ``agents/`` tree where
+      ``compose_bootstrap_agent.py --export`` writes self-contained
+      bundles (composed.yaml + checkpoints/ + manifest.json + README).
     """
-    if bootstrap and test_output:
-        raise ValueError("Choose at most one of bootstrap/test_output")
+    sources = sum([bootstrap, test_output, agents])
+    if sources > 1:
+        raise ValueError("Choose at most one of bootstrap/test_output/agents")
     # Wipe any stale multiplexing sockets left over from earlier
     # versions of this script — they can silently stall new rsyncs.
     if SSH_CONTROL_DIR.exists():
@@ -312,6 +320,9 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
     elif test_output:
         remote_base = remote_cfg["test_output"]
         local_base = LOCAL_TEST_OUTPUT
+    elif agents:
+        remote_base = remote_cfg["agents"]
+        local_base = LOCAL_AGENTS
     else:
         remote_base = remote_cfg["runs"]
         local_base = LOCAL_RUNS
@@ -376,6 +387,14 @@ def main():
              "drop evaluation artifacts (metrics.json, GIFs, figures). "
              "Combine with --run to sync a single eval run directory.",
     )
+    source_group.add_argument(
+        "--agents",
+        action="store_true",
+        help="Sync the agents/ tree where compose_bootstrap_agent.py "
+             "--export writes self-contained agent bundles (composed.yaml "
+             "+ checkpoints/ + manifest.json + README). Combine with "
+             "--run to sync a single agent bundle.",
+    )
     parser.add_argument(
         "--best-only",
         action="store_true",
@@ -390,6 +409,8 @@ def main():
         remote_path = remote_cfg["bootstrap_runs"]
     elif args.test_output:
         remote_path = remote_cfg["test_output"]
+    elif args.agents:
+        remote_path = remote_cfg["agents"]
     else:
         remote_path = remote_cfg["runs"]
     print(f"Remote: {args.remote} ({remote_cfg['host']})")
@@ -403,6 +424,7 @@ def main():
                           remote_name=args.remote,
                           bootstrap=args.bootstrap,
                           test_output=args.test_output,
+                          agents=args.agents,
                           best_only=args.best_only)
                 print(f"\nSleeping {args.interval}s until next sync...")
                 time.sleep(args.interval)
@@ -414,6 +436,7 @@ def main():
                        remote_name=args.remote,
                        bootstrap=args.bootstrap,
                        test_output=args.test_output,
+                       agents=args.agents,
                        best_only=args.best_only)
         sys.exit(0 if ok else 1)
 
