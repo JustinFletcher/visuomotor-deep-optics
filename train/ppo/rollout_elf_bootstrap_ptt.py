@@ -139,6 +139,18 @@ def _maybe_rewrite_spec(spec_path: str,
     if spec.get("type") != "composite":
         return spec_path
 
+    # Rewritten spec lives in test_output/_tmp_specs/, NOT next to
+    # the source. Any spec-relative checkpoint path in the original
+    # spec (e.g. "checkpoints/phase_00.pt" from an exported agent
+    # bundle) would silently break against the temp dir, so resolve
+    # every checkpoint path to the original spec's directory now.
+    src_spec_dir = os.path.dirname(os.path.abspath(spec_path))
+    for ph in spec["phases"]:
+        ck = ph.get("checkpoint")
+        if ck and not os.path.isabs(ck):
+            ph["checkpoint"] = os.path.normpath(
+                os.path.join(src_spec_dir, ck))
+
     N = len(spec["phases"])
     lo = 0 if start_at_phase is None else start_at_phase
     hi = (N - 1) if run_through_phase is None else run_through_phase

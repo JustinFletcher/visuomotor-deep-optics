@@ -37,10 +37,14 @@ Usage:
 """
 
 import argparse
+import datetime as _dt
 import glob
+import json
 import os
 import re
+import secrets
 import shutil
+import subprocess
 import sys
 
 import yaml
@@ -48,6 +52,7 @@ import yaml
 NUM_PHASES = 15
 BOOTSTRAP_ROOT = "bootstrap_runs"
 DEFAULT_OUTPUT_DIR = "train/ppo/specs/bootstrap_composed"
+DEFAULT_EXPORT_ROOT = "agents"
 
 
 def find_training_subdir(phase_dir):
@@ -181,6 +186,24 @@ def main():
     parser.add_argument(
         "--allow-partial", action="store_true",
         help="Proceed even if some phases are missing")
+    parser.add_argument(
+        "--export", action="store_true",
+        help="Build a self-contained, relocatable agent bundle under "
+             f"{DEFAULT_EXPORT_ROOT}/ instead of editing in place. The "
+             "bundle directory contains checkpoints, a YAML spec with "
+             "RELATIVE checkpoint paths so the directory can be moved "
+             "anywhere, a manifest.json with full provenance "
+             "(per-phase source run / checkpoint, git commit, command "
+             "line, env_kwargs from the first phase's training "
+             "config), and a README.md with rollout instructions.")
+    parser.add_argument(
+        "--export-name", type=str, default=None,
+        help="Directory name under --export-root for the exported "
+             "bundle. Default: agent_<UTC>_<short-id>. Refuses to "
+             "overwrite an existing directory.")
+    parser.add_argument(
+        "--export-root", type=str, default=DEFAULT_EXPORT_ROOT,
+        help=f"Parent directory for exports (default: {DEFAULT_EXPORT_ROOT})")
     cli = parser.parse_args()
 
     # Parse --phase-checkpoint entries into {int: str}.
@@ -290,7 +313,16 @@ def main():
         print("Error: no phases resolved")
         sys.exit(1)
 
-    # Create output directory
+    if cli.export:
+        export_agent_bundle(resolved, phase_map, trigger, cli)
+    else:
+        write_in_place(resolved, trigger, cli)
+
+
+def write_in_place(resolved, trigger, cli):
+    """Original behaviour: copy checkpoints to --output-dir and write
+    a sibling .yaml spec next to it (paths are absolute / repo-relative,
+    not portable)."""
     os.makedirs(cli.output_dir, exist_ok=True)
 
     # Copy checkpoints
@@ -305,7 +337,6 @@ def main():
             "name": f"phase-{phase:02d}",
             "checkpoint": os.path.join(cli.output_dir, f"phase_{phase:02d}.pt"),
         }
-        # Last phase has no trigger (terminal)
         if phase < max(resolved.keys()):
             entry["until"] = trigger
         phases_yaml.append(entry)
@@ -323,15 +354,191 @@ def main():
     print(f"Wrote composite spec to {yaml_path}")
     print()
     print("Rollout:")
-    print(f"  poetry run python train/ppo/rollout.py \\")
+    print(f"  poetry run python train/ppo/rollout_elf_bootstrap_ptt.py \\")
     print(f"      --policy-spec {yaml_path} \\")
-    print(f"      --env-version v4 --num-episodes 4")
+    print(f"      --num-episodes 4 --steps-per-phase 64 --lowres-gifs")
+
+
+def _git_commit_short():
+    """Return the current repo's short SHA, or 'unknown' if unavailable."""
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, text=True).strip()
+        return out or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _read_env_kwargs(checkpoint_path):
+    """Pull env_kwargs out of a checkpoint's stored config. Loaded
+    lazily so the composer doesn't pay the torch import cost when
+    --export isn't used."""
+    try:
+        import torch
+        ckpt = torch.load(checkpoint_path, map_location="cpu",
+                          weights_only=False)
+        cfg = ckpt.get("config", {}) or {}
+        return cfg.get("env_kwargs", {}) or {}
+    except Exception as e:
+        print(f"  Warning: could not read env_kwargs from "
+              f"{checkpoint_path}: {e}")
+        return {}
+
+
+def export_agent_bundle(resolved, phase_map, trigger, cli):
+    """Build a self-contained, relocatable agent directory.
+
+    Layout:
+        <export_root>/<name>/
+          composed.yaml            # spec with RELATIVE checkpoint paths
+          checkpoints/
+            phase_00.pt
+            ...
+          manifest.json            # provenance, env_kwargs, git, command
+          README.md                # rollout instructions
+    """
+    # Resolve target directory.
+    if cli.export_name:
+        bundle_name = cli.export_name
+    else:
+        ts = _dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        bundle_name = f"agent_{ts}_{secrets.token_hex(2)}"
+    bundle_dir = os.path.join(cli.export_root, bundle_name)
+
+    if os.path.exists(bundle_dir):
+        print(f"Error: export directory already exists: {bundle_dir}")
+        print("Pass a different --export-name or remove the existing dir.")
+        sys.exit(1)
+    ckpt_dir = os.path.join(bundle_dir, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=False)
+
+    print(f"Exporting agent bundle to: {bundle_dir}")
+
+    # Copy checkpoints into the bundle.
+    bundle_phases = []
+    total_bytes = 0
+    for phase, src_path in sorted(resolved.items()):
+        rel_ckpt = f"checkpoints/phase_{phase:02d}.pt"
+        dst_path = os.path.join(bundle_dir, rel_ckpt)
+        shutil.copy2(src_path, dst_path)
+        size = os.path.getsize(dst_path)
+        total_bytes += size
+        bundle_phases.append({
+            "phase": phase,
+            "name": f"phase-{phase:02d}",
+            "source_run": phase_map.get(phase),
+            "source_path": src_path,
+            "bundle_path": rel_ckpt,
+            "size_bytes": size,
+        })
+
+    # YAML spec with paths RELATIVE to the spec file. The loader
+    # tries spec-relative resolution first, so the bundle stays
+    # portable across moves.
+    phases_yaml = []
+    last_phase = max(resolved.keys())
+    for phase in sorted(resolved.keys()):
+        entry = {
+            "name": f"phase-{phase:02d}",
+            "checkpoint": f"checkpoints/phase_{phase:02d}.pt",
+        }
+        if phase < last_phase:
+            entry["until"] = trigger
+        phases_yaml.append(entry)
+    spec = {"type": "composite", "phases": phases_yaml}
+    yaml_path = os.path.join(bundle_dir, "composed.yaml")
+    with open(yaml_path, "w") as f:
+        yaml.dump(spec, f, default_flow_style=False, sort_keys=False)
+
+    # Pull env_kwargs from phase 0's checkpoint (or the lowest phase
+    # we have) so the rollout consumer can verify the env config.
+    first_phase = min(resolved.keys())
+    env_kwargs = _read_env_kwargs(resolved[first_phase])
+
+    manifest = {
+        "agent_name": bundle_name,
+        "created_utc": _dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "git_commit": _git_commit_short(),
+        "command": " ".join(sys.argv),
+        "trigger": trigger,
+        "num_phases": len(resolved),
+        "phases": bundle_phases,
+        "total_checkpoint_bytes": total_bytes,
+        "training_env_kwargs": env_kwargs,
+        "spec_path": "composed.yaml",
+        "rollout_entry": "train/ppo/rollout_elf_bootstrap_ptt.py",
+    }
+    manifest_path = os.path.join(bundle_dir, "manifest.json")
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2, default=str)
+
+    # README the user (or future you) can read after `cd` into the
+    # bundle. Phase-source table is inlined so the bundle is
+    # self-explanatory without opening manifest.json.
+    readme_lines = [
+        f"# {bundle_name}",
+        "",
+        f"Self-contained ELF bootstrap composite agent, exported on "
+        f"{manifest['created_utc']}.",
+        "",
+        f"- Phases: {len(resolved)}",
+        f"- Total checkpoint size: {total_bytes / (1024 * 1024):.1f} MB",
+        f"- Source git commit: `{manifest['git_commit']}`",
+        f"- Phase transition trigger: `{trigger}`",
+        "",
+        "## Provenance",
+        "",
+        "| Phase | Source run | Source checkpoint |",
+        "|-------|------------|-------------------|",
+    ]
+    for ph in bundle_phases:
+        src = ph["source_path"]
+        # Show the basename if the source path is long.
+        readme_lines.append(
+            f"| {ph['phase']:>5} | `{ph['source_run']}` | `{src}` |"
+        )
+    readme_lines += [
+        "",
+        "## Rollout",
+        "",
+        "From the visuomotor-deep-optics repo root:",
+        "",
+        "```bash",
+        f"poetry run python train/ppo/rollout_elf_bootstrap_ptt.py \\",
+        f"    --policy-spec {yaml_path} \\",
+        "    --num-episodes 4 --steps-per-phase 64 --lowres-gifs",
+        "```",
+        "",
+        "The YAML spec uses paths RELATIVE to itself, so this bundle "
+        "directory can be moved anywhere on disk and the rollout "
+        "command above will continue to work as long as you point "
+        "`--policy-spec` at the new location of `composed.yaml`.",
+        "",
+        "## Files",
+        "",
+        "- `composed.yaml` — composite policy spec",
+        "- `checkpoints/phase_NN.pt` — per-phase PPO checkpoints",
+        "- `manifest.json` — full provenance (env_kwargs, git, command, "
+        "per-phase source paths)",
+        "",
+    ]
+    readme_path = os.path.join(bundle_dir, "README.md")
+    with open(readme_path, "w") as f:
+        f.write("\n".join(readme_lines))
+
     print()
-    print("Sweep:")
-    print(f"  poetry run python train/ppo/sweep_tiptilt.py \\")
+    print(f"Bundle ready: {bundle_dir}")
+    print(f"  spec:     {yaml_path}")
+    print(f"  manifest: {manifest_path}")
+    print(f"  readme:   {readme_path}")
+    print(f"  size:     {total_bytes / (1024 * 1024):.1f} MB across "
+          f"{len(resolved)} checkpoints")
+    print()
+    print("Rollout:")
+    print(f"  poetry run python train/ppo/rollout_elf_bootstrap_ptt.py \\")
     print(f"      --policy-spec {yaml_path} \\")
-    print(f"      --env-version v4 --tt-min 0.0 --tt-max 2.0 --tt-steps 8 \\")
-    print(f"      --num-episodes 4")
+    print(f"      --num-episodes 4 --steps-per-phase 64 --lowres-gifs")
 
 
 if __name__ == "__main__":
