@@ -235,12 +235,80 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Noise std per DOF
         noise_std = []
         for _ in range(self._num_apertures):
-            noise_std.append(self._noise_frac * 2.0 * self._max_p_m)
+            noise_std.append(self._noise_frac * self._max_p_m)
         for _ in range(self._num_apertures):
-            noise_std.append(self._noise_frac * 2.0 * self._max_t_r)
+            noise_std.append(self._noise_frac * self._max_t_r)
         for _ in range(self._num_apertures):
-            noise_std.append(self._noise_frac * 2.0 * self._max_tl_r)
+            noise_std.append(self._noise_frac * self._max_tl_r)
         self._noise_std_t = torch.tensor(noise_std, dtype=torch.float32, device=self.dev)
+
+        # --- Non-stationary disturbance: per-step random walk on the
+        # secondaries' PTT actuator state. Each step adds
+        #     multiplier * base_std * randn()
+        # to every actuator DOF, where base_std is a fixed fraction
+        # (per DOF type) of that DOF's correctable range. The base
+        # fractions are meant to stay constant across experiments;
+        # the multiplier is the knob to sweep.
+        # Default multiplier is 0.0 so this is inert unless asked for.
+        self._ns_multiplier = float(
+            cfg.get("nonstationary_noise_multiplier", 0.0))
+        ns_p_frac = float(cfg.get("nonstationary_noise_piston_frac", 0.01))
+        ns_t_frac = float(cfg.get("nonstationary_noise_tip_frac", 0.01))
+        ns_tl_frac = float(cfg.get("nonstationary_noise_tilt_frac", 0.01))
+        if self._ns_multiplier > 0.0:
+            ns_std = []
+            ns_std.extend([self._max_p_m * ns_p_frac] * self._num_apertures)
+            ns_std.extend([self._max_t_r * ns_t_frac] * self._num_apertures)
+            ns_std.extend([self._max_tl_r * ns_tl_frac] * self._num_apertures)
+            self._ns_std_t = torch.tensor(
+                ns_std, dtype=torch.float32, device=self.dev)
+        else:
+            self._ns_std_t = None
+
+        # --- Whole-structure vibration: additive plane of OPD applied
+        # over the entire aperture each step, oscillating sinusoidally.
+        # Magnitude is specified in arcsec of maximum tilt of the
+        # whole structure. Direction is a fixed angle in the pupil
+        # plane. Frequency defaults to 100 Hz; phase defaults to 0.
+        # Default enabled=False → no vibration; call sites can turn it
+        # on explicitly via env kwargs.
+        self._vibration_enabled = bool(cfg.get("vibration_enabled", False))
+        self._vibration_amp_arcsec = float(
+            cfg.get("vibration_amplitude_arcsec", 0.0))
+        self._vibration_freq_hz = float(
+            cfg.get("vibration_frequency_hz", 100.0))
+        self._vibration_direction_rad = float(
+            cfg.get("vibration_direction_rad", 0.0))
+        self._vibration_phase_rad = float(
+            cfg.get("vibration_phase_rad", 0.0))
+        # Decision interval in seconds (step index × dt = episode time).
+        self._decision_dt_s = float(
+            cfg.get("decision_interval_ms", 100.0)) / 1000.0
+        # Pre-compute the unit tilt pattern at init time. Coordinates
+        # are in meters from the aperture centre, consistent with the
+        # HCIPy pupil grid. Stored as (H, W) float32 tensor on device;
+        # no-op when vibration is disabled.
+        self._vibration_tilt_pattern_t = None
+        if self._vibration_enabled and self._vibration_amp_arcsec > 0.0:
+            dx = float(os4.pupil_grid.delta[0])  # metres per pixel
+            xs = (np.arange(self._W, dtype=np.float32)
+                  - (self._W - 1) / 2.0) * dx
+            ys = (np.arange(self._H, dtype=np.float32)
+                  - (self._H - 1) / 2.0) * dx
+            xx_m, yy_m = np.meshgrid(xs, ys, indexing="xy")
+            # Direction vector for the tilt axis.
+            dx_hat = np.cos(self._vibration_direction_rad)
+            dy_hat = np.sin(self._vibration_direction_rad)
+            # Unit-amplitude tilt map: OPD in meters per radian of tilt.
+            # When multiplied by the current tilt angle (radians) this
+            # gives the additive OPD map (meters).
+            unit_tilt = (dx_hat * xx_m + dy_hat * yy_m).astype(np.float32)
+            self._vibration_tilt_pattern_t = torch.tensor(
+                unit_tilt, dtype=torch.float32, device=self.dev)
+            self._vibration_amp_rad = (
+                self._vibration_amp_arcsec * math.pi / (180.0 * 3600.0))
+        else:
+            self._vibration_amp_rad = 0.0
 
         # Action penalty / holding bonus config
         self._action_penalty = cfg.get("action_penalty", False)
@@ -385,6 +453,18 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._init_piston_clip_m = cfg.get("init_wind_piston_clip_m", 4e-6)
         self._init_tip_std = cfg.get("init_wind_tip_arcsec_std_tt", 0.0) if self._command_tip_tilt else 0.0
         self._init_tilt_std = cfg.get("init_wind_tilt_arcsec_std_tt", 0.0) if self._command_tip_tilt else 0.0
+
+        # Configurable init-diff-motion path. When enabled, the init-time
+        # piston/tip/tilt perturbation is drawn from these fields instead
+        # of the hard-coded λ/4 wind model. All defaults are zero, so
+        # enabling the flag with no overrides produces no perturbation.
+        self._init_diff_motion_cfg = cfg.get(
+            "init_differential_motion_configurable", False)
+        self._init_p_mean_m = float(cfg.get("init_piston_micron_mean", 0.0)) * 1e-6
+        self._init_p_std_m = float(cfg.get("init_piston_micron_std", 0.0)) * 1e-6
+        self._init_p_clip_m = float(cfg.get("init_piston_clip_micron", 0.0)) * 1e-6
+        self._init_t_std_arcsec = float(cfg.get("init_tip_arcsec_std", 0.0))
+        self._init_tl_std_arcsec = float(cfg.get("init_tilt_arcsec_std", 0.0))
         self._wl = os4.wavelength
 
         # Observation shape: frames_per_decision (matches V4 behavior).
@@ -473,6 +553,20 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Surface = sum(actuators_i * influence_i) for each env
         # actuators: [N, n_modes], influence: [n_modes, H, W]
         surface = torch.einsum('ni,ihw->nhw', self._actuators_t, self._influence_t)
+
+        # Additive whole-structure vibration OPD. Each env carries its
+        # own step counter, so phase is evaluated per-env. Inert when
+        # vibration is disabled (tilt_pattern is None), so this branch
+        # is zero-cost at default settings.
+        if self._vibration_tilt_pattern_t is not None:
+            t_s = self._step_counts.to(torch.float32) * self._decision_dt_s
+            theta_t = (self._vibration_amp_rad
+                       * torch.sin(
+                           2.0 * math.pi * self._vibration_freq_hz * t_s
+                           + self._vibration_phase_rad))
+            # theta_t: [N] → [N, 1, 1]; tilt_pattern: [H, W] broadcasts.
+            surface = surface + (theta_t.view(N, 1, 1)
+                                 * self._vibration_tilt_pattern_t.unsqueeze(0))
 
         frame = torch.zeros(N, self._H, self._W, dtype=torch.float32, device=dev)
 
@@ -1102,7 +1196,17 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
 
             # Random piston kick on the target (wind disturbance model).
             # Does NOT touch tip/tilt — those carry the off-axis push above.
-            if self._init_diff_motion and self._model_wind:
+            if self._init_diff_motion_cfg:
+                signs = torch.sign(torch.randn(n_reset, device=self.dev))
+                signs = torch.where(signs == 0, torch.ones_like(signs), signs)
+                p_target = signs * (
+                    self._init_p_mean_m
+                    + torch.randn(n_reset, device=self.dev) * self._init_p_std_m)
+                if self._init_p_clip_m > 0.0:
+                    p_target = p_target.clamp(
+                        -self._init_p_clip_m, self._init_p_clip_m)
+                piston[:, target] = p_target
+            elif self._init_diff_motion and self._model_wind:
                 wl = self._wl
                 piston_mean = wl / 4.0
                 piston_std = wl / 6.0
@@ -1112,6 +1216,42 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
                 signs = torch.where(signs == 0, torch.ones_like(signs), signs)
                 p_target = signs * (piston_mean + torch.randn(n_reset, device=self.dev) * piston_std)
                 piston[:, target] = p_target.clamp(-clip_m, clip_m)
+
+            actuators = torch.cat([piston, tip, tilt], dim=1)
+            self._actuators_t[env_mask] = actuators
+
+        elif self._init_diff_motion_cfg:
+            # --- Configurable standard mode ---
+            signs = torch.sign(torch.randn(n_reset, n_seg, device=self.dev))
+            signs = torch.where(signs == 0, torch.ones_like(signs), signs)
+
+            piston = signs * (
+                self._init_p_mean_m
+                + torch.randn(n_reset, n_seg, device=self.dev) * self._init_p_std_m)
+            if self._init_p_clip_m > 0.0:
+                piston = piston.clamp(-self._init_p_clip_m, self._init_p_clip_m)
+
+            if self._command_tip_tilt and self._init_t_std_arcsec > 0.0:
+                tip_signs = torch.sign(torch.randn(n_reset, n_seg, device=self.dev))
+                tip_signs = torch.where(tip_signs == 0, torch.ones_like(tip_signs), tip_signs)
+                tip = tip_signs * (
+                    self._init_t_std_arcsec
+                    + torch.randn(n_reset, n_seg, device=self.dev)
+                    * self._init_t_std_arcsec / 3.0
+                ) * math.pi / (180 * 3600)
+            else:
+                tip = torch.zeros(n_reset, n_seg, device=self.dev)
+
+            if self._command_tip_tilt and self._init_tl_std_arcsec > 0.0:
+                tilt_signs = torch.sign(torch.randn(n_reset, n_seg, device=self.dev))
+                tilt_signs = torch.where(tilt_signs == 0, torch.ones_like(tilt_signs), tilt_signs)
+                tilt = tilt_signs * (
+                    self._init_tl_std_arcsec
+                    + torch.randn(n_reset, n_seg, device=self.dev)
+                    * self._init_tl_std_arcsec / 3.0
+                ) * math.pi / (180 * 3600)
+            else:
+                tilt = torch.zeros(n_reset, n_seg, device=self.dev)
 
             actuators = torch.cat([piston, tip, tilt], dim=1)
             self._actuators_t[env_mask] = actuators
@@ -1228,6 +1368,17 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
 
         # --- 2. Apply commands (batched on GPU) ---
         self._batched_command(actions_t)
+
+        # --- 2a. Non-stationary disturbance: random walk on the
+        # secondaries' PTT state. Adds scaled randn to actuators each
+        # step and reclips to [baseline ± max_corr]. Inert when the
+        # multiplier is 0 (the default).
+        if self._ns_std_t is not None and self._ns_multiplier > 0.0:
+            noise = torch.randn_like(self._actuators_t) * self._ns_std_t
+            self._actuators_t = self._actuators_t + noise * self._ns_multiplier
+            low = self._baselines_t - self._max_corr_t.unsqueeze(0)
+            high = self._baselines_t + self._max_corr_t.unsqueeze(0)
+            self._actuators_t = torch.clamp(self._actuators_t, low, high)
 
         # --- 3. Batched simulate + object convolution + detector ---
         frames = self._batched_simulate()

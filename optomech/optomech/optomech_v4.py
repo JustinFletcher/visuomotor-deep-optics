@@ -88,6 +88,21 @@ DEFAULT_CONFIG = {
     "tau0_seconds": 10.0,
 
     # --- Structural differential motion ------------------------------
+    # Configurable init-diff-motion path. When this is True, the
+    # hard-coded λ/4 piston kick (both in the standard reset path and
+    # in the bootstrap target perturbation) is replaced with the
+    # ``init_piston_*`` / ``init_tip_*`` / ``init_tilt_*`` values
+    # below. All defaults are zero / disabled, so enabling the flag
+    # with no other overrides produces no perturbation at all.
+    # The legacy ``init_differential_motion`` + ``model_wind_diff_motion``
+    # path is untouched when this flag is False.
+    "init_differential_motion_configurable": False,
+    "init_piston_micron_mean": 0.0,
+    "init_piston_micron_std": 0.0,
+    "init_piston_clip_micron": 0.0,   # 0 disables clipping
+    "init_tip_arcsec_std": 0.0,
+    "init_tilt_arcsec_std": 0.0,
+
     "init_differential_motion": False,
     "simulate_differential_motion": False,
     "model_wind_diff_motion": False,
@@ -111,6 +126,29 @@ DEFAULT_CONFIG = {
     "init_gravity_piston_micron_std": 300.0,
     "init_gravity_tip_arcsec_std_tt": 15.0,
     "init_gravity_tilt_arcsec_std_tt": 15.0,
+
+    # --- Non-stationary disturbance (per-step random walk on segments)
+    # Each step adds  multiplier * base_std * randn()  to every
+    # actuator DOF (piston, tip, tilt), then reclips to the correction
+    # range. The base fractions are meant to be experiment-wide
+    # constants; the multiplier is the knob to sweep. Default
+    # multiplier is 0.0 so this path is inert at default settings.
+    "nonstationary_noise_multiplier": 0.0,
+    "nonstationary_noise_piston_frac": 0.01,
+    "nonstationary_noise_tip_frac": 0.01,
+    "nonstationary_noise_tilt_frac": 0.01,
+
+    # --- Whole-structure vibration
+    # Sinusoidal rigid-body tilt of the entire aperture (not
+    # per-segment), implemented as an additive plane of OPD over the
+    # pupil that oscillates at a fixed frequency. Amplitude is the
+    # peak tilt angle of the whole structure in arcseconds.
+    # Default enabled=False; no vibration unless explicitly turned on.
+    "vibration_enabled": False,
+    "vibration_amplitude_arcsec": 0.0,
+    "vibration_frequency_hz": 100.0,
+    "vibration_direction_rad": 0.0,
+    "vibration_phase_rad": 0.0,
 
     # --- Control hierarchy -------------------------------------------
     "control_interval_ms": 2.0,
@@ -765,6 +803,57 @@ class OpticalSystem(object):
         self._actuators_t = torch.zeros(n_modes, dtype=torch.float32,
                                          device=self._torch_device)
 
+        # --- Non-stationary disturbance (per-step random walk) ---------
+        # Matches the v5 implementation; inert at default settings.
+        self._ns_multiplier = float(
+            cfg.get("nonstationary_noise_multiplier", 0.0))
+        _ns_p_frac = float(cfg.get("nonstationary_noise_piston_frac", 0.01))
+        _ns_t_frac = float(cfg.get("nonstationary_noise_tip_frac", 0.01))
+        _ns_tl_frac = float(cfg.get("nonstationary_noise_tilt_frac", 0.01))
+        if self._ns_multiplier > 0.0:
+            ns_std_list = []
+            ns_std_list.extend([self._max_p_m * _ns_p_frac] * self.num_apertures)
+            ns_std_list.extend([self._max_t_r * _ns_t_frac] * self.num_apertures)
+            ns_std_list.extend([self._max_tl_r * _ns_tl_frac] * self.num_apertures)
+            self._ns_std_t = torch.tensor(
+                ns_std_list, dtype=torch.float32, device=self._torch_device)
+        else:
+            self._ns_std_t = None
+
+        # --- Whole-structure vibration (additive OPD plane) ------------
+        # Matches the v5 implementation; inert unless
+        # vibration_enabled=True AND vibration_amplitude_arcsec>0.
+        self._vibration_enabled = bool(cfg.get("vibration_enabled", False))
+        self._vibration_amp_arcsec = float(
+            cfg.get("vibration_amplitude_arcsec", 0.0))
+        self._vibration_freq_hz = float(
+            cfg.get("vibration_frequency_hz", 100.0))
+        self._vibration_direction_rad = float(
+            cfg.get("vibration_direction_rad", 0.0))
+        self._vibration_phase_rad = float(
+            cfg.get("vibration_phase_rad", 0.0))
+        self._decision_dt_s = float(
+            cfg.get("decision_interval_ms", 100.0)) / 1000.0
+        self._vibration_tilt_pattern_t = None
+        self._vibration_amp_rad = 0.0
+        if self._vibration_enabled and self._vibration_amp_arcsec > 0.0:
+            dx = float(self.pupil_grid.delta[0])
+            xs = (np.arange(num_px, dtype=np.float32)
+                  - (num_px - 1) / 2.0) * dx
+            ys = (np.arange(num_px, dtype=np.float32)
+                  - (num_px - 1) / 2.0) * dx
+            xx_m, yy_m = np.meshgrid(xs, ys, indexing="xy")
+            dx_hat = np.cos(self._vibration_direction_rad)
+            dy_hat = np.sin(self._vibration_direction_rad)
+            unit_tilt = (dx_hat * xx_m + dy_hat * yy_m).astype(np.float32)
+            self._vibration_tilt_pattern_t = torch.tensor(
+                unit_tilt, dtype=torch.float32,
+                device=self._torch_device)
+            self._vibration_amp_rad = (
+                self._vibration_amp_arcsec * np.pi / (180.0 * 3600.0))
+        # Step counter maintained by OptomechEnv.step() for vibration phase.
+        self._vibration_step_index = 0
+
         # Pre-compute object spectrum on GPU
         self._object_spectrum_t = torch.fft.fft2(
             torch.tensor(self.object_plane.array, dtype=torch.complex64,
@@ -1187,6 +1276,18 @@ class OpticalSystem(object):
         # Segmented mirror: surface = sum(actuators_i * influence_i)
         # then E *= exp(2j * k * surface)
         surface = torch.einsum('i,ihw->hw', self._actuators_t, self._influence_t)
+
+        # Additive whole-structure vibration OPD (default-off). A rigid-
+        # body tilt of the entire aperture oscillating at a fixed
+        # frequency; inert when vibration_enabled=False.
+        if self._vibration_tilt_pattern_t is not None:
+            t_s = float(self._vibration_step_index) * self._decision_dt_s
+            theta = (self._vibration_amp_rad
+                     * math.sin(
+                         2.0 * math.pi * self._vibration_freq_hz * t_s
+                         + self._vibration_phase_rad))
+            surface = surface + theta * self._vibration_tilt_pattern_t
+
         E = E * torch.exp(torch.complex(
             torch.zeros_like(surface),
             (2.0 * k * surface)))
@@ -1404,6 +1505,40 @@ class OpticalSystem(object):
         """Apply initial PTT perturbations at episode start."""
         cfg = self._cfg
 
+        # Configurable init path: fully parameterised piston/tip/tilt
+        # perturbation. Same ±sign-per-segment pattern as the wind path
+        # so the error is never a common-mode zero.
+        if cfg.get("init_differential_motion_configurable", False):
+            p_mean_m = float(cfg["init_piston_micron_mean"]) * 1e-6
+            p_std_m = float(cfg["init_piston_micron_std"]) * 1e-6
+            clip_micron = float(cfg.get("init_piston_clip_micron", 0.0))
+
+            signs = np.random.choice([-1.0, 1.0], size=self.num_apertures)
+            ptt = np.zeros((self.num_apertures, 3))
+            ptt[:, 0] = signs * (
+                p_mean_m + np.random.randn(self.num_apertures) * p_std_m)
+            if clip_micron > 0.0:
+                clip_m = clip_micron * 1e-6
+                ptt[:, 0] = np.clip(ptt[:, 0], -clip_m, clip_m)
+
+            if self.command_tip_tilt:
+                t_std = float(cfg["init_tip_arcsec_std"])
+                tl_std = float(cfg["init_tilt_arcsec_std"])
+                if t_std > 0:
+                    tip_signs = np.random.choice(
+                        [-1.0, 1.0], size=self.num_apertures)
+                    ptt[:, 1] = tip_signs * (
+                        t_std + np.random.randn(self.num_apertures) * t_std / 3.0
+                    ) * np.pi / (180 * 3600)
+                if tl_std > 0:
+                    tilt_signs = np.random.choice(
+                        [-1.0, 1.0], size=self.num_apertures)
+                    ptt[:, 2] = tilt_signs * (
+                        tl_std + np.random.randn(self.num_apertures) * tl_std / 3.0
+                    ) * np.pi / (180 * 3600)
+            self._apply_ptt_displacements(ptt)
+            return
+
         if (not self.model_wind_diff_motion and
                 not self.model_temp_diff_motion and
                 not self.model_gravity_diff_motion):
@@ -1606,18 +1741,32 @@ class OpticalSystem(object):
         drawn from the wind model so the policy has a non-trivial piston
         to resolve alongside the off-axis tip/tilt. Tip/tilt are
         intentionally NOT touched here so the off-axis push survives.
+
+        When ``init_differential_motion_configurable`` is True, the
+        hard-coded λ/4 mean and λ/6 std are replaced with the
+        ``init_piston_micron_{mean,std}`` config values, and the
+        ``init_piston_clip_micron`` field controls clipping (0 disables).
         """
         cfg = self._cfg
-        _wl = self.wavelength
-        _piston_mean = _wl / 4.0
-        _piston_std = _wl / 6.0
-
         ptt = np.zeros((self.num_apertures, 3))
         seg = phased_count
         sign = np.random.choice([-1.0, 1.0])
-        ptt[seg, 0] = sign * (_piston_mean + np.random.randn() * _piston_std)
-        clip_m = cfg["init_wind_piston_clip_m"]
-        ptt[seg, 0] = np.clip(ptt[seg, 0], -clip_m, clip_m)
+
+        if cfg.get("init_differential_motion_configurable", False):
+            _piston_mean = float(cfg["init_piston_micron_mean"]) * 1e-6
+            _piston_std = float(cfg["init_piston_micron_std"]) * 1e-6
+            ptt[seg, 0] = sign * (_piston_mean + np.random.randn() * _piston_std)
+            clip_micron = float(cfg.get("init_piston_clip_micron", 0.0))
+            if clip_micron > 0.0:
+                clip_m = clip_micron * 1e-6
+                ptt[seg, 0] = np.clip(ptt[seg, 0], -clip_m, clip_m)
+        else:
+            _wl = self.wavelength
+            _piston_mean = _wl / 4.0
+            _piston_std = _wl / 6.0
+            ptt[seg, 0] = sign * (_piston_mean + np.random.randn() * _piston_std)
+            clip_m = cfg["init_wind_piston_clip_m"]
+            ptt[seg, 0] = np.clip(ptt[seg, 0], -clip_m, clip_m)
 
         self._apply_ptt_displacements(ptt, incremental=True)
 
@@ -1743,12 +1892,12 @@ class OpticalSystem(object):
                 # Rail noise: when clipped, replace with stochastic state
                 # around the rail so the agent can't exploit hard limits.
                 if pre_clip[0] != post_clip[0]:
-                    piston_state += np.random.normal(0.0, _noise_frac * 2.0 * max_p_m)
+                    piston_state += np.random.normal(0.0, _noise_frac * max_p_m)
                 if _n_dof > 1:
                     if pre_clip[1] != post_clip[1]:
-                        tip_state += np.random.normal(0.0, _noise_frac * 2.0 * max_t_r)
+                        tip_state += np.random.normal(0.0, _noise_frac * max_t_r)
                     if pre_clip[2] != post_clip[2]:
-                        tilt_state += np.random.normal(0.0, _noise_frac * 2.0 * max_tl_r)
+                        tilt_state += np.random.normal(0.0, _noise_frac * max_tl_r)
 
             elif _incremental:
                 p_cmd_m = seg_piston_cmd * max_p_m
@@ -1773,12 +1922,12 @@ class OpticalSystem(object):
                 # Rail noise: when clipped, replace with stochastic state
                 # around the rail so the agent can't exploit hard limits.
                 if pre_clip[0] != post_clip[0]:
-                    piston_state += np.random.normal(0.0, _noise_frac * 2.0 * max_p_m)
+                    piston_state += np.random.normal(0.0, _noise_frac * max_p_m)
                 if _n_dof > 1:
                     if pre_clip[1] != post_clip[1]:
-                        tip_state += np.random.normal(0.0, _noise_frac * 2.0 * max_t_r)
+                        tip_state += np.random.normal(0.0, _noise_frac * max_t_r)
                     if pre_clip[2] != post_clip[2]:
-                        tilt_state += np.random.normal(0.0, _noise_frac * 2.0 * max_tl_r)
+                        tilt_state += np.random.normal(0.0, _noise_frac * max_tl_r)
 
             else:
                 p_cmd_m = seg_piston_cmd * max_p_m
@@ -1801,12 +1950,12 @@ class OpticalSystem(object):
                 # Rail noise: when clipped, replace with stochastic state
                 # around the rail so the agent can't exploit hard limits.
                 if pre_clip[0] != post_clip[0]:
-                    piston_state += np.random.normal(0.0, _noise_frac * 2.0 * max_p_m)
+                    piston_state += np.random.normal(0.0, _noise_frac * max_p_m)
                 if _n_dof > 1:
                     if pre_clip[1] != post_clip[1]:
-                        tip_state += np.random.normal(0.0, _noise_frac * 2.0 * max_t_r)
+                        tip_state += np.random.normal(0.0, _noise_frac * max_t_r)
                     if pre_clip[2] != post_clip[2]:
-                        tilt_state += np.random.normal(0.0, _noise_frac * 2.0 * max_tl_r)
+                        tilt_state += np.random.normal(0.0, _noise_frac * max_tl_r)
 
             # Actuator repeatability noise: Gaussian perturbation
             # proportional to correction range (models real hardware).
@@ -1817,11 +1966,11 @@ class OpticalSystem(object):
             # agent from exploiting hard limits for state certainty.
             if _noisy:
                 if seg_piston_cmd != 0.0:
-                    piston_state += np.random.normal(0.0, _noise_frac * 2.0 * max_p_m)
+                    piston_state += np.random.normal(0.0, _noise_frac * max_p_m)
                 if seg_tip_cmd != 0.0:
-                    tip_state += np.random.normal(0.0, _noise_frac * 2.0 * max_t_r)
+                    tip_state += np.random.normal(0.0, _noise_frac * max_t_r)
                 if seg_tilt_cmd != 0.0:
-                    tilt_state += np.random.normal(0.0, _noise_frac * 2.0 * max_tl_r)
+                    tilt_state += np.random.normal(0.0, _noise_frac * max_tl_r)
 
             _seg_mirror.set_segment_actuators(
                 seg_id, piston_state, tip_state, tilt_state)
@@ -2619,6 +2768,9 @@ class OptomechEnv(gym.Env):
                 rcond=rcond)
             self.episode_time_ms = 0.0
 
+        # Reset vibration phase counter so every episode starts at t=0.
+        self.optical_system._vibration_step_index = 0
+
         _v3("Seeding initial action...")
 
         _bootstrap = self.cfg.get('bootstrap_phase', False)
@@ -2631,13 +2783,22 @@ class OptomechEnv(gym.Env):
             self.optical_system._init_bootstrap_segments(
                 _phased_count, noisy=True)
 
-            # Perturb the target segment only (index = phased_count)
-            if self.cfg['init_differential_motion']:
+            # Perturb the target segment only (index = phased_count).
+            # Either the legacy flag OR the new configurable flag can
+            # request a piston kick; _init_bootstrap_target_perturbation
+            # selects the corresponding code path internally.
+            _wants_init = (
+                self.cfg['init_differential_motion']
+                or self.cfg.get('init_differential_motion_configurable', False))
+            if _wants_init:
                 _v3("Bootstrap: perturbing target segment %d..." % _phased_count)
                 self.optical_system._init_bootstrap_target_perturbation(
                     _phased_count)
         else:
-            if self.cfg['init_differential_motion']:
+            _wants_init = (
+                self.cfg['init_differential_motion']
+                or self.cfg.get('init_differential_motion_configurable', False))
+            if _wants_init:
                 _v3("Applying initial differential motion...")
                 self.optical_system._init_natural_diff_motion()
 
@@ -2804,6 +2965,22 @@ class OptomechEnv(gym.Env):
                 command = self.action[command_num]
                 self._apply_commands(command)
 
+                # Non-stationary disturbance: per-step random walk on
+                # the optical system's actuator state. Inert when the
+                # multiplier is 0 (default). We intentionally do not
+                # reclip here — the random walk is a small physical
+                # perturbation layered on top of the command path
+                # (which already clipped to baseline ± max_corr), and
+                # over any reasonable horizon the integrated drift
+                # stays well inside the correction range.
+                if (_optical_sys._ns_std_t is not None
+                        and _optical_sys._ns_multiplier > 0.0):
+                    noise = (torch.randn_like(_optical_sys._actuators_t)
+                             * _optical_sys._ns_std_t
+                             * _optical_sys._ns_multiplier)
+                    _optical_sys._actuators_t = (
+                        _optical_sys._actuators_t + noise)
+
                 for ao_step in range(_ao_steps_per_cmd):
                     for wl in _wavelengths:
                         if _report:
@@ -2927,6 +3104,11 @@ class OptomechEnv(gym.Env):
 
         if _report:
             _v3_timer("STEP TOTAL", time.time() - step_t0)
+
+        # Advance vibration phase counter by one decision step. The
+        # simulate() path reads this when vibration is enabled; it's
+        # inert otherwise.
+        _optical_sys._vibration_step_index += 1
 
         reward = np.float32(reward)
         return self.state, reward, terminated, truncated, info
