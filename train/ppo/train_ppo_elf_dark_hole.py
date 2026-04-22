@@ -273,13 +273,9 @@ HPC_CONFIG = dict(
     pass_threshold_ratio=1.1,
     seed=1,
     model_save_interval=100,
-    # We do not need evaluation for this sweep — it produces most of
-    # the TB size (embedded rollout_summary / observation_filmstrip /
-    # aggregate_reward figures). Keep it off by default on HPC; pass
-    # --eval on the CLI to override.
-    no_eval=True,
-    # Same scalar-downsampling + figure-DPI safety nets the bootstrap
-    # script uses, in case --eval gets re-enabled.
+    # Scalar-downsampling + figure-DPI safety nets (matches bootstrap).
+    # tb_step_log_interval=32 is the real cure for the 500-MB tfevents
+    # we saw on the first sweep — per-step scalars were dominant.
     tb_step_log_interval=32,
     eval_figure_dpi=48,
     env_kwargs=ELF_DARK_HOLE_ENV_KWARGS,
