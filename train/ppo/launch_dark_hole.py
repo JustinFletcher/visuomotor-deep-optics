@@ -60,7 +60,16 @@ HPC_WORKDIR = "/p/home/fletch/visuomotor-deep-optics"
 # Geometry-sampling envelope.
 ANGLE_RANGE_DEG = (0.0, 360.0)
 RADIUS_FRAC_RANGE = (0.10, 0.40)
-SIZE_RADIUS_RANGE = (0.02, 0.08)
+
+# PSF central-core radius in the same fraction-of-half-FOV units as
+# dark_hole_size_radius. For the ELF env at λ = 1 μm with a 256-px
+# focal plane (sampling 7.81 px/res-el, half-FOV 16.4 res-el), the
+# first Airy zero at 1.22 λ/D sits at ~0.074 of half-FOV. The
+# launcher samples hole sizes in a narrow band just outside that
+# core: 10% to 20% wider.
+PSF_CORE_RADIUS_FRAC = 0.074
+SIZE_RADIUS_RANGE = (1.10 * PSF_CORE_RADIUS_FRAC,
+                     1.20 * PSF_CORE_RADIUS_FRAC)
 
 
 def sample_geometry(rng):
