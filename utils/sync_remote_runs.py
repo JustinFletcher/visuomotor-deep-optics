@@ -16,6 +16,8 @@ Usage:
     python utils/sync_remote_runs.py --bootstrap        # sync full bootstrap_runs/
     python utils/sync_remote_runs.py --bootstrap --run bootstrap_1776285401
                                                         # sync one bootstrap run id
+    python utils/sync_remote_runs.py --dark-hole --tb-only
+                                                        # TB-only sweep monitoring
 """
 
 import argparse
@@ -37,6 +39,7 @@ REMOTES = {
         "host": "fletch@makau.mhpcc.hpc.mil",
         "runs": "/p/home/fletch/visuomotor-deep-optics/runs/",
         "bootstrap_runs": "/p/home/fletch/visuomotor-deep-optics/bootstrap_runs/",
+        "dark_hole_runs": "/p/home/fletch/visuomotor-deep-optics/dark_hole_runs/",
         "test_output": "/p/home/fletch/visuomotor-deep-optics/test_output/",
         "agents": "/p/home/fletch/visuomotor-deep-optics/agents/",
     },
@@ -44,6 +47,7 @@ REMOTES = {
         "host": "fletch@coral.mhpcc.hpc.mil",
         "runs": "/wdata/home/fletch/visuomotor-deep-optics/runs/",
         "bootstrap_runs": "/wdata/home/fletch/visuomotor-deep-optics/bootstrap_runs/",
+        "dark_hole_runs": "/wdata/home/fletch/visuomotor-deep-optics/dark_hole_runs/",
         "test_output": "/wdata/home/fletch/visuomotor-deep-optics/test_output/",
         "agents": "/wdata/home/fletch/visuomotor-deep-optics/agents/",
     },
@@ -52,6 +56,7 @@ DEFAULT_REMOTE = "makau"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCAL_RUNS = _REPO_ROOT / "runs"
 LOCAL_BOOTSTRAP_RUNS = _REPO_ROOT / "bootstrap_runs"
+LOCAL_DARK_HOLE_RUNS = _REPO_ROOT / "dark_hole_runs"
 LOCAL_TEST_OUTPUT = _REPO_ROOT / "test_output"
 LOCAL_AGENTS = _REPO_ROOT / "agents"
 
@@ -179,12 +184,16 @@ def test_ssh_connection(remote_host: str | None = None) -> bool:
 
 def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False,
               remote_host: str | None = None,
-              best_only: bool = False) -> bool:
+              best_only: bool = False,
+              tb_only: bool = False) -> bool:
     """
     Run rsync with retry logic. Returns True on success.
 
     When ``best_only`` is True, only ``best.pt`` files are transferred
-    (with the surrounding directory structure preserved).
+    (with the surrounding directory structure preserved). When
+    ``tb_only`` is True, only TensorBoard event files are transferred
+    (``events.out.tfevents.*``), again preserving the enclosing
+    directory layout.
     """
     if remote_host is None:
         remote_host = REMOTES[DEFAULT_REMOTE]["host"]
@@ -196,6 +205,12 @@ def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False,
         # everything else. Order matters: rsync applies the first
         # matching rule per path.
         args += ["--include=*/", "--include=best.pt", "--exclude=*"]
+    if tb_only:
+        args += [
+            "--include=*/",
+            "--include=events.out.tfevents.*",
+            "--exclude=*",
+        ]
     if dry_run:
         args.append("--dry-run")
     args += [f"{remote_host}:{remote_path}", str(local_path) + "/"]
@@ -279,16 +294,22 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
               bootstrap: bool = False,
               test_output: bool = False,
               agents: bool = False,
-              best_only: bool = False) -> bool:
+              dark_hole: bool = False,
+              best_only: bool = False,
+              tb_only: bool = False) -> bool:
     """Run a single sync cycle. Returns True on success.
 
-    Exactly one of ``bootstrap`` / ``test_output`` / ``agents`` should
-    be True; if none are set we sync the regular ``runs/`` tree.
+    Exactly one of ``bootstrap`` / ``test_output`` / ``agents`` /
+    ``dark_hole`` should be True; if none are set we sync the regular
+    ``runs/`` tree.
 
     - ``bootstrap=True`` syncs the full ``bootstrap_runs/`` tree (or a
       specific bootstrap run id when ``run_name`` is given). Preserves
       the nested directory structure expected by
       ``compose_bootstrap_agent.py``.
+    - ``dark_hole=True`` syncs the full ``dark_hole_runs/`` tree (or a
+      specific dark-hole run id when ``run_name`` is given), produced
+      by ``train/ppo/launch_dark_hole.py``.
     - ``test_output=True`` syncs the ``test_output/`` tree where the
       rollout / sweep scripts drop evaluation artifacts (metrics.json,
       GIFs, figures).
@@ -296,9 +317,10 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
       ``compose_bootstrap_agent.py --export`` writes self-contained
       bundles (composed.yaml + checkpoints/ + manifest.json + README).
     """
-    sources = sum([bootstrap, test_output, agents])
+    sources = sum([bootstrap, test_output, agents, dark_hole])
     if sources > 1:
-        raise ValueError("Choose at most one of bootstrap/test_output/agents")
+        raise ValueError(
+            "Choose at most one of bootstrap/test_output/agents/dark_hole")
     # Wipe any stale multiplexing sockets left over from earlier
     # versions of this script — they can silently stall new rsyncs.
     if SSH_CONTROL_DIR.exists():
@@ -317,6 +339,9 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
     if bootstrap:
         remote_base = remote_cfg["bootstrap_runs"]
         local_base = LOCAL_BOOTSTRAP_RUNS
+    elif dark_hole:
+        remote_base = remote_cfg["dark_hole_runs"]
+        local_base = LOCAL_DARK_HOLE_RUNS
     elif test_output:
         remote_base = remote_cfg["test_output"]
         local_base = LOCAL_TEST_OUTPUT
@@ -340,7 +365,7 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
     _purge_stale_partials(local)
 
     return run_rsync(remote, local, dry_run=dry_run, remote_host=remote_host,
-                     best_only=best_only)
+                     best_only=best_only, tb_only=tb_only)
 
 
 def main():
@@ -395,6 +420,14 @@ def main():
              "+ checkpoints/ + manifest.json + README). Combine with "
              "--run to sync a single agent bundle.",
     )
+    source_group.add_argument(
+        "--dark-hole",
+        action="store_true",
+        help="Sync the dark_hole_runs/ tree produced by "
+             "train/ppo/launch_dark_hole.py. Combine with --run to "
+             "sync a single dark-hole sweep id, and with --tb-only "
+             "to keep only TensorBoard event files.",
+    )
     parser.add_argument(
         "--best-only",
         action="store_true",
@@ -402,11 +435,20 @@ def main():
              "enclosing directory structure. Useful for composition / "
              "evaluation when full training artifacts are not needed.",
     )
+    parser.add_argument(
+        "--tb-only",
+        action="store_true",
+        help="Transfer only TensorBoard event files (events.out.tfevents.*), "
+             "preserving the enclosing directory structure. Useful for "
+             "lightweight monitoring of in-progress runs.",
+    )
     args = parser.parse_args()
 
     remote_cfg = REMOTES[args.remote]
     if args.bootstrap:
         remote_path = remote_cfg["bootstrap_runs"]
+    elif args.dark_hole:
+        remote_path = remote_cfg["dark_hole_runs"]
     elif args.test_output:
         remote_path = remote_cfg["test_output"]
     elif args.agents:
@@ -425,7 +467,9 @@ def main():
                           bootstrap=args.bootstrap,
                           test_output=args.test_output,
                           agents=args.agents,
-                          best_only=args.best_only)
+                          dark_hole=args.dark_hole,
+                          best_only=args.best_only,
+                          tb_only=args.tb_only)
                 print(f"\nSleeping {args.interval}s until next sync...")
                 time.sleep(args.interval)
             except KeyboardInterrupt:
@@ -437,7 +481,9 @@ def main():
                        bootstrap=args.bootstrap,
                        test_output=args.test_output,
                        agents=args.agents,
-                       best_only=args.best_only)
+                       dark_hole=args.dark_hole,
+                       best_only=args.best_only,
+                       tb_only=args.tb_only)
         sys.exit(0 if ok else 1)
 
 
