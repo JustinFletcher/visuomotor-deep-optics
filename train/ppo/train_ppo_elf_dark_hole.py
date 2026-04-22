@@ -84,14 +84,16 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "get_disp_corr_max_tilt_arcsec": 20.0,
 
     # --- Initial / runtime disturbances -----------------------------------
-    # Configurable init path: per-segment piston drawn from N(±μ, σ),
-    # tuned to the residual distribution measured at the end of a
-    # composed bootstrap rollout (median |p| ~ 0.03 μm, RMS ~ 0.14 μm).
+    # Configurable init path: every DOF starts exactly at zero. The
+    # dark-hole shaping task is operating on the residual wavefront
+    # error the trained agent itself produces (plus the actuator
+    # repeatability noise that fires on every commanded step), so
+    # there is no init perturbation here.
     "init_differential_motion": False,
     "init_differential_motion_configurable": True,
-    "init_piston_micron_mean": 0.05,
-    "init_piston_micron_std": 0.10,
-    "init_piston_clip_micron": 0.5,
+    "init_piston_micron_mean": 0.0,
+    "init_piston_micron_std": 0.0,
+    "init_piston_clip_micron": 0.0,
     "init_tip_arcsec_std": 0.0,
     "init_tilt_arcsec_std": 0.0,
     "simulate_differential_motion": False,

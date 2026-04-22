@@ -206,7 +206,36 @@ def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False,
         # matching rule per path.
         args += ["--include=*/", "--include=best.pt", "--exclude=*"]
     if tb_only:
+        # Aggressively prune heavy subtrees and binary blobs BEFORE
+        # the catch-all include/exclude, so rsync doesn't waste time
+        # walking them during the file-list phase. Filter rules are
+        # evaluated top-down and the first match wins per path.
         args += [
+            # Heavy directories we never want for TB monitoring.
+            "--exclude=checkpoints/",
+            "--exclude=gifs/",
+            "--exclude=media/",
+            "--exclude=evaluations/",
+            "--exclude=eval/",
+            "--exclude=test_output/",
+            "--exclude=__pycache__/",
+            # Heavy file types.
+            "--exclude=*.pt",
+            "--exclude=*.pth",
+            "--exclude=*.ckpt",
+            "--exclude=*.npz",
+            "--exclude=*.npy",
+            "--exclude=*.gif",
+            "--exclude=*.mp4",
+            "--exclude=*.png",
+            "--exclude=*.jpg",
+            "--exclude=*.jpeg",
+            "--exclude=*.pdf",
+            "--exclude=*.zip",
+            "--exclude=*.tar",
+            "--exclude=*.tar.gz",
+            # Now the actual TB-file filter.
+            "--prune-empty-dirs",
             "--include=*/",
             "--include=events.out.tfevents.*",
             "--exclude=*",
