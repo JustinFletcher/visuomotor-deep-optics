@@ -184,6 +184,16 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._log_norm_perfect_t = torch.tensor(
             np.log(norm_perfect + 1e-10), dtype=torch.float32, device=self.dev)
 
+        # Dark-hole mask (inherited from v4 at build time). If dark_hole
+        # is disabled in cfg, v4 leaves _target_zero_mask as None and we
+        # mirror that here.
+        _v4_mask = getattr(v4, "_target_zero_mask", None)
+        if _v4_mask is None:
+            self._hole_mask_t = None
+        else:
+            self._hole_mask_t = torch.tensor(
+                _v4_mask.astype(bool), dtype=torch.bool, device=self.dev)
+
         # --- DEBUG: show perfect image ---
         if cfg.get("_debug_show_perfect", False):
             import matplotlib.pyplot as plt
@@ -388,6 +398,7 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             cfg.get("reward_vector_enabled", False))
         self._reward_components_t = {}   # name -> [N] tensor (when enabled)
         self._rw_centered_strehl = cfg.get("reward_weight_centered_strehl", 0.0)
+        self._rw_contrast_strehl = cfg.get("reward_weight_contrast_strehl", 0.0)
         self._rw_strehl = cfg.get("reward_weight_strehl", 0.0)
         self._rw_centering = cfg.get("reward_weight_centering", 0.0)
         self._rw_flux = cfg.get("reward_weight_flux", 0.0)
@@ -941,6 +952,38 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             s_val = -(1.0 - strehl)
             if self._rw_strehl > 0:
                 total += self._rw_strehl * s_val
+
+        # --- contrast-weighted strehl ---
+        # contrast = 1 - max(fpi[hole]) / max(fpi[~hole]).  Multiplies
+        # strehl to only credit the PSF core when the hole is dark
+        # relative to it. If no hole is configured, contrast = 1 and
+        # this degenerates to plain strehl.
+        ct_val = None
+        if self._rw_contrast_strehl > 0 or vec:
+            if self._hole_mask_t is None:
+                contrast = torch.ones(N, dtype=torch.float32, device=self.dev)
+            else:
+                hole = self._hole_mask_t  # [H, W]
+                frames_flat = frames.reshape(N, -1)
+                hole_flat = hole.reshape(-1)
+                # Mask values outside the hole to -inf / inside to -inf
+                # in the opposing view so amax picks the intended peak.
+                neg_inf = torch.full_like(frames_flat, float("-inf"))
+                in_hole = torch.where(hole_flat.unsqueeze(0), frames_flat,
+                                      neg_inf)
+                out_hole = torch.where(~hole_flat.unsqueeze(0), frames_flat,
+                                       neg_inf)
+                hole_max = in_hole.amax(dim=1)
+                out_max = out_hole.amax(dim=1)
+                safe_out = out_max.clamp(min=1e-30)
+                contrast = (1.0 - hole_max / safe_out).clamp(min=0.0, max=1.0)
+                # If the outside region had no finite max (degenerate),
+                # fall back to zero contrast.
+                contrast = torch.where(out_max > 0, contrast,
+                                       torch.zeros_like(contrast))
+            ct_val = -(1.0 - contrast * strehl)
+            if self._rw_contrast_strehl > 0:
+                total += self._rw_contrast_strehl * ct_val
 
         # --- centering ---
         cen_component = None

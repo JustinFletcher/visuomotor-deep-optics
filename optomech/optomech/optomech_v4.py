@@ -218,6 +218,7 @@ DEFAULT_CONFIG = {
     "reward_weight_concentration": 0.0,
     "reward_weight_peak": 0.0,
     "reward_weight_centered_strehl": 0.0,
+    "reward_weight_contrast_strehl": 0.0,
     "centering_sigma_fraction": 0.25,
     "centering_mode": "gaussian",           # "gaussian" or "circular"
     "centering_radius_fraction": 0.25,      # radius as fraction of image size (circular mode)
@@ -2100,6 +2101,7 @@ class OptomechEnv(gym.Env):
         self._reward_weight_concentration = cfg.get('reward_weight_concentration', 0.0)
         self._reward_weight_peak = cfg.get('reward_weight_peak', 0.0)
         self._reward_weight_centered_strehl = cfg.get('reward_weight_centered_strehl', 0.0)
+        self._reward_weight_contrast_strehl = cfg.get('reward_weight_contrast_strehl', 0.0)
         self._reward_weight_shape = cfg['reward_weight_shape']
 
         self.ao_loop_active = cfg['ao_loop_active']
@@ -3453,6 +3455,29 @@ class OptomechEnv(gym.Env):
                 else:
                     cs_vals.append(-(1.0 - s_c))
             total += self._reward_weight_centered_strehl * float(np.mean(cs_vals))
+
+        # --- Contrast-weighted Strehl -----------------------------------
+        # Multiplies absolute Strehl by a hole-depth factor, so the agent
+        # is only credited for a bright PSF core WHEN the dark-hole
+        # region is actually dark relative to it. Term lives in [-1, 0]
+        # so it composes cleanly with strehl / centered_strehl weights.
+        if self._reward_weight_contrast_strehl > 0:
+            hole_mask = self._target_zero_mask
+            ct_vals = []
+            for fpi in self.focal_plane_images:
+                strehl = self._absolute_strehl(fpi)
+                if hole_mask is None:
+                    contrast = 1.0
+                else:
+                    outside_max = float(np.max(fpi[~hole_mask]))
+                    hole_max = float(np.max(fpi[hole_mask]))
+                    if outside_max <= 0.0:
+                        contrast = 0.0
+                    else:
+                        contrast = 1.0 - hole_max / outside_max
+                    contrast = float(np.clip(contrast, 0.0, 1.0))
+                ct_vals.append(-(1.0 - contrast * strehl))
+            total += self._reward_weight_contrast_strehl * float(np.mean(ct_vals))
 
         # --- Peak pixel: -(1 - max(I)/max(I_ref)), zero when merged ---
         # Constructive interference when spots merge ~quadruples peak.
