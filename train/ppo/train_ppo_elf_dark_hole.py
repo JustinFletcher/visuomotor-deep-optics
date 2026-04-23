@@ -121,9 +121,13 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "init_gravity_tilt_arcsec_std_tt": 15.0,
 
     # --- Reward -----------------------------------------------------------
-    # The dark-hole contribution is bounded in [-1, 0] and lives in the
-    # ~[-0.05, -0.01] band for our regime, so we weight it ~20x to put
-    # it on a comparable gradient footing with the centered-Strehl term.
+    # SANITY-CHECK CONFIGURATION: the reward is 100% dark-hole and
+    # nothing else. No Strehl, no centering, no action penalty, no
+    # holding bonus. The question this config answers is "is a dark
+    # hole even attainable by this policy class on this aperture?" —
+    # if the agent can't drive reward_weight_dark_hole * dh_val toward
+    # zero with every competing reward term stripped out, the failure
+    # is in the reward / task formulation itself, not in weighting.
     "reward_function": "factored",
     "reward_weight_strehl": 0.0,
     "reward_weight_centering": 0.0,
@@ -133,11 +137,12 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "reward_weight_dist": 0.0,
     "reward_weight_concentration": 0.0,
     "reward_weight_peak": 0.0,
-    "reward_weight_centered_strehl": 1.0,
+    "reward_weight_centered_strehl": 0.0,
     "centering_mode": "circular",
     "centering_radius_fraction": 0.25,
     "centering_sigma_fraction": 0.25,
-    "reward_weight_dark_hole": 20.0,
+    "reward_weight_dark_hole": 1.0,
+    "reward_weight_contrast_strehl": 0.0,
     "reward_weight_image_quality": 0.0,
     "reward_weight_shape": 0.0,
     "reward_threshold": 25.0,
@@ -146,11 +151,11 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "align_mse_expand_threshold": -1.25,
     "ao_closed_inv_slope_threshold": 2e6,
     "dark_hole_alpha": 0.0,
-    "action_penalty": True,
-    "action_penalty_weight": 0.5,
+    "action_penalty": False,
+    "action_penalty_weight": 0.0,
     "oob_penalty": False,
     "oob_penalty_weight": 0.0,
-    "holding_bonus_weight": 1.0,
+    "holding_bonus_weight": 0.0,
     "holding_bonus_min_reward": -1.0,
     "holding_bonus_threshold": -0.7,
 
