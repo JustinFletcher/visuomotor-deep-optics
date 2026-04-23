@@ -157,7 +157,7 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "action_penalty_weight": 0.5,
     "oob_penalty": False,
     "oob_penalty_weight": 0.0,
-    "holding_bonus_weight": 1.0,
+    "holding_bonus_weight": 0.0,
     "holding_bonus_min_reward": -1.0,
     "holding_bonus_threshold": -0.7,
 
