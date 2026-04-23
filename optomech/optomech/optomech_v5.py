@@ -399,6 +399,7 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._reward_components_t = {}   # name -> [N] tensor (when enabled)
         self._rw_centered_strehl = cfg.get("reward_weight_centered_strehl", 0.0)
         self._rw_contrast_strehl = cfg.get("reward_weight_contrast_strehl", 0.0)
+        self._rw_dark_hole = cfg.get("reward_weight_dark_hole", 0.0)
         self._rw_strehl = cfg.get("reward_weight_strehl", 0.0)
         self._rw_centering = cfg.get("reward_weight_centering", 0.0)
         self._rw_flux = cfg.get("reward_weight_flux", 0.0)
@@ -992,6 +993,23 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             ct_val = -(1.0 - self._last_contrast * strehl)
             if self._rw_contrast_strehl > 0:
                 total += self._rw_contrast_strehl * ct_val
+
+        # --- dark-hole (mean normalised intensity in the hole) ---------
+        # Matches v4's factored path: -mean(fpi[hole] / max(fpi)). When
+        # the hole is empty relative to the peak the term is 0; when the
+        # hole contains peak-level flux, the term is -(|hole|/|frame|).
+        dh_val = None
+        if self._rw_dark_hole > 0 or vec:
+            if self._hole_mask_t is None:
+                dh_val = torch.zeros(N, dtype=torch.float32, device=self.dev)
+            else:
+                hole_flat = self._hole_mask_t.reshape(-1)
+                frames_flat = frames.reshape(N, -1)
+                hole_pixels = frames_flat[:, hole_flat]  # [N, n_hole]
+                fmax_safe = fpi_max.clamp(min=1e-30).unsqueeze(1)  # [N, 1]
+                dh_val = -(hole_pixels / fmax_safe).mean(dim=1)
+            if self._rw_dark_hole > 0:
+                total += self._rw_dark_hole * dh_val
 
         # --- centering ---
         cen_component = None
