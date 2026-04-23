@@ -953,35 +953,43 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             if self._rw_strehl > 0:
                 total += self._rw_strehl * s_val
 
+        # --- Dark-hole diagnostics (contrast + fractional hole flux) ---
+        # Always compute these whenever a hole is configured, regardless
+        # of reward weight, so the training loop can log them for
+        # monitoring. Stashed on self so step() can pull them into infos.
+        if self._hole_mask_t is None:
+            self._last_contrast = torch.ones(N, dtype=torch.float32,
+                                             device=self.dev)
+            self._last_hole_flux_frac = torch.zeros(N, dtype=torch.float32,
+                                                    device=self.dev)
+        else:
+            hole = self._hole_mask_t
+            frames_flat = frames.reshape(N, -1)
+            hole_flat = hole.reshape(-1)
+            neg_inf = torch.full_like(frames_flat, float("-inf"))
+            in_hole = torch.where(hole_flat.unsqueeze(0), frames_flat, neg_inf)
+            out_hole = torch.where(~hole_flat.unsqueeze(0), frames_flat, neg_inf)
+            hole_max = in_hole.amax(dim=1)
+            out_max = out_hole.amax(dim=1)
+            safe_out = out_max.clamp(min=1e-30)
+            contrast = (1.0 - hole_max / safe_out).clamp(min=0.0, max=1.0)
+            contrast = torch.where(out_max > 0, contrast,
+                                   torch.zeros_like(contrast))
+            self._last_contrast = contrast
+            # Fractional flux sitting inside the hole region.
+            flux_total = frames_flat.sum(dim=1).clamp(min=1e-30)
+            flux_hole = torch.where(hole_flat.unsqueeze(0), frames_flat,
+                                    torch.zeros_like(frames_flat)).sum(dim=1)
+            self._last_hole_flux_frac = flux_hole / flux_total
+
         # --- contrast-weighted strehl ---
-        # contrast = 1 - max(fpi[hole]) / max(fpi[~hole]).  Multiplies
-        # strehl to only credit the PSF core when the hole is dark
-        # relative to it. If no hole is configured, contrast = 1 and
-        # this degenerates to plain strehl.
+        # Multiplies strehl by the contrast factor above, so the PSF
+        # core is only credited when the hole is dark relative to it.
+        # If no hole is configured, contrast = 1 and the term
+        # degenerates to plain strehl.
         ct_val = None
         if self._rw_contrast_strehl > 0 or vec:
-            if self._hole_mask_t is None:
-                contrast = torch.ones(N, dtype=torch.float32, device=self.dev)
-            else:
-                hole = self._hole_mask_t  # [H, W]
-                frames_flat = frames.reshape(N, -1)
-                hole_flat = hole.reshape(-1)
-                # Mask values outside the hole to -inf / inside to -inf
-                # in the opposing view so amax picks the intended peak.
-                neg_inf = torch.full_like(frames_flat, float("-inf"))
-                in_hole = torch.where(hole_flat.unsqueeze(0), frames_flat,
-                                      neg_inf)
-                out_hole = torch.where(~hole_flat.unsqueeze(0), frames_flat,
-                                       neg_inf)
-                hole_max = in_hole.amax(dim=1)
-                out_max = out_hole.amax(dim=1)
-                safe_out = out_max.clamp(min=1e-30)
-                contrast = (1.0 - hole_max / safe_out).clamp(min=0.0, max=1.0)
-                # If the outside region had no finite max (degenerate),
-                # fall back to zero contrast.
-                contrast = torch.where(out_max > 0, contrast,
-                                       torch.zeros_like(contrast))
-            ct_val = -(1.0 - contrast * strehl)
+            ct_val = -(1.0 - self._last_contrast * strehl)
             if self._rw_contrast_strehl > 0:
                 total += self._rw_contrast_strehl * ct_val
 
@@ -1456,6 +1464,11 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             "mse": np.zeros(N, dtype=np.float32),  # placeholder (not computed in V5)
             "oob_frac": oob_np,
             "reward_raw": raw_reward_np,
+            # Dark-hole diagnostics (always computed when a hole is set;
+            # otherwise contrast=1, hole_flux_frac=0 by construction).
+            "contrast": self._last_contrast.detach().cpu().numpy(),
+            "hole_flux_frac":
+                self._last_hole_flux_frac.detach().cpu().numpy(),
         }
         # Vector reward: expose raw, unscaled "higher-is-better" components
         # so callers can pick (or re-weight) the optimization signal.
@@ -1482,6 +1495,12 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
                     }
                 })
 
+            # Capture the pre-reset observation history so that callers
+            # relying on gymnasium's final_observation convention (eval
+            # filmstrip, etc.) see the actual terminal frame rather than
+            # the auto-reset frame of the next episode.
+            pre_reset_obs = self._obs_history[done_mask].detach().cpu().numpy()
+
             # Auto-reset done envs
             self._init_actuators(env_mask=done_mask)
 
@@ -1499,9 +1518,14 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
                 infos["final_info"][idx] = final_infos[i]
                 infos["_final_info"][idx] = True
 
-            # Final observation is the pre-reset frame
+            # Populate final_observation with the captured pre-reset
+            # frames. (Previously this field was always None, breaking
+            # the gymnasium convention.)
             infos["final_observation"] = [None] * N
             infos["_final_observation"] = np.zeros(N, dtype=bool)
+            for i, idx in enumerate(done_indices.cpu().numpy()):
+                infos["final_observation"][idx] = pre_reset_obs[i]
+                infos["_final_observation"][idx] = True
 
         # --- 9. Single CPU sync ---
         obs = self._obs_history.cpu().numpy()

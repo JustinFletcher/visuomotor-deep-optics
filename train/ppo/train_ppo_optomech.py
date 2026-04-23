@@ -420,8 +420,21 @@ def evaluate_with_visualization(
 
         all_step_rewards[step] = rewards
         agnt_step_actions[step] = act_np
+        # Gymnasium vector envs auto-reset on term/trunc, so obs_all
+        # for those slots already holds the NEXT episode's initial obs.
+        # The true terminal frame lives in infos["final_observation"].
+        # Substitute it in so the filmstrip's last frame reflects what
+        # the agent actually saw at the end of the episode, not the
+        # first observation of a resampled one.
+        _final_obs = infos.get("final_observation")
+        _final_flag = infos.get("_final_observation")
         for i in range(N):
-            agnt_obs_raw[i].append(obs_all[agnt_idx[i]].copy())
+            idx = agnt_idx[i]
+            o = obs_all[idx]
+            if (_final_obs is not None and _final_flag is not None
+                    and _final_flag[idx] and _final_obs[idx] is not None):
+                o = _final_obs[idx]
+            agnt_obs_raw[i].append(o.copy())
 
         if isinstance(infos, dict):
             _s = infos.get("strehl", None)
@@ -1682,6 +1695,19 @@ def run_ppo_training(config: dict, run_dir: str):
                     writer.add_scalar(
                         "train/step_reward_raw",
                         float(np.mean(infos["reward_raw"])), global_step,
+                    )
+
+                # Dark-hole diagnostics (present whenever a hole is
+                # configured; absent otherwise).
+                if "contrast" in infos:
+                    writer.add_scalar(
+                        "train/step_contrast",
+                        float(np.mean(infos["contrast"])), global_step,
+                    )
+                if "hole_flux_frac" in infos:
+                    writer.add_scalar(
+                        "train/step_hole_flux_frac",
+                        float(np.mean(infos["hole_flux_frac"])), global_step,
                     )
 
             # Envs that finished this step need a fresh start_strehl

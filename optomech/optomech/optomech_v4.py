@@ -3100,6 +3100,31 @@ class OptomechEnv(gym.Env):
             cens = [self._centering_energy(fpi)
                     for fpi in self.focal_plane_images]
             info["centering"] = float(np.mean(cens))
+        # Dark-hole diagnostics: mean contrast and fractional hole flux
+        # across the frame stack. Always emitted when a hole is set so
+        # training can log them regardless of reward weights.
+        _hole_mask = self._target_zero_mask
+        if _hole_mask is not None:
+            ct_vals = []
+            hf_vals = []
+            for fpi in self.focal_plane_images:
+                out_max = float(np.max(fpi[~_hole_mask]))
+                hole_max = float(np.max(fpi[_hole_mask]))
+                if out_max <= 0:
+                    ct_vals.append(0.0)
+                else:
+                    ct_vals.append(float(np.clip(1.0 - hole_max / out_max,
+                                                 0.0, 1.0)))
+                flux_total = float(np.sum(fpi))
+                if flux_total > 0:
+                    hf_vals.append(float(np.sum(fpi[_hole_mask]) / flux_total))
+                else:
+                    hf_vals.append(0.0)
+            info["contrast"] = float(np.mean(ct_vals))
+            info["hole_flux_frac"] = float(np.mean(hf_vals))
+        else:
+            info["contrast"] = 1.0
+            info["hole_flux_frac"] = 0.0
         if _record:
             info["state_content"] = self.state_content
             info["state"] = self.state

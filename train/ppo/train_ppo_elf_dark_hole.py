@@ -273,11 +273,11 @@ HPC_CONFIG = dict(
     pass_threshold_ratio=1.1,
     seed=1,
     model_save_interval=100,
-    # Scalar-downsampling + figure-DPI safety nets (matches bootstrap).
-    # tb_step_log_interval=32 is the real cure for the 500-MB tfevents
-    # we saw on the first sweep — per-step scalars were dominant.
-    tb_step_log_interval=32,
-    eval_figure_dpi=48,
+    # Aggressive scalar-downsampling and tiny embedded eval figures.
+    # With num_steps=128 and interval=128 we emit exactly ONE step-log
+    # per rollout — the bare minimum for training-curve visibility.
+    tb_step_log_interval=128,
+    eval_figure_dpi=24,
     env_kwargs=ELF_DARK_HOLE_ENV_KWARGS,
 )
 
