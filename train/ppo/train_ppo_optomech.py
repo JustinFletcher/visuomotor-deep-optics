@@ -668,62 +668,64 @@ def _log_rollout_summary_figure(
     cumulative = np.cumsum(rewards)
     timesteps = np.arange(len(rewards))
 
-    fig = plt.figure(figsize=(14, 10), dpi=dpi)
-    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.3)
+    fig = plt.figure(figsize=(8.5, 5.4), dpi=dpi)
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.42, wspace=0.28,
+                           left=0.07, right=0.97, top=0.93, bottom=0.09)
+    AXTITLE = 9
+    AXLABEL = 8
+    TICK = 7
+    LEGEND = 6.5
 
     # --- Top-left: step-wise reward ---
     ax_rew = fig.add_subplot(gs[0, 0])
-    ax_rew.plot(timesteps, rewards, color="steelblue", linewidth=1.0, alpha=0.8)
+    ax_rew.plot(timesteps, rewards, color="steelblue", linewidth=0.7, alpha=0.8)
     if len(rewards) > 10:
         kernel = np.ones(10) / 10
         smoothed = np.convolve(rewards, kernel, mode="valid")
         ax_rew.plot(
-            timesteps[4 : 4 + len(smoothed)],
-            smoothed,
-            color="darkblue",
-            linewidth=2.0,
-            label="smoothed (10-step)",
-        )
-        ax_rew.legend(fontsize=8)
-    ax_rew.set_xlabel("Step")
-    ax_rew.set_ylabel("Reward")
-    ax_rew.set_title("Step-wise Reward")
-    ax_rew.grid(True, alpha=0.3)
+            timesteps[4 : 4 + len(smoothed)], smoothed,
+            color="darkblue", linewidth=1.3, label="smoothed (10-step)")
+        ax_rew.legend(fontsize=LEGEND, frameon=False, handlelength=1.4)
+    ax_rew.set_xlabel("Step", fontsize=AXLABEL)
+    ax_rew.set_ylabel("Reward", fontsize=AXLABEL)
+    ax_rew.set_title("Step-wise reward", fontsize=AXTITLE)
+    ax_rew.tick_params(labelsize=TICK)
+    ax_rew.grid(True, alpha=0.25, linewidth=0.4)
 
     # --- Top-right: cumulative return ---
     ax_cum = fig.add_subplot(gs[0, 1])
-    ax_cum.plot(timesteps, cumulative, color="forestgreen", linewidth=2.0,
+    ax_cum.plot(timesteps, cumulative, color="forestgreen", linewidth=1.3,
                 label=f"agent = {cumulative[-1]:.1f}")
-    # Zero-action baseline (dashed) for comparison
     if "zero_return" in ep_data:
         zero_per_step = ep_data["zero_return"] / len(rewards)
         zero_cumulative = np.cumsum(np.full_like(rewards, zero_per_step))
-        ax_cum.plot(timesteps, zero_cumulative, color="gray", linewidth=1.5,
+        ax_cum.plot(timesteps, zero_cumulative, color="gray", linewidth=1.0,
                     linestyle="--", alpha=0.7,
                     label=f"zero-action = {ep_data['zero_return']:.1f}")
-    ax_cum.set_xlabel("Step")
-    ax_cum.set_ylabel("Cumulative Return")
-    ax_cum.set_title("Cumulative Return vs Zero-Action Baseline")
-    ax_cum.legend(fontsize=8)
-    ax_cum.grid(True, alpha=0.3)
+    ax_cum.set_xlabel("Step", fontsize=AXLABEL)
+    ax_cum.set_ylabel("Cumulative return", fontsize=AXLABEL)
+    ax_cum.set_title("Cumulative return vs zero-action",
+                     fontsize=AXTITLE)
+    ax_cum.legend(fontsize=LEGEND, frameon=False, handlelength=1.4)
+    ax_cum.tick_params(labelsize=TICK)
+    ax_cum.grid(True, alpha=0.25, linewidth=0.4)
 
     # --- Bottom-left: action trace ---
     ax_act = fig.add_subplot(gs[1, 0])
     action_dim = actions.shape[1] if actions.ndim > 1 else 1
     if actions.ndim == 1:
         actions = actions[:, np.newaxis]
-    labels = [f"a[{d}]" for d in range(action_dim)]
     for d in range(action_dim):
-        ax_act.plot(
-            timesteps, actions[:, d], linewidth=1.0, label=labels[d], alpha=0.8
-        )
-    ax_act.set_xlabel("Step")
-    ax_act.set_ylabel("Action")
-    ax_act.set_title("Commands")
-    ax_act.axhline(y=0, color="gray", linestyle=":", alpha=0.5)
+        ax_act.plot(timesteps, actions[:, d], linewidth=0.7, alpha=0.8,
+                    label=f"a[{d}]")
+    ax_act.set_xlabel("Step", fontsize=AXLABEL)
+    ax_act.set_ylabel("Action", fontsize=AXLABEL)
+    ax_act.set_title("Commands", fontsize=AXTITLE)
+    ax_act.axhline(y=0, color="gray", linestyle=":", alpha=0.5, linewidth=0.5)
     if action_dim <= 6:
-        ax_act.legend(fontsize=8)
-    ax_act.grid(True, alpha=0.3)
+        ax_act.legend(fontsize=LEGEND, frameon=False, handlelength=1.2)
+    ax_act.tick_params(labelsize=TICK)
+    ax_act.grid(True, alpha=0.25, linewidth=0.4)
 
     # --- Bottom-right: Strehl + signal diagnostics ---
     ax_br = fig.add_subplot(gs[1, 1])
@@ -731,62 +733,61 @@ def _log_rollout_summary_figure(
     oob_fracs = np.array(ep_data.get("oob_fracs", []))
 
     if len(strehls_arr) > 0:
-        # Strehl trace (primary y-axis)
-        ax_br.plot(timesteps, strehls_arr, color="darkorange", linewidth=1.5,
-                   label="Strehl")
-        ax_br.set_ylabel("Strehl", color="darkorange")
+        ax_br.plot(timesteps, strehls_arr, color="darkorange",
+                   linewidth=1.1, label="Strehl")
+        ax_br.set_ylabel("Strehl", color="darkorange", fontsize=AXLABEL)
         ax_br.set_ylim(0, max(1.05, float(np.max(strehls_arr)) * 1.05))
-        ax_br.tick_params(axis="y", labelcolor="darkorange")
-        ax_br.set_xlabel("Step")
-        ax_br.set_title("Strehl & Signal Level")
-        ax_br.grid(True, alpha=0.3)
+        ax_br.tick_params(axis="y", labelcolor="darkorange", labelsize=TICK)
+        ax_br.tick_params(axis="x", labelsize=TICK)
+        ax_br.set_xlabel("Step", fontsize=AXLABEL)
+        ax_br.set_title("Strehl & signal level", fontsize=AXTITLE)
+        ax_br.grid(True, alpha=0.25, linewidth=0.4)
 
-        # Sum-DN trace on secondary axis to show flux level
         obs_raw = ep_data["obs_raw"]
         sum_dns = [float(np.sum(_prepare_obs_raw(obs_raw[t + 1])))
                    for t in range(len(timesteps))]
         ax_flux = ax_br.twinx()
-        ax_flux.plot(timesteps, sum_dns, color="steelblue", linewidth=1.0,
+        ax_flux.plot(timesteps, sum_dns, color="steelblue", linewidth=0.8,
                      alpha=0.7, linestyle="--", label="sum DN")
-        ax_flux.set_ylabel("sum DN", color="steelblue", fontsize=8)
-        ax_flux.tick_params(axis="y", labelcolor="steelblue", labelsize=7)
+        ax_flux.set_ylabel("sum DN", color="steelblue", fontsize=AXLABEL)
+        ax_flux.tick_params(axis="y", labelcolor="steelblue", labelsize=TICK)
 
-        # Combined legend
         lines1, labels1 = ax_br.get_legend_handles_labels()
         lines2, labels2 = ax_flux.get_legend_handles_labels()
-        ax_br.legend(lines1 + lines2, labels1 + labels2, fontsize=7, loc="lower left")
+        ax_br.legend(lines1 + lines2, labels1 + labels2,
+                     fontsize=LEGEND, frameon=False, loc="lower left",
+                     handlelength=1.2)
     elif len(oob_fracs) > 0:
         oob_colors = ["#d94a4a" if f > 0 else "#4a90d9" for f in oob_fracs]
         ax_br.bar(timesteps, oob_fracs, color=oob_colors, width=1.0, alpha=0.8)
-        ax_br.set_xlabel("Step")
-        ax_br.set_ylabel("OOB Fraction")
+        ax_br.set_xlabel("Step", fontsize=AXLABEL)
+        ax_br.set_ylabel("OOB fraction", fontsize=AXLABEL)
         total_oob_steps = int(np.sum(oob_fracs > 0))
         ax_br.set_title(
-            f"OOB ({total_oob_steps}/{len(oob_fracs)} steps)", fontsize=9)
+            f"OOB ({total_oob_steps}/{len(oob_fracs)} steps)",
+            fontsize=AXTITLE)
         ax_br.set_ylim(0, max(1.0, float(np.max(oob_fracs)) * 1.1))
-        ax_br.grid(True, alpha=0.3)
+        ax_br.tick_params(labelsize=TICK)
+        ax_br.grid(True, alpha=0.25, linewidth=0.4)
     else:
         ax_br.text(0.5, 0.5, "No diagnostic data", ha="center", va="center",
-                   fontsize=10, transform=ax_br.transAxes)
-        ax_br.set_title("Diagnostics")
+                   fontsize=8, transform=ax_br.transAxes)
+        ax_br.set_title("Diagnostics", fontsize=AXTITLE)
 
-    # Build title with zero-action baseline comparison if available
     title_parts = [
-        f"Return: {ep_data['return']:.3f}",
-        f"Length: {ep_data['length']}",
+        f"R={ep_data['return']:.3f}",
+        f"T={ep_data['length']}",
     ]
     if "zero_return" in ep_data:
-        title_parts.append(f"Zero-baseline: {ep_data['zero_return']:.3f}")
-        title_parts.append(f"Gap: {ep_data['improvement_gap']:+.3f}")
+        title_parts.append(f"zero={ep_data['zero_return']:.3f}")
+        title_parts.append(f"Δ={ep_data['improvement_gap']:+.3f}")
     if "seed" in ep_data:
-        title_parts.append(f"Seed: {ep_data['seed']}")
-    title_parts.append(f"Step: {global_step}")
+        title_parts.append(f"seed={ep_data['seed']}")
+    title_parts.append(f"step={global_step}")
 
     fig.suptitle(
-        "Rollout  |  " + "  |  ".join(title_parts),
-        fontsize=11,
-        fontweight="bold",
-    )
+        "Rollout — " + "  ".join(title_parts),
+        fontsize=9.5, fontweight="bold", y=0.99)
 
     writer.add_figure(f"{tag_prefix}/rollout_summary", fig, global_step)
     plt.close(fig)
@@ -797,116 +798,104 @@ def _log_observation_filmstrip(
     ep_data: dict,
     global_step: int,
     tag_prefix: str,
-    num_frames: int = 8,
     dpi: int = 100,
 ):
     """
-    Filmstrip of focal-plane observations sampled uniformly from the episode.
+    Three-column filmstrip: start, best-reward step, final.
 
-    Three rows per column:
-      Row 0: focal-plane image in log DN, shared color scale across columns.
-      Row 1: horizontal bar chart of the action that produced this frame
-             (raw policy action, [-1, 1]).
-      Row 2: per-frame text metrics (reward, cumulative, Strehl, max/sum).
+    Row 0: focal-plane image (log DN, shared color scale).
+    Row 1: action bars for the action that produced the frame.
+    Row 2: per-frame metrics line (reward, cumulative, Strehl, max/sum).
     """
     obs_raw = ep_data["obs_raw"]
     rewards = np.array(ep_data["rewards"])
     actions = np.asarray(ep_data.get("actions", []))
     strehls = ep_data.get("strehls", [])
     cumulative = np.cumsum(rewards)
-    T = len(obs_raw)
+    T = len(obs_raw)                          # = num_rewards + 1
     action_dim = int(actions.shape[1]) if actions.ndim == 2 else 0
 
-    if T <= num_frames:
-        frame_indices = list(range(T))
+    # Pick start / best-reward / final. Best-reward is the obs AFTER
+    # the best-reward action (idx = argmax(rewards) + 1), i.e. the
+    # observation that earned that reward.
+    if len(rewards) > 0:
+        best_idx = int(np.argmax(rewards)) + 1
     else:
-        frame_indices = [
-            int(i * (T - 1) / (num_frames - 1)) for i in range(num_frames)
-        ]
+        best_idx = 0
+    final_idx = T - 1
+    frame_indices = sorted(set([0, best_idx, final_idx]))
+    labels = {0: "start", best_idx: "best r", final_idx: "final"}
 
-    # Pre-extract raw images and find global max for shared colour scale.
     raw_imgs = [_prepare_obs_raw(obs_raw[idx]) for idx in frame_indices]
     global_max = max(float(np.max(img)) for img in raw_imgs)
-    global_max = max(global_max, 1.0)  # guard against all-zero frames
+    global_max = max(global_max, 1.0)
 
     n = len(frame_indices)
     fig, axes = plt.subplots(
-        3, n, figsize=(2.2 * n, 5.2), dpi=dpi,
-        gridspec_kw={"height_ratios": [4, 2, 1],
-                     "hspace": 0.12, "wspace": 0.08},
+        3, n, figsize=(1.8 * n, 3.1), dpi=dpi,
+        gridspec_kw={"height_ratios": [3.5, 1.8, 0.7],
+                     "hspace": 0.08, "wspace": 0.06},
     )
     if n == 1:
         axes = axes.reshape(3, 1)
 
     norm = mcolors.LogNorm(vmin=1.0, vmax=global_max)
-
-    # Colors for action bars: repeat a 6-color palette enough times to
-    # cover any action_dim (45 for ELF).
     palette = (["#4a90d9", "#d94a4a", "#4ad94a",
                 "#d9d94a", "#d94ad9", "#4ad9d9"] * 16)[:max(action_dim, 1)]
 
     for col, idx in enumerate(frame_indices):
-        # --- Row 0: image ---
+        # Row 0: image.
         ax_img = axes[0, col]
         img_dn = raw_imgs[col]
         im = ax_img.imshow(np.maximum(img_dn, 1.0), cmap="inferno", norm=norm)
-        ax_img.set_title(f"t={idx}", fontsize=8, fontweight="bold", pad=2)
+        tag = labels.get(idx, "")
+        ax_img.set_title(f"{tag} (t={idx})", fontsize=7, pad=1.5)
         ax_img.axis("off")
-        # Only colorbar on the rightmost column to save horizontal space.
         if col == n - 1:
-            fig.colorbar(im, ax=ax_img, fraction=0.046, pad=0.02)
+            cb = fig.colorbar(im, ax=ax_img, fraction=0.046, pad=0.02)
+            cb.ax.tick_params(labelsize=5.5)
 
-        # --- Row 1: action bars for the action that produced this frame ---
+        # Row 1: action bars for the action that produced this frame.
         ax_act = axes[1, col]
         if idx > 0 and action_dim > 0 and idx - 1 < len(actions):
             act = actions[idx - 1]
             ax_act.barh(range(action_dim), act, color=palette, height=0.9)
             ax_act.set_xlim(-1.05, 1.05)
             ax_act.set_ylim(-0.5, action_dim - 0.5)
-            ax_act.invert_yaxis()  # DOF 0 at top
-            ax_act.axvline(x=0, color="gray", linestyle=":", alpha=0.5, linewidth=0.5)
+            ax_act.invert_yaxis()
+            ax_act.axvline(x=0, color="gray", linestyle=":",
+                           alpha=0.5, linewidth=0.4)
             ax_act.set_xticks([])
             ax_act.set_yticks([])
             for spine in ax_act.spines.values():
                 spine.set_linewidth(0.3)
         else:
             ax_act.text(0.5, 0.5, "(initial)", ha="center", va="center",
-                        fontsize=6, transform=ax_act.transAxes,
+                        fontsize=5.5, transform=ax_act.transAxes,
                         color="gray")
-            ax_act.set_xticks([])
-            ax_act.set_yticks([])
+            ax_act.set_xticks([]); ax_act.set_yticks([])
             for spine in ax_act.spines.values():
                 spine.set_visible(False)
 
-        # --- Row 2: text metrics ---
+        # Row 2: single-line text metrics.
         ax_txt = axes[2, col]
         ax_txt.axis("off")
-
         dn_max = float(np.max(img_dn))
-        dn_sum = float(np.sum(img_dn))
         if idx == 0:
-            text = f"start\nmax={dn_max:.0f}\nsum={dn_sum:.0f}"
+            text = f"max={dn_max:.0f}"
         else:
             r = rewards[idx - 1]
             c = cumulative[idx - 1]
-            s_txt = f"\nS={strehls[idx-1]:.3f}" if strehls else ""
-            text = (f"r={r:.3f}  \u03a3={c:.2f}{s_txt}"
-                    f"\nmax={dn_max:.0f}  sum={dn_sum:.0f}")
-        ax_txt.text(
-            0.5, 0.5, text,
-            transform=ax_txt.transAxes,
-            ha="center", va="center",
-            fontsize=6, fontfamily="monospace",
-        )
+            s_txt = f"  S={strehls[idx-1]:.2f}" if strehls else ""
+            text = f"r={r:.2f}  \u03a3={c:.1f}{s_txt}  max={dn_max:.0f}"
+        ax_txt.text(0.5, 0.5, text, transform=ax_txt.transAxes,
+                    ha="center", va="center", fontsize=5.5,
+                    fontfamily="monospace")
 
     fig.suptitle(
-        f"Focal-Plane Filmstrip (DN, log scale)  |  "
-        f"Return: {ep_data['return']:.3f}  |  Step: {global_step}",
-        fontsize=10, fontweight="bold", y=0.995,
-    )
-    # Tight whitespace: tiny outer margins, explicit subplots_adjust
-    # cooperates with the gridspec hspace/wspace above.
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.02)
+        f"Filmstrip — R={ep_data['return']:.3f}  step={global_step}",
+        fontsize=8, y=0.995)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.88, bottom=0.04)
 
     writer.add_figure(f"{tag_prefix}/observation_filmstrip", fig, global_step)
     plt.close(fig)
