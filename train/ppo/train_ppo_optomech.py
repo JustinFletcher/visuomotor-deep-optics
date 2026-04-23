@@ -847,7 +847,8 @@ def _log_observation_filmstrip(
         # Row 0: image.
         ax_img = axes[0, col]
         img_dn = raw_imgs[col]
-        im = ax_img.imshow(np.maximum(img_dn, 1.0), cmap="inferno", norm=norm)
+        im = ax_img.imshow(np.maximum(img_dn, 1.0), cmap="inferno",
+                           norm=norm, origin="lower")
         tag = labels.get(idx, "")
         ax_img.set_title(f"{tag} (t={idx})", fontsize=7, pad=1.5)
         ax_img.axis("off")
@@ -932,7 +933,8 @@ def _render_episode_gif(ep_data, save_path, label, global_step,
         # Top: observation image spanning both columns (raw DN, log scale)
         ax_obs = fig.add_subplot(gs[0, :])
         img_dn = all_raw[t]
-        im = ax_obs.imshow(np.maximum(img_dn, 1.0), cmap="inferno", norm=norm)
+        im = ax_obs.imshow(np.maximum(img_dn, 1.0), cmap="inferno",
+                           norm=norm, origin="lower")
         ax_obs.axis("off")
         dn_max = float(np.max(img_dn))
         dn_sum = float(np.sum(img_dn))
