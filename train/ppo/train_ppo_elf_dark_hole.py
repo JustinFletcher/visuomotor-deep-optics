@@ -155,14 +155,14 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "action_penalty_weight": 0.0,
     "oob_penalty": False,
     "oob_penalty_weight": 0.0,
-    # Stingy holding bonus. With threshold = -0.08 and min_reward = -1.0
+    # Stingy holding bonus. With threshold = -0.008 and min_reward = -1.0
     # the quality factor stays at zero until the dark-hole reward clears
-    # -0.08, then ramps linearly to 1.0 as the reward approaches 0. Max
+    # -0.008, then ramps linearly to 1.0 as the reward approaches 0. Max
     # bonus is weight * stillness = 0.25 at the optimum. Well out of
     # reach for "sit anywhere polite" solutions.
     "holding_bonus_weight": 0.25,
     "holding_bonus_min_reward": -1.0,
-    "holding_bonus_threshold": -0.08,
+    "holding_bonus_threshold": -0.008,
 
     # --- Dark hole (placeholders; overridden by CLI flags) ----------------
     "dark_hole": True,
