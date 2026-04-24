@@ -1,38 +1,23 @@
 #!/usr/bin/env python
-"""Launch a deterministic 4x4 grid of dark-hole training runs.
+"""Launch a deterministic radial grid of 16 dark-hole training runs.
 
 Unlike ``launch_dark_hole.py`` (which draws hole geometry uniformly at
-random), this launcher places 16 holes on a fixed polar grid that
-covers the region between the PSF's first Airy ring and the outer
-edge of the visible fringe pattern. Each hole is referenced by a
-stable numeric target id 0..15, so individual failed jobs can be
+random), this launcher places 16 holes on a fixed radial grid whose
+angular density scales with ring circumference — more angular samples
+per ring as the radius grows. Rings are staggered so adjacent shells
+do not line up radially. Inner ring clears the PSF core (first Airy
+zero); outer ring reaches past the visible fringe pattern. Each hole
+has a stable numeric target id 0..15 so individual failed jobs can be
 re-submitted without re-running the rest of the sweep.
 
-Grid layout (all values are focal-plane fractions of half-FOV):
-  * Size radius: fixed at 1.15 x PSF core radius = 0.085
-  * Radial centers (shells): linear 0.09 -> 0.38, 4 values
-  * Angular positions: 4 per shell, rotated 45 degrees between shells
-    so adjacent shells stagger their angular placement.
+Grid layout (all values are focal-plane fractions of half-FOV, size
+fixed at 1.15 x PSF core radius = 0.085):
 
-The grid is therefore:
-
-    target     angle   radius_frac
-       0          0       0.09
-       1         90       0.09
-       2        180       0.09
-       3        270       0.09
-       4         45       0.19
-       5        135       0.19
-       6        225       0.19
-       7        315       0.19
-       8          0       0.28
-       9         90       0.28
-      10        180       0.28
-      11        270       0.28
-      12         45       0.38
-      13        135       0.38
-      14        225       0.38
-      15        315       0.38
+    Ring 0  (r=0.165, 4 targets at 45,135,225,315 deg)
+        hole inner edge ~ 0.080 (first Airy zero at 0.074)
+    Ring 1  (r=0.27,  6 targets at 0,60,...,300 deg)
+    Ring 2  (r=0.38,  6 targets at 30,90,...,330 deg, offset 30 deg)
+        hole outer edge ~ 0.465 (past the visible fringe region)
 
 Usage:
     # Launch the whole 16-target grid on HPC
@@ -45,8 +30,7 @@ Usage:
     python train/ppo/launch_dark_hole_grid.py --dry-run
 
     # Generate a paper-quality coverage figure and exit without
-    # submitting anything. Saves the figure next to your current
-    # working directory.
+    # submitting anything.
     python train/ppo/launch_dark_hole_grid.py --illustrate
 """
 
@@ -68,17 +52,23 @@ import numpy as np
 PSF_CORE_RADIUS_FRAC = 0.074          # first Airy zero in half-FOV units
 SIZE_RADIUS_FRAC = 1.15 * PSF_CORE_RADIUS_FRAC   # 0.0851
 
-SHELL_RADII = [0.09, 0.19, 0.28, 0.38]
-SHELL_ANGLES_EVEN = [0.0, 90.0, 180.0, 270.0]
-SHELL_ANGLES_ODD = [45.0, 135.0, 225.0, 315.0]
+# (radius_frac, starting_angle_deg, n_angles) per ring. Angular density
+# scales with circumference; each ring is offset from its neighbours so
+# holes don't line up radially.
+RINGS = [
+    (0.165,  45.0, 4),
+    (0.270,   0.0, 6),
+    (0.380,  30.0, 6),
+]
 
 
 def build_grid():
     """Return 16 (angle_deg, radius_frac, size_radius) tuples, id-ordered."""
     targets = []
-    for shell_idx, r in enumerate(SHELL_RADII):
-        angles = SHELL_ANGLES_ODD if shell_idx % 2 else SHELL_ANGLES_EVEN
-        for a in angles:
+    for (r, start_deg, n) in RINGS:
+        step = 360.0 / n
+        for k in range(n):
+            a = (start_deg + k * step) % 360.0
             targets.append((float(a), float(r), float(SIZE_RADIUS_FRAC)))
     assert len(targets) == 16
     return targets
@@ -209,8 +199,7 @@ def render_illustration(targets, out_path: Path):
     cb.ax.tick_params(labelsize=6.5)
     ax.set_title(
         "Dark-hole grid coverage (16 targets, id 0-15)\n"
-        "polar shells at r $\\in\\{0.09, 0.19, 0.28, 0.38\\}$, "
-        r"size $=0.085$, 45$^\circ$ stagger",
+        r"radial rings: 4@r=0.165, 6@r=0.27, 6@r=0.38, size=0.085",
         fontsize=9)
     fig.tight_layout(pad=0.3)
     out_path.parent.mkdir(parents=True, exist_ok=True)
