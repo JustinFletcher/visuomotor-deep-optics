@@ -184,23 +184,44 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._log_norm_perfect_t = torch.tensor(
             np.log(norm_perfect + 1e-10), dtype=torch.float32, device=self.dev)
 
-        # Dark-hole mask (inherited from v4 at build time). If dark_hole
-        # is disabled in cfg, v4 leaves _target_zero_mask as None and we
-        # mirror that here.
+        # Dark-hole mask. Per-env storage (one mask per batched env)
+        # supports dynamic resampling: when cfg enables randomisation on
+        # reset, each env whose episode ended gets a fresh geometry
+        # independent of its peers. Static configurations still work —
+        # every env simply gets an identical mask at build.
         _v4_mask = getattr(v4, "_target_zero_mask", None)
+
+        # Dark-hole randomisation envelope (shared across envs).
+        self._dh_randomize_on_reset = bool(
+            cfg.get("dark_hole_randomize_on_reset", False))
+        _alo, _ahi = cfg.get("dark_hole_angle_range_deg", (0.0, 360.0))
+        _rlo, _rhi = cfg.get("dark_hole_radius_range", (0.16, 0.32))
+        _slo, _shi = cfg.get("dark_hole_size_range", (0.08, 0.08))
+        self._dh_angle_range = (float(_alo), float(_ahi))
+        self._dh_radius_range = (float(_rlo), float(_rhi))
+        self._dh_size_range = (float(_slo), float(_shi))
+
         if _v4_mask is None:
             self._hole_mask_t = None
             self._target_vec_t = None
         else:
-            self._hole_mask_t = torch.tensor(
+            _m2d = torch.tensor(
                 _v4_mask.astype(bool), dtype=torch.bool, device=self.dev)
+            # Broadcast the v4-built mask across all envs for the
+            # static case. When randomise-on-reset fires, per-env
+            # rows are overwritten in place via
+            # _resample_dark_hole_geometry.
+            self._hole_mask_t = _m2d.unsqueeze(0).expand(
+                num_envs, -1, -1).contiguous()
             _ang = float(cfg.get("dark_hole_angular_location_degrees", 0.0))
             _rf = float(cfg.get("dark_hole_location_radius_fraction", 0.0))
             _sf = float(cfg.get("dark_hole_size_radius", 0.0))
             _th = _ang * math.pi / 180.0
-            self._target_vec_t = torch.tensor(
+            _tv = torch.tensor(
                 [math.sin(_th), math.cos(_th), _rf, _sf],
                 dtype=torch.float32, device=self.dev)
+            self._target_vec_t = _tv.unsqueeze(0).expand(
+                num_envs, -1).contiguous()
 
         # --- DEBUG: show perfect image ---
         if cfg.get("_debug_show_perfect", False):
@@ -972,23 +993,18 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             self._last_hole_flux_frac = torch.zeros(N, dtype=torch.float32,
                                                     device=self.dev)
         else:
-            hole = self._hole_mask_t
-            frames_flat = frames.reshape(N, -1)
-            hole_flat = hole.reshape(-1)
-            neg_inf = torch.full_like(frames_flat, float("-inf"))
-            in_hole = torch.where(hole_flat.unsqueeze(0), frames_flat, neg_inf)
-            out_hole = torch.where(~hole_flat.unsqueeze(0), frames_flat, neg_inf)
-            hole_max = in_hole.amax(dim=1)
-            out_max = out_hole.amax(dim=1)
-            safe_out = out_max.clamp(min=1e-30)
-            contrast = (1.0 - hole_max / safe_out).clamp(min=0.0, max=1.0)
-            contrast = torch.where(out_max > 0, contrast,
+            hole = self._hole_mask_t                        # [N, H, W]
+            neg_inf = torch.full_like(frames, float("-inf"))
+            zero = torch.zeros_like(frames)
+            in_hole = torch.where(hole, frames, neg_inf).amax(dim=(1, 2))
+            out_hole = torch.where(~hole, frames, neg_inf).amax(dim=(1, 2))
+            safe_out = out_hole.clamp(min=1e-30)
+            contrast = (1.0 - in_hole / safe_out).clamp(min=0.0, max=1.0)
+            contrast = torch.where(out_hole > 0, contrast,
                                    torch.zeros_like(contrast))
             self._last_contrast = contrast
-            # Fractional flux sitting inside the hole region.
-            flux_total = frames_flat.sum(dim=1).clamp(min=1e-30)
-            flux_hole = torch.where(hole_flat.unsqueeze(0), frames_flat,
-                                    torch.zeros_like(frames_flat)).sum(dim=1)
+            flux_total = frames.sum(dim=(1, 2)).clamp(min=1e-30)
+            flux_hole = torch.where(hole, frames, zero).sum(dim=(1, 2))
             self._last_hole_flux_frac = flux_hole / flux_total
 
         # --- contrast-weighted strehl ---
@@ -1011,11 +1027,12 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             if self._hole_mask_t is None:
                 dh_val = torch.zeros(N, dtype=torch.float32, device=self.dev)
             else:
-                hole_flat = self._hole_mask_t.reshape(-1)
-                frames_flat = frames.reshape(N, -1)
-                hole_pixels = frames_flat[:, hole_flat]  # [N, n_hole]
-                fmax_safe = fpi_max.clamp(min=1e-30).unsqueeze(1)  # [N, 1]
-                dh_val = -(hole_pixels / fmax_safe).mean(dim=1)
+                hole = self._hole_mask_t                    # [N, H, W]
+                fmax_safe = fpi_max.clamp(min=1e-30).view(N, 1, 1)
+                norm = frames / fmax_safe                   # [N, H, W]
+                n_hole = hole.sum(dim=(1, 2)).clamp(min=1).to(norm.dtype)
+                masked = torch.where(hole, norm, torch.zeros_like(norm))
+                dh_val = -masked.sum(dim=(1, 2)) / n_hole
             if self._rw_dark_hole > 0:
                 total += self._rw_dark_hole * dh_val
 
@@ -1380,6 +1397,60 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._episode_returns[env_mask] = 0.0
         self._episode_lengths[env_mask] = 0
 
+        # Dynamic dark-hole: redraw per-env geometry at reset. No-op
+        # when randomise-on-reset is off, in which case every env
+        # keeps the static mask set at build time.
+        self._resample_dark_hole_geometry(env_mask)
+
+    def _build_hole_masks_torch(self, angles_deg, loc_fracs, size_fracs):
+        """Vectorised GPU mask builder. Returns [K, H, W] bool masks.
+
+        Mirrors v4's _apply_dark_hole pixel math including its int
+        truncations, so a static geometry yields a bit-identical mask
+        across v4 and v5 (verified by tests/test_v45_dark_hole_parity).
+        """
+        H, W = self._H, self._W
+        dev = self.dev
+        theta = angles_deg * math.pi / 180.0
+        loc_px = (loc_fracs * (W / 2.0)).long().to(torch.float32)
+        cx = (W / 2.0 + loc_px * torch.cos(theta)).long()   # [K]
+        cy = (H / 2.0 + loc_px * torch.sin(theta)).long()   # [K]
+        r_px = (size_fracs * (W / 2.0)).long()              # [K]
+
+        xs = torch.arange(W, device=dev, dtype=torch.long)
+        ys = torch.arange(H, device=dev, dtype=torch.long)
+        dx = xs.view(1, 1, W) - cx.view(-1, 1, 1)
+        dy = ys.view(1, H, 1) - cy.view(-1, 1, 1)
+        return (dx * dx + dy * dy) <= (r_px.view(-1, 1, 1) ** 2)
+
+    def _resample_dark_hole_geometry(self, env_mask):
+        """Draw fresh (angle, loc, size) per env in env_mask and overwrite
+        the corresponding rows of ``self._hole_mask_t`` / ``_target_vec_t``.
+        """
+        if self._hole_mask_t is None or not self._dh_randomize_on_reset:
+            return
+        K = int(env_mask.sum().item())
+        if K == 0:
+            return
+        alo, ahi = self._dh_angle_range
+        rlo, rhi = self._dh_radius_range
+        slo, shi = self._dh_size_range
+        angles = torch.rand(K, device=self.dev) * (ahi - alo) + alo
+        locs = torch.rand(K, device=self.dev) * (rhi - rlo) + rlo
+        # Allow degenerate size ranges (fixed size) without div-by-zero.
+        if shi > slo:
+            sizes = torch.rand(K, device=self.dev) * (shi - slo) + slo
+        else:
+            sizes = torch.full((K,), slo, device=self.dev)
+
+        new_masks = self._build_hole_masks_torch(angles, locs, sizes)
+        self._hole_mask_t[env_mask] = new_masks
+
+        theta = angles * math.pi / 180.0
+        tv = torch.stack(
+            [torch.sin(theta), torch.cos(theta), locs, sizes], dim=1)
+        self._target_vec_t[env_mask] = tv.to(self._target_vec_t.dtype)
+
     def reset(self, seed=None, options=None):
         """Reset all environments.
 
@@ -1487,11 +1558,11 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # --- 8. Auto-reset done envs ---
         # Per-env target vector: [sin(θ), cos(θ), radius_frac, size_frac].
         # Target-aware policies read this each step; others ignore it.
-        if self._hole_mask_t is None:
+        if self._target_vec_t is None:
             target_np = np.zeros((N, 4), dtype=np.float32)
         else:
-            tv = self._target_vec_t.detach().cpu().numpy().astype(np.float32)
-            target_np = np.broadcast_to(tv, (N, 4)).copy()
+            target_np = self._target_vec_t.detach().cpu().numpy().astype(
+                np.float32)
 
         infos = {
             "strehl": strehl_np,

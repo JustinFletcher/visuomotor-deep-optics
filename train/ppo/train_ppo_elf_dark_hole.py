@@ -215,7 +215,7 @@ ELF_DARK_HOLE_ENV_KWARGS = {
 # ============================================================================
 
 LOCAL_CONFIG = dict(
-    total_timesteps=100_000_000,
+    total_timesteps=1_000_000_000,
     num_envs=8,
     num_steps=128,
     num_minibatches=4,
@@ -253,7 +253,7 @@ LOCAL_CONFIG = dict(
 )
 
 HPC_CONFIG = dict(
-    total_timesteps=100_000_000,
+    total_timesteps=1_000_000_000,
     num_envs=64,
     num_steps=128,
     num_minibatches=4,

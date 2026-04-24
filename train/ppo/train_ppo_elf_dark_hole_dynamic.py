@@ -12,9 +12,9 @@ Sampling envelope (matches the static-grid launcher's two rings):
     radius_frac: uniform on [0.16, 0.32]
     size_frac:   fixed at 0.08 (matches the tangent-rings layout)
 
-Env version is pinned to v4 because v5's hole mask is currently a
-shared batched tensor; per-episode resampling would require per-env
-mask tensors (see launch_dynamic_dark_hole.py for context).
+V5 now stores a per-env hole mask tensor and resamples on reset, so
+HPC training runs on the full batched GPU env without falling back to
+v4.
 
 Usage:
     python train/ppo/train_ppo_elf_dark_hole_dynamic.py --seed 7
@@ -49,9 +49,6 @@ LOCAL_CONFIG["target_dim"] = 4
 HPC_CONFIG = dict(BASE_HPC_CONFIG)
 HPC_CONFIG["env_kwargs"] = DYNAMIC_ENV_KWARGS
 HPC_CONFIG["target_dim"] = 4
-# v5 does not yet support per-env mask resampling; force v4 on HPC so
-# each reset-time mask rebuild is honoured.
-HPC_CONFIG["env_version"] = "v4"
 
 
 if __name__ == "__main__":
