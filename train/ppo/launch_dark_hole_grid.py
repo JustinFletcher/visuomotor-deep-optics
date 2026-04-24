@@ -10,14 +10,13 @@ zero); outer ring reaches past the visible fringe pattern. Each hole
 has a stable numeric target id 0..15 so individual failed jobs can be
 re-submitted without re-running the rest of the sweep.
 
-Grid layout (all values are focal-plane fractions of half-FOV, size
-fixed at 1.15 x PSF core radius = 0.085):
+Grid layout (all values are focal-plane fractions of half-FOV, hole
+radius fixed at 0.08):
 
-    Ring 0  (r=0.165, 4 targets at 45,135,225,315 deg)
-        hole inner edge ~ 0.080 (first Airy zero at 0.074)
-    Ring 1  (r=0.27,  6 targets at 0,60,...,300 deg)
-    Ring 2  (r=0.38,  6 targets at 30,90,...,330 deg, offset 30 deg)
-        hole outer edge ~ 0.465 (past the visible fringe region)
+    Ring 0  (r=0.16, 6 holes at 0,60,...,300 deg)   tangent within ring
+        inner edge at 0.08, outer edge at 0.24
+    Ring 1  (r=0.32, 10 holes at 18,54,...,342 deg) ~0.04 gap per hole
+        inner edge at 0.24 (touches ring 0), outer edge at 0.40
 
 Usage:
     # Launch the whole 16-target grid on HPC
@@ -50,15 +49,19 @@ import numpy as np
 # --------------------------------------------------------------------------
 
 PSF_CORE_RADIUS_FRAC = 0.074          # first Airy zero in half-FOV units
-SIZE_RADIUS_FRAC = 1.15 * PSF_CORE_RADIUS_FRAC   # 0.0851
 
-# (radius_frac, starting_angle_deg, n_angles) per ring. Angular density
-# scales with circumference; each ring is offset from its neighbours so
-# holes don't line up radially.
+# Two tangent rings at a shared hole radius:
+#   inner ring: 6 holes at r = 0.16, exactly tangent within ring
+#   outer ring: 10 holes at r = 0.32, adjacent edges ~0.04 apart
+# Ring edges meet exactly at 0.24, so the two rings "just touch".
+# (Three-way tangency — inner-tangent + outer-tangent + ring-tangent
+# — is overdetermined with one radius; outer-ring internal tangency
+# is the constraint that bends here.)
+SIZE_RADIUS_FRAC = 0.08
+
 RINGS = [
-    (0.165,  45.0, 4),
-    (0.270,   0.0, 6),
-    (0.380,  30.0, 6),
+    (0.16,  0.0, 6),
+    (0.32, 18.0, 10),
 ]
 
 
@@ -199,7 +202,7 @@ def render_illustration(targets, out_path: Path):
     cb.ax.tick_params(labelsize=6.5)
     ax.set_title(
         "Dark-hole grid coverage (16 targets, id 0-15)\n"
-        r"radial rings: 4@r=0.165, 6@r=0.27, 6@r=0.38, size=0.085",
+        r"tangent rings: 6@r=0.16 + 10@r=0.32, size=0.08",
         fontsize=9)
     fig.tight_layout(pad=0.3)
     out_path.parent.mkdir(parents=True, exist_ok=True)
