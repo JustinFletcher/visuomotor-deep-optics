@@ -1477,7 +1477,16 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._obs_history[:, -1, :, :] = frames
 
         obs = self._obs_history.cpu().numpy()
-        infos = {}
+        # Emit target_vec on reset so target-aware callers have valid
+        # geometry data on the first step (otherwise the first-step
+        # forward substitutes zeros until info arrives from step()).
+        N = self._num_envs
+        if self._target_vec_t is None:
+            target_np = np.zeros((N, 4), dtype=np.float32)
+        else:
+            target_np = self._target_vec_t.detach().cpu().numpy().astype(
+                np.float32)
+        infos = {"target_vec": target_np}
         return obs, infos
 
     # =================================================================

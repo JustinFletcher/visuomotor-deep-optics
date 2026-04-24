@@ -398,7 +398,9 @@ def evaluate_with_visualization(
     reset_seeds = []
     for seed in seeds_to_use:
         reset_seeds.extend([seed, seed, seed])
-    obs_all, _ = eval_envs.reset(seed=reset_seeds)
+    obs_all, infos = eval_envs.reset(seed=reset_seeds)
+    if infos is None:
+        infos = {}
 
     # --- Initialize agent state (batched across N seeds) -----------
     h = torch.zeros(agent.lstm_num_layers, N, agent.lstm_hidden_dim, device=device)
