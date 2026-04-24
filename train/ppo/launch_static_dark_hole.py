@@ -10,13 +10,16 @@ non-target-aware grid sweep — but the trained weights can be dropped
 into a composite pipeline that shares the target-input interface with
 the dynamic variant (``launch_dynamic_dark_hole.py``).
 
-Grid layout (all values are focal-plane fractions of half-FOV, hole
-radius fixed at 0.08):
+Grid layout (all values are focal-plane fractions of half-FOV). Both
+rings slightly overlap their adjacent holes and the two rings overlap
+each other at the radial seam.
 
-    Ring 0  (r=0.16, 6 holes at 0,60,...,300 deg)   tangent within ring
-        inner edge at 0.08, outer edge at 0.24
-    Ring 1  (r=0.32, 10 holes at 18,54,...,342 deg) ~0.04 gap per hole
-        inner edge at 0.24 (touches ring 0), outer edge at 0.40
+    Ring 0  (r=0.16, 6 holes at 0,60,...,300 deg, size 0.09)
+        inner edge at 0.07, outer edge at 0.25
+        adjacent holes overlap by ~0.02 (chord 0.16 vs diameter 0.18)
+    Ring 1  (r=0.32, 10 holes at 18,54,...,342 deg, size 0.099)
+        inner edge at 0.221, outer edge at 0.419
+        rings overlap by ~0.029 (ring-0 outer 0.25, ring-1 inner 0.221)
 
 Usage:
     python train/ppo/launch_static_dark_hole.py
@@ -42,29 +45,31 @@ import numpy as np
 
 PSF_CORE_RADIUS_FRAC = 0.074          # first Airy zero in half-FOV units
 
-# Two tangent rings at a shared hole radius:
-#   inner ring: 6 holes at r = 0.16, exactly tangent within ring
-#   outer ring: 10 holes at r = 0.32, adjacent edges ~0.04 apart
-# Ring edges meet exactly at 0.24, so the two rings "just touch".
-# (Three-way tangency — inner-tangent + outer-tangent + ring-tangent
-# — is overdetermined with one radius; outer-ring internal tangency
-# is the constraint that bends here.)
-SIZE_RADIUS_FRAC = 0.08
+# Two slightly-overlapping rings:
+#   inner ring: 6 holes at r = 0.16, size 0.09 -> chord 0.16, diameter
+#       0.18, so adjacent holes overlap by ~0.02.
+#   outer ring: 10 holes at r = 0.32, size 0.099 -> chord 0.198,
+#       diameter 0.198, tangent.
+# The two rings overlap radially by ~0.029 (inner outer-edge 0.25,
+# outer inner-edge 0.221).
+INNER_SIZE = 0.090
+OUTER_SIZE = 0.099
 
+# (radius_frac, starting_angle_deg, n_angles, size_frac)
 RINGS = [
-    (0.16,  0.0, 6),
-    (0.32, 18.0, 10),
+    (0.16,  0.0,  6, INNER_SIZE),
+    (0.32, 18.0, 10, OUTER_SIZE),
 ]
 
 
 def build_grid():
     """Return 16 (angle_deg, radius_frac, size_radius) tuples, id-ordered."""
     targets = []
-    for (r, start_deg, n) in RINGS:
+    for (r, start_deg, n, size) in RINGS:
         step = 360.0 / n
         for k in range(n):
             a = (start_deg + k * step) % 360.0
-            targets.append((float(a), float(r), float(SIZE_RADIUS_FRAC)))
+            targets.append((float(a), float(r), float(size)))
     assert len(targets) == 16
     return targets
 
@@ -194,7 +199,7 @@ def render_illustration(targets, out_path: Path):
     cb.ax.tick_params(labelsize=6.5)
     ax.set_title(
         "Dark-hole grid coverage (16 targets, id 0-15)\n"
-        r"tangent rings: 6@r=0.16 + 10@r=0.32, size=0.08",
+        r"overlapping rings: 6@r=0.16 (size 0.09) + 10@r=0.32 (size 0.099)",
         fontsize=9)
     fig.tight_layout(pad=0.3)
     out_path.parent.mkdir(parents=True, exist_ok=True)
