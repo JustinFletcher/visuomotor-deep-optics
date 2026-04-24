@@ -363,6 +363,7 @@ def recurrent_generator(
     dones: torch.Tensor,
     num_minibatches: int,
     seq_len: int,
+    target_vecs: Optional[torch.Tensor] = None,
 ):
     """
     Yield minibatches of sequence chunks for recurrent PPO training.
@@ -406,6 +407,7 @@ def recurrent_generator(
     prior_reward_chunks = chunk(prior_rewards.unsqueeze(-1)).squeeze(-1)
     episode_start_chunks = chunk(episode_starts.unsqueeze(-1)).squeeze(-1)
     done_chunks = chunk(dones.unsqueeze(-1)).squeeze(-1)
+    target_vec_chunks = chunk(target_vecs) if target_vecs is not None else None
 
     # Initial hidden states: take the hidden state at the start of each chunk
     # hidden_h shape: [T, N, num_layers, hidden_dim]
@@ -426,7 +428,7 @@ def recurrent_generator(
         end = start + chunk_size
         mb_idx = indices[start:end]
 
-        yield {
+        out = {
             "obs": obs_chunks[mb_idx],
             "actions": action_chunks[mb_idx],
             "log_probs": log_prob_chunks[mb_idx],
@@ -440,6 +442,9 @@ def recurrent_generator(
             "hidden_h": h_init[mb_idx],
             "hidden_c": c_init[mb_idx],
         }
+        if target_vec_chunks is not None:
+            out["target_vecs"] = target_vec_chunks[mb_idx]
+        yield out
 
 
 # ============================================================================

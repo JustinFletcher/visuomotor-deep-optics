@@ -425,8 +425,17 @@ def evaluate_with_visualization(
         agent_obs = obs_all[agnt_idx]
         obs_norm = normalize_obs_fixed(agent_obs, obs_ref_max)
         obs_t = torch.from_numpy(obs_norm).float().to(device)
+        # Target vec: forward only the agent slots' target info.
+        tv_t = None
+        if int(getattr(agent, "target_dim", 0)) > 0 and isinstance(infos, dict):
+            _tv = infos.get("target_vec")
+            if _tv is not None:
+                tv_t = torch.from_numpy(
+                    np.asarray(_tv[agnt_idx], dtype=np.float32)).to(device)
         with torch.no_grad():
-            action_t, (h, c) = wrapper(obs_t, prior_action, prior_reward, (h, c))
+            action_t, (h, c) = wrapper(
+                obs_t, prior_action, prior_reward, (h, c),
+                target_vec=tv_t)
         act_np = action_t.cpu().numpy()
         for i, idx in enumerate(agnt_idx):
             actions[idx] = act_np[i]
@@ -1376,6 +1385,7 @@ def run_ppo_training(config: dict, run_dir: str):
         init_log_std=config["init_log_std"],
         freeze_encoder=freeze_encoder,
         model_type=config.get("model_type", "small"),
+        target_dim=int(config.get("target_dim", 0)),
     ).to(device)
 
     # Load bottleneck weights into the MLP layer if available
@@ -1472,6 +1482,10 @@ def run_ppo_training(config: dict, run_dir: str):
     value_buf = torch.zeros(num_steps, num_envs)
     prior_action_buf = torch.zeros(num_steps, num_envs, *action_shape)
     prior_reward_buf = torch.zeros(num_steps, num_envs)
+    # Optional target-vec buffer (only allocated when target_dim > 0).
+    target_dim = int(getattr(agent, "target_dim", 0))
+    target_vec_buf = (
+        torch.zeros(num_steps, num_envs, target_dim) if target_dim > 0 else None)
     hidden_h_buf = torch.zeros(
         num_steps, num_envs, agent.lstm_num_layers, config["lstm_hidden_dim"]
     )
@@ -1502,6 +1516,8 @@ def run_ppo_training(config: dict, run_dir: str):
     running_prior_action = torch.zeros(num_envs, *action_shape)
     running_prior_reward = torch.zeros(num_envs)
     running_episode_start = torch.ones(num_envs)
+    running_target_vec = (
+        torch.zeros(num_envs, target_dim) if target_dim > 0 else None)
 
     # Per-env start-of-episode Strehl. First step of each new episode
     # captures that episode's reference; subsequent steps log the ratio
@@ -1612,17 +1628,22 @@ def run_ppo_training(config: dict, run_dir: str):
             done_buf[step] = next_done
             prior_action_buf[step] = running_prior_action
             prior_reward_buf[step] = running_prior_reward
+            if target_vec_buf is not None:
+                target_vec_buf[step] = running_target_vec
             episode_start_buf[step] = running_episode_start
             hidden_h_buf[step] = lstm_h.permute(1, 0, 2).cpu()
             hidden_c_buf[step] = lstm_c.permute(1, 0, 2).cpu()
 
             with torch.no_grad():
+                tv_device = (running_target_vec.to(device)
+                             if running_target_vec is not None else None)
                 raw_action, logprob, _, value, (lstm_h, lstm_c) = (
                     agent.get_action_and_value(
                         next_obs.to(device),
                         running_prior_action.to(device),
                         running_prior_reward.to(device),
                         (lstm_h, lstm_c),
+                        target_vec=tv_device,
                     )
                 )
                 env_action = agent.scale_and_clamp_action(raw_action)
@@ -1646,6 +1667,11 @@ def run_ppo_training(config: dict, run_dir: str):
             running_prior_action = env_action.cpu().clone()
             running_prior_reward = torch.from_numpy(rewards_np.astype(np.float32))
             running_episode_start = next_done.clone()
+            if running_target_vec is not None:
+                tv_np = infos.get("target_vec")
+                if tv_np is not None:
+                    running_target_vec = torch.from_numpy(
+                        np.asarray(tv_np, dtype=np.float32))
 
             # Reset LSTM hidden states for done envs (vectorized)
             done_mask_t = next_done.bool()
@@ -1742,11 +1768,14 @@ def run_ppo_training(config: dict, run_dir: str):
         # COMPUTE GAE
         # ==============================================================
         with torch.no_grad():
+            tv_device = (running_target_vec.to(device)
+                         if running_target_vec is not None else None)
             _, _, _, next_value, _ = agent.get_action_and_value(
                 next_obs.to(device),
                 running_prior_action.to(device),
                 running_prior_reward.to(device),
                 (lstm_h, lstm_c),
+                target_vec=tv_device,
             )
             next_value = next_value.flatten().cpu()
 
@@ -1785,6 +1814,7 @@ def run_ppo_training(config: dict, run_dir: str):
                 done_buf,
                 num_minibatches,
                 config["seq_len"],
+                target_vecs=target_vec_buf,
             )
 
             for batch in generator:
@@ -1796,6 +1826,8 @@ def run_ppo_training(config: dict, run_dir: str):
                 mb_values = batch["values"].to(device)
                 mb_prior_actions = batch["prior_actions"].to(device)
                 mb_prior_rewards = batch["prior_rewards"].to(device)
+                mb_target_vecs = (batch["target_vecs"].to(device)
+                                  if "target_vecs" in batch else None)
                 mb_hidden_h = batch["hidden_h"].to(device)
                 mb_hidden_c = batch["hidden_c"].to(device)
                 mb_episode_starts = batch["episode_starts"].to(device)
@@ -1811,6 +1843,7 @@ def run_ppo_training(config: dict, run_dir: str):
                         ),
                         action=mb_actions,
                         episode_starts=mb_episode_starts,
+                        target_vec=mb_target_vecs,
                     )
                 )
 

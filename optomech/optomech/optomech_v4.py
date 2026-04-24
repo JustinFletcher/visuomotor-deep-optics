@@ -2752,8 +2752,30 @@ class OptomechEnv(gym.Env):
     # Reset
     # ================================================================
 
+    def _draw_random_dark_hole(self):
+        """Sample a new dark-hole geometry from the cfg-specified
+        envelope and mutate self.cfg in place. Called at the start of
+        each reset when ``dark_hole_randomize_on_reset`` is True."""
+        cfg = self.cfg
+        a_lo, a_hi = cfg.get("dark_hole_angle_range_deg", (0.0, 360.0))
+        r_lo, r_hi = cfg.get("dark_hole_radius_range", (0.16, 0.32))
+        s_lo, s_hi = cfg.get("dark_hole_size_range", (0.08, 0.08))
+        cfg["dark_hole"] = True
+        cfg["dark_hole_angular_location_degrees"] = float(
+            np.random.uniform(a_lo, a_hi))
+        cfg["dark_hole_location_radius_fraction"] = float(
+            np.random.uniform(r_lo, r_hi))
+        cfg["dark_hole_size_radius"] = float(
+            np.random.uniform(s_lo, s_hi))
+
     def reset(self, seed=None, options=None):
         _v3_section("Episode Reset")
+        # Dynamic dark-hole: draw a fresh (angle, radius, size) from the
+        # configured envelope before rebuilding the optics. The new
+        # geometry propagates via self.cfg into _build_optical_system
+        # and _cache_reward_images.
+        if self.cfg.get("dark_hole_randomize_on_reset", False):
+            self._draw_random_dark_hole()
         _v3("Rebuilding optical system...")
         self._build_optical_system()
 
@@ -3125,6 +3147,20 @@ class OptomechEnv(gym.Env):
         else:
             info["contrast"] = 1.0
             info["hole_flux_frac"] = 0.0
+        # Target vector: [sin(angle), cos(angle), radius_frac, size_frac].
+        # Emitted every step so target-aware policies can read the
+        # geometry they're being asked to optimise for. Silent no-op
+        # for non-target-aware policies (they just ignore the field).
+        _dh_enabled = bool(self.cfg.get("dark_hole", False))
+        if _dh_enabled:
+            _ang = float(self.cfg.get("dark_hole_angular_location_degrees", 0.0))
+            _rfr = float(self.cfg.get("dark_hole_location_radius_fraction", 0.0))
+            _sfr = float(self.cfg.get("dark_hole_size_radius", 0.0))
+            _th = _ang * np.pi / 180.0
+            info["target_vec"] = np.array(
+                [np.sin(_th), np.cos(_th), _rfr, _sfr], dtype=np.float32)
+        else:
+            info["target_vec"] = np.zeros(4, dtype=np.float32)
         if _record:
             info["state_content"] = self.state_content
             info["state"] = self.state

@@ -56,6 +56,7 @@ class RecurrentActorCritic(nn.Module):
         init_log_std: float = -0.5,
         freeze_encoder: bool = False,
         model_type: str = "small",
+        target_dim: int = 0,
     ):
         super().__init__()
         assert model_type in VALID_MODEL_TYPES, \
@@ -64,6 +65,10 @@ class RecurrentActorCritic(nn.Module):
         self.model_type = model_type
         self.lstm_hidden_dim = lstm_hidden_dim
         self.lstm_num_layers = lstm_num_layers
+        # Optional auxiliary target input (e.g. dark-hole geometry
+        # [sin(θ), cos(θ), radius, size]). Default 0 preserves the
+        # pre-existing LSTM input width so old checkpoints load cleanly.
+        self.target_dim = int(target_dim)
 
         obs_shape = envs.single_observation_space.shape
         self.action_dim = envs.single_action_space.shape[0]
@@ -118,7 +123,8 @@ class RecurrentActorCritic(nn.Module):
         )
 
         # --- Shared LSTM ---
-        lstm_input = mlp_out + self.action_dim + 1  # features + prior_action + prior_reward
+        # features + prior_action + prior_reward (+ optional target_vec)
+        lstm_input = mlp_out + self.action_dim + 1 + self.target_dim
         self.lstm = nn.LSTM(
             input_size=lstm_input,
             hidden_size=lstm_hidden_dim,
@@ -222,18 +228,47 @@ class RecurrentActorCritic(nn.Module):
             c = c.unsqueeze(1).expand(-1, batch_size, -1).contiguous()
         return h, c
 
+    def _prepare_target(
+        self,
+        target_vec: Optional[torch.Tensor],
+        B: int,
+        T: Optional[int],
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """Resolve the per-step target-vec tensor to the right shape.
+
+        Returns None if self.target_dim is 0 (no concat needed)."""
+        if self.target_dim == 0:
+            return None
+        if target_vec is None:
+            if T is None:
+                return torch.zeros(B, self.target_dim, device=device)
+            return torch.zeros(B, T, self.target_dim, device=device)
+        # Broadcast shape to match sequence expectation.
+        if T is None:
+            # [B, target_dim] expected.
+            if target_vec.dim() == 3:
+                raise ValueError("target_vec has time dim but obs does not")
+            return target_vec
+        else:
+            if target_vec.dim() == 2:
+                target_vec = target_vec.unsqueeze(1).expand(-1, T, -1)
+            return target_vec
+
     def _forward_shared(
         self,
         obs: torch.Tensor,
         prior_action: torch.Tensor,
         prior_reward: torch.Tensor,
         hidden: Tuple[torch.Tensor, torch.Tensor],
+        target_vec: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Shared forward pass through encoder -> MLP -> LSTM.
 
         Accepts both single-step [B, ...] and sequence [B, T, ...] inputs.
-        Returns LSTM output features and new hidden state.
+        When ``self.target_dim > 0`` and ``target_vec`` is None, a zero
+        target is substituted so prior-existing callers keep working.
         """
         obs = self._encode_obs(obs)
         is_seq = obs.dim() == 5  # [B, T, C, H, W]
@@ -257,7 +292,11 @@ class RecurrentActorCritic(nn.Module):
                 prior_reward = prior_reward.unsqueeze(-1)
             # prior_reward should be [B, T, 1]
 
-            lstm_in = torch.cat([features, prior_action, prior_reward], dim=-1)
+            pieces = [features, prior_action, prior_reward]
+            tv = self._prepare_target(target_vec, B, T, features.device)
+            if tv is not None:
+                pieces.append(tv)
+            lstm_in = torch.cat(pieces, dim=-1)
         else:
             B = obs.shape[0]
             features = self.visual_encoder(obs)
@@ -266,7 +305,11 @@ class RecurrentActorCritic(nn.Module):
             if prior_reward.dim() == 1:
                 prior_reward = prior_reward.unsqueeze(-1)
 
-            lstm_in = torch.cat([features, prior_action, prior_reward], dim=-1)
+            pieces = [features, prior_action, prior_reward]
+            tv = self._prepare_target(target_vec, B, None, features.device)
+            if tv is not None:
+                pieces.append(tv)
+            lstm_in = torch.cat(pieces, dim=-1)
             lstm_in = lstm_in.unsqueeze(1)  # [B, 1, input]
 
         h, c = self._prepare_hidden(hidden, B)
@@ -284,6 +327,7 @@ class RecurrentActorCritic(nn.Module):
         prior_reward: torch.Tensor,
         hidden: Tuple[torch.Tensor, torch.Tensor],
         episode_starts: torch.Tensor,
+        target_vec: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Shared forward pass that processes sequences step-by-step, resetting
@@ -310,7 +354,11 @@ class RecurrentActorCritic(nn.Module):
         if prior_reward.dim() == 2:
             prior_reward = prior_reward.unsqueeze(-1)
 
-        lstm_inputs = torch.cat([features, prior_action, prior_reward], dim=-1)
+        pieces = [features, prior_action, prior_reward]
+        tv = self._prepare_target(target_vec, B, T, features.device)
+        if tv is not None:
+            pieces.append(tv)
+        lstm_inputs = torch.cat(pieces, dim=-1)
 
         h, c = hidden  # Already [num_layers, B, hidden_dim]
         outputs = []
@@ -345,6 +393,7 @@ class RecurrentActorCritic(nn.Module):
         hidden: Tuple[torch.Tensor, torch.Tensor],
         action: Optional[torch.Tensor] = None,
         episode_starts: Optional[torch.Tensor] = None,
+        target_vec: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Get action, log_prob, entropy, value, and new hidden state.
@@ -366,7 +415,8 @@ class RecurrentActorCritic(nn.Module):
             # Sequential processing with hidden state resets
             h, c = self._prepare_hidden(hidden, obs.shape[0])
             lstm_out = self._forward_shared_sequential(
-                obs, prior_action, prior_reward, (h, c), episode_starts
+                obs, prior_action, prior_reward, (h, c), episode_starts,
+                target_vec=target_vec,
             )
             # Use all timesteps for policy and value
             mean = self.policy_head(lstm_out)  # [B, T, action_dim]
@@ -386,7 +436,8 @@ class RecurrentActorCritic(nn.Module):
         else:
             # Single-step or non-sequential batch
             lstm_out, new_hidden = self._forward_shared(
-                obs, prior_action, prior_reward, hidden
+                obs, prior_action, prior_reward, hidden,
+                target_vec=target_vec,
             )
             mean = self.policy_head(lstm_out)
             std = self.log_std.exp().expand_as(mean)
@@ -406,9 +457,11 @@ class RecurrentActorCritic(nn.Module):
         prior_action: torch.Tensor,
         prior_reward: torch.Tensor,
         hidden: Tuple[torch.Tensor, torch.Tensor],
+        target_vec: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Get value estimate only (for GAE bootstrap)."""
-        lstm_out, _ = self._forward_shared(obs, prior_action, prior_reward, hidden)
+        lstm_out, _ = self._forward_shared(
+            obs, prior_action, prior_reward, hidden, target_vec=target_vec)
         return self.value_head(lstm_out).squeeze(-1)
 
     def get_deterministic_action(
@@ -417,10 +470,11 @@ class RecurrentActorCritic(nn.Module):
         prior_action: torch.Tensor,
         prior_reward: torch.Tensor,
         hidden: Tuple[torch.Tensor, torch.Tensor],
+        target_vec: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Get deterministic (mean) action, scaled and clamped for deployment."""
         lstm_out, new_hidden = self._forward_shared(
-            obs, prior_action, prior_reward, hidden
+            obs, prior_action, prior_reward, hidden, target_vec=target_vec,
         )
         mean = self.policy_head(lstm_out)
         action = self.scale_and_clamp_action(mean)
@@ -459,8 +513,9 @@ class PPOActorWrapper(nn.Module):
         prior_action: torch.Tensor,
         prior_reward: torch.Tensor,
         hidden: Tuple[torch.Tensor, torch.Tensor],
+        target_vec: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         action, new_hidden = self.actor_critic.get_deterministic_action(
-            obs, prior_action, prior_reward, hidden
+            obs, prior_action, prior_reward, hidden, target_vec=target_vec,
         )
         return action, new_hidden

@@ -190,9 +190,17 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         _v4_mask = getattr(v4, "_target_zero_mask", None)
         if _v4_mask is None:
             self._hole_mask_t = None
+            self._target_vec_t = None
         else:
             self._hole_mask_t = torch.tensor(
                 _v4_mask.astype(bool), dtype=torch.bool, device=self.dev)
+            _ang = float(cfg.get("dark_hole_angular_location_degrees", 0.0))
+            _rf = float(cfg.get("dark_hole_location_radius_fraction", 0.0))
+            _sf = float(cfg.get("dark_hole_size_radius", 0.0))
+            _th = _ang * math.pi / 180.0
+            self._target_vec_t = torch.tensor(
+                [math.sin(_th), math.cos(_th), _rf, _sf],
+                dtype=torch.float32, device=self.dev)
 
         # --- DEBUG: show perfect image ---
         if cfg.get("_debug_show_perfect", False):
@@ -1477,6 +1485,14 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         raw_reward_np = self._raw_reward.cpu().numpy()
 
         # --- 8. Auto-reset done envs ---
+        # Per-env target vector: [sin(θ), cos(θ), radius_frac, size_frac].
+        # Target-aware policies read this each step; others ignore it.
+        if self._hole_mask_t is None:
+            target_np = np.zeros((N, 4), dtype=np.float32)
+        else:
+            tv = self._target_vec_t.detach().cpu().numpy().astype(np.float32)
+            target_np = np.broadcast_to(tv, (N, 4)).copy()
+
         infos = {
             "strehl": strehl_np,
             "mse": np.zeros(N, dtype=np.float32),  # placeholder (not computed in V5)
@@ -1487,6 +1503,7 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             "contrast": self._last_contrast.detach().cpu().numpy(),
             "hole_flux_frac":
                 self._last_hole_flux_frac.detach().cpu().numpy(),
+            "target_vec": target_np,
         }
         # Vector reward: expose raw, unscaled "higher-is-better" components
         # so callers can pick (or re-weight) the optimization signal.
