@@ -60,7 +60,7 @@ PSF_CORE_RADIUS_FRAC = 0.074          # first Airy zero in half-FOV units
 #       diameter 0.198, tangent.
 # The two rings overlap radially by ~0.029 (inner outer-edge 0.25,
 # outer inner-edge 0.221).
-INNER_SIZE = 0.090
+INNER_SIZE = 0.095
 OUTER_SIZE = 0.099
 
 # (radius_frac, starting_angle_deg, n_angles, size_frac)
