@@ -35,6 +35,7 @@ matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.colors as mcolors
+from matplotlib.patches import Circle
 import imageio
 from torch.utils.tensorboard import SummaryWriter
 
@@ -343,6 +344,20 @@ def evaluate_with_visualization(
     env_kwargs["max_episode_steps"] = config["max_episode_steps"]
     max_steps = config["max_episode_steps"]
 
+    # Dark-hole geometry (if any) — threaded into ep_data so downstream
+    # figures can overlay a target-location indicator. Missing / disabled
+    # dark holes produce a None entry and the filmstrip silently skips.
+    _dh_geom = None
+    if env_kwargs.get("dark_hole", False):
+        _dh_geom = {
+            "angle_deg": float(env_kwargs.get(
+                "dark_hole_angular_location_degrees", 0.0)),
+            "loc_frac": float(env_kwargs.get(
+                "dark_hole_location_radius_fraction", 0.0)),
+            "size_frac": float(env_kwargs.get(
+                "dark_hole_size_radius", 0.0)),
+        }
+
     eval_seeds = config.get("eval_seeds")
     if eval_seeds is None:
         eval_seeds = list(range(num_episodes))
@@ -529,6 +544,7 @@ def evaluate_with_visualization(
             "seed": seed,
             "zero_return": zero_return,
             "improvement_gap": improvement_gap,
+            "dark_hole": _dh_geom,
         })
 
     # Select best / worst / median episodes by return
@@ -843,6 +859,7 @@ def _log_observation_filmstrip(
     palette = (["#4a90d9", "#d94a4a", "#4ad94a",
                 "#d9d94a", "#d94ad9", "#4ad9d9"] * 16)[:max(action_dim, 1)]
 
+    dh = ep_data.get("dark_hole")
     for col, idx in enumerate(frame_indices):
         # Row 0: image.
         ax_img = axes[0, col]
@@ -852,6 +869,16 @@ def _log_observation_filmstrip(
         tag = labels.get(idx, "")
         ax_img.set_title(f"{tag} (t={idx})", fontsize=7, pad=1.5)
         ax_img.axis("off")
+        if dh is not None:
+            H, W = img_dn.shape[-2:]
+            theta = np.deg2rad(dh["angle_deg"])
+            cx_px = W / 2.0 + dh["loc_frac"] * (W / 2.0) * np.cos(theta)
+            cy_px = H / 2.0 + dh["loc_frac"] * (H / 2.0) * np.sin(theta)
+            r_px = dh["size_frac"] * (W / 2.0)
+            ax_img.add_patch(Circle(
+                (cx_px, cy_px), r_px, fill=False,
+                edgecolor="cyan", linestyle=(0, (1.5, 1.5)),
+                linewidth=0.7, alpha=0.9))
         if col == n - 1:
             cb = fig.colorbar(im, ax=ax_img, fraction=0.046, pad=0.02)
             cb.ax.tick_params(labelsize=5.5)
