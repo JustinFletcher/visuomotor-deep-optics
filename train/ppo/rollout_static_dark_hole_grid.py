@@ -47,6 +47,25 @@ from train.ppo.rollout_dark_hole_grid import (                         # noqa: E
 )
 
 
+_DEFAULT_SWEEP_ROOT = "dark_hole_runs"
+_SWEEP_PREFIX = "dark_hole_static_"
+
+
+def _latest_sweep_dir(root: str = _DEFAULT_SWEEP_ROOT) -> str | None:
+    """Return the newest ``<root>/dark_hole_static_*`` dir by mtime."""
+    if not os.path.isdir(root):
+        return None
+    candidates = [
+        os.path.join(root, name) for name in os.listdir(root)
+        if name.startswith(_SWEEP_PREFIX)
+        and os.path.isdir(os.path.join(root, name))
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=os.path.getmtime)
+    return candidates[-1]
+
+
 def _resolve_checkpoint(sweep_dir: str, target_idx: int) -> str:
     """Find the best.pt under <sweep_dir>/target_<NN>/ppo_optomech_*/.
 
@@ -80,12 +99,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="Roll the static dark-hole sweep, one policy per target.")
     parser.add_argument(
-        "--sweep-dir", type=str, required=True,
+        "--sweep-dir", type=str, default=None,
         help="Path to the static-sweep run dir, e.g. "
-             "dark_hole_runs/dark_hole_static_<timestamp>.")
+             "dark_hole_runs/dark_hole_static_<timestamp>. If omitted, "
+             "the newest dark_hole_runs/dark_hole_static_* dir is used.")
     parser.add_argument(
-        "--output-dir", type=str, required=True,
-        help="Destination for target_NN.gif files.")
+        "--output-dir", type=str, default=None,
+        help="Destination for target_NN.gif files. Default: "
+             "test_output/<sweep_basename>_grid/.")
     parser.add_argument("--max-steps", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
@@ -105,14 +126,27 @@ def main():
     else:
         target_indices = list(range(len(targets)))
 
-    if not os.path.isdir(args.sweep_dir):
-        print(f"Error: --sweep-dir {args.sweep_dir} does not exist")
+    sweep_dir = args.sweep_dir
+    if sweep_dir is None:
+        sweep_dir = _latest_sweep_dir()
+        if sweep_dir is None:
+            print(f"Error: no {_SWEEP_PREFIX}* dir found under "
+                  f"{_DEFAULT_SWEEP_ROOT}/. Pass --sweep-dir explicitly.")
+            sys.exit(1)
+        print(f"--sweep-dir not given; using newest: {sweep_dir}")
+    if not os.path.isdir(sweep_dir):
+        print(f"Error: --sweep-dir {sweep_dir} does not exist")
         sys.exit(1)
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    output_dir = args.output_dir
+    if output_dir is None:
+        output_dir = os.path.join(
+            "test_output", f"{os.path.basename(sweep_dir.rstrip('/'))}_grid")
 
-    print(f"Sweep dir:  {args.sweep_dir}")
-    print(f"Output dir: {args.output_dir}")
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"Sweep dir:  {sweep_dir}")
+    print(f"Output dir: {output_dir}")
     print(f"Targets:    {target_indices}")
     print()
 
@@ -120,7 +154,7 @@ def main():
     for i in target_indices:
         target = targets[i]
         try:
-            ckpt_path = _resolve_checkpoint(args.sweep_dir, i)
+            ckpt_path = _resolve_checkpoint(sweep_dir, i)
         except FileNotFoundError as e:
             print(f"  target {i:>2}: SKIP — {e}")
             continue
@@ -137,7 +171,7 @@ def main():
 
         ep = run_episode(agent, env, target, args.seed, args.device)
         ep["target_id"] = i
-        gif_path = os.path.join(args.output_dir, f"target_{i:02d}.gif")
+        gif_path = os.path.join(output_dir, f"target_{i:02d}.gif")
         render_gif(ep, gif_path, dpi=args.dpi,
                    frame_duration=args.frame_duration)
         env.close()
@@ -155,7 +189,7 @@ def main():
               f"final_C={final_ct:.2e}  best_C={best_ct:.2e}  "
               f"-> {gif_path}")
 
-    print(f"\nWrote {len(summary)} GIFs to {args.output_dir}")
+    print(f"\nWrote {len(summary)} GIFs to {output_dir}")
 
 
 if __name__ == "__main__":
