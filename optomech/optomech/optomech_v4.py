@@ -117,6 +117,15 @@ DEFAULT_CONFIG = {
     "rail_baseline_tip_arcsec": 5.0,
     "rail_baseline_tilt_arcsec": 5.0,
 
+    # Reset's warm-up frame normally steps with a random action drawn
+    # from the action space (preserves the legacy training-time
+    # behaviour). Set this True to force the warm-up to use a zero
+    # action, i.e. leave the actuator state exactly as init left it.
+    # Useful for any env where the agent is meant to start from a
+    # known coherent / aligned state (dark-hole shaping, etc).
+    # Bootstrap mode already uses a zero warm-up action regardless.
+    "warmup_with_zero_action": False,
+
     "init_differential_motion": False,
     "simulate_differential_motion": False,
     "model_wind_diff_motion": False,
@@ -2875,8 +2884,11 @@ class OptomechEnv(gym.Env):
         # Warm-up: run frames to generate the initial observation.
         # In bootstrap mode, use zero action so excluded segments stay
         # at their off-axis positions (random actions could overwrite them).
+        _zero_warmup = (
+            _bootstrap
+            or bool(self.cfg.get("warmup_with_zero_action", False)))
         _warmup_action = (np.zeros_like(self.action_space.sample())
-                          if _bootstrap else self.action_space.sample())
+                          if _zero_warmup else self.action_space.sample())
         _v3("Warm-up: %d initial frame(s)..." % self.frames_per_decision)
         for _ in range(self.frames_per_decision):
             (initial_state, _, _, _, info) = self.step(

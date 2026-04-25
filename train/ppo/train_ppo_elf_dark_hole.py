@@ -106,6 +106,11 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "rail_baseline_piston_micron": 3.0,
     "rail_baseline_tip_arcsec": 0.0,
     "rail_baseline_tilt_arcsec": 0.0,
+    # Reset's warm-up frame uses a zero action so the t=0 observation
+    # the agent (and the GIF) sees is the actual aligned PSF — without
+    # this the random warm-up sampled from the action space kicks
+    # every actuator by up to env_action_scale * max_corr.
+    "warmup_with_zero_action": True,
     "simulate_differential_motion": False,
     "model_wind_diff_motion": False,
     "model_gravity_diff_motion": False,
