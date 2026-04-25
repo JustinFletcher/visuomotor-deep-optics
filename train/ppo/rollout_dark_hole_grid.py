@@ -229,19 +229,11 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     T = len(rewards)
 
     obs_imgs = [_prep_obs(obs_raw[t]) for t in range(T + 1)]
-    obs_max = max(float(np.max(img)) for img in obs_imgs)
-    obs_max = max(obs_max, 1.0)
-    obs_norm = mcolors.LogNorm(vmin=1.0, vmax=obs_max)
-
-    psf_max = max(float(np.max(p)) for p in psfs if p is not None)
-    psf_max = max(psf_max, 1e-30)
-    psf_floor = max(psf_max * 1e-12, 1e-30)
-    psf_norm = mcolors.LogNorm(vmin=psf_floor, vmax=psf_max)
-
-    opd_max = max(float(np.max(np.abs(o))) for o in opds if o is not None)
-    opd_max = max(opd_max, 1e-12)
-
     H, W = obs_imgs[0].shape[-2:]
+    # Image-panel scales are computed per-frame below so each frame
+    # uses its own dynamic range (colors shift between frames, but
+    # nothing saturates against an episode-wide ceiling that may live
+    # many decades above what's actually present at this step).
     th = np.deg2rad(angle)
     cx_px = W / 2.0 + radius_frac * (W / 2.0) * np.cos(th)
     cy_px = H / 2.0 + radius_frac * (H / 2.0) * np.sin(th)
@@ -269,21 +261,24 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     SUP_FS = 11
 
     for t in range(T + 1):
-        fig = plt.figure(figsize=(10.2, 4.7), dpi=dpi)
+        fig = plt.figure(figsize=(10.2, 4.3), dpi=dpi)
         gs = fig.add_gridspec(
             2, 3,
-            height_ratios=[3.4, 1.2],
-            hspace=0.32, wspace=0.16,
-            left=0.045, right=0.985, top=0.84, bottom=0.13,
+            height_ratios=[3.8, 0.85],
+            hspace=0.28, wspace=0.04,
+            left=0.045, right=0.985, top=0.85, bottom=0.13,
         )
 
-        # Panel 1: OPD.
+        # Panel 1: OPD (per-frame symmetric scale).
         ax_opd = fig.add_subplot(gs[0, 0])
         opd = opds[t]
         opd_show = np.where(np.abs(opd) < 1e-14, np.nan, opd)
+        opd_max_t = float(np.nanmax(np.abs(opd_show))) if np.any(
+            np.isfinite(opd_show)) else 1e-12
+        opd_max_t = max(opd_max_t, 1e-12)
         im_opd = ax_opd.imshow(
             opd_show, cmap="RdBu_r", origin="lower",
-            vmin=-opd_max, vmax=opd_max, aspect="equal")
+            vmin=-opd_max_t, vmax=opd_max_t, aspect="equal")
         _circle(ax_opd)
         ax_opd.set_xticks([]); ax_opd.set_yticks([])
         ax_opd.set_title("OPD (m)", fontsize=TITLE_FS, pad=3)
@@ -292,12 +287,15 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         cb.formatter.set_powerlimits((-2, 2))
         cb.update_ticks()
 
-        # Panel 2: raw PSF.
+        # Panel 2: raw PSF (per-frame log scale).
         ax_psf = fig.add_subplot(gs[0, 1])
         psf = psfs[t] if psfs[t] is not None else np.zeros((H, W))
+        psf_max_t = max(float(np.max(psf)), 1e-30)
+        psf_floor_t = max(psf_max_t * 1e-8, 1e-30)
+        psf_norm_t = mcolors.LogNorm(vmin=psf_floor_t, vmax=psf_max_t)
         im_psf = ax_psf.imshow(
-            np.maximum(psf, psf_floor), cmap="inferno",
-            norm=psf_norm, origin="lower", aspect="equal")
+            np.maximum(psf, psf_floor_t), cmap="inferno",
+            norm=psf_norm_t, origin="lower", aspect="equal")
         _circle(ax_psf)
         ax_psf.set_xticks([]); ax_psf.set_yticks([])
         ax_psf.set_title("raw PSF (pre-detector, log)",
@@ -305,11 +303,13 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         cb = fig.colorbar(im_psf, ax=ax_psf, fraction=0.046, pad=0.018)
         cb.ax.tick_params(labelsize=CB_FS)
 
-        # Panel 3: observation.
+        # Panel 3: observation (per-frame log scale).
         ax_obs = fig.add_subplot(gs[0, 2])
+        obs_max_t = max(float(np.max(obs_imgs[t])), 2.0)
+        obs_norm_t = mcolors.LogNorm(vmin=1.0, vmax=obs_max_t)
         im_obs = ax_obs.imshow(
             np.maximum(obs_imgs[t], 1.0), cmap="inferno",
-            norm=obs_norm, origin="lower", aspect="equal")
+            norm=obs_norm_t, origin="lower", aspect="equal")
         _circle(ax_obs)
         ax_obs.set_xticks([]); ax_obs.set_yticks([])
         ax_obs.set_title("detector obs (DN, log)",
