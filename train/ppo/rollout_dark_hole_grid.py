@@ -246,19 +246,18 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     cy_px = H / 2.0 + radius_frac * (H / 2.0) * np.sin(th)
     r_px = size_frac * (W / 2.0)
 
-    finite = contrasts[np.isfinite(contrasts) & (contrasts > 0)]
-    ct_lo = max(float(finite.min() * 0.5), 1e-12) if finite.size else 1e-12
-    ct_hi = min(float(finite.max() * 2.0), 1.0) if finite.size else 1.0
-    if ct_hi <= ct_lo:
-        ct_hi = ct_lo * 100.0
-    pk_finite = peaks[np.isfinite(peaks) & (peaks > 0)]
-    if pk_finite.size:
-        pk_lo = float(pk_finite.min() * 0.5)
-        pk_hi = float(pk_finite.max() * 2.0)
-        if pk_hi <= pk_lo:
-            pk_hi = pk_lo * 10.0
-    else:
-        pk_lo, pk_hi = 1e-30, 1.0
+    def _linear_bounds(arr):
+        finite = arr[np.isfinite(arr)]
+        if not finite.size:
+            return 0.0, 1.0
+        lo, hi = float(finite.min()), float(finite.max())
+        if hi <= lo:
+            hi = lo + abs(lo) * 0.1 + 1e-12
+        pad = 0.05 * (hi - lo)
+        return lo - pad, hi + pad
+
+    ct_lo, ct_hi = _linear_bounds(contrasts)
+    pk_lo, pk_hi = _linear_bounds(peaks)
     timesteps = np.arange(T + 1)
 
     def _circle(ax):
@@ -335,42 +334,37 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         cb = fig.colorbar(im_obs, ax=ax_obs, fraction=0.046, pad=0.018)
         cb.ax.tick_params(labelsize=CB_FS)
 
-        # Panel 4: contrast trace (spans all columns).
+        # Panel 4: contrast trace (linear).
         ax_ct = fig.add_subplot(gs[1, :])
-        ax_ct.set_yscale("log")
         ax_ct.set_ylim(ct_lo, ct_hi)
         ax_ct.set_xlim(0, max(T, 1))
-        ax_ct.plot(timesteps, np.where(contrasts > 0, contrasts, np.nan),
+        ax_ct.plot(timesteps, contrasts,
                    color="#888888", lw=0.7, alpha=0.4)
-        ax_ct.plot(timesteps[: t + 1],
-                   np.where(contrasts[: t + 1] > 0,
-                            contrasts[: t + 1], np.nan),
+        ax_ct.plot(timesteps[: t + 1], contrasts[: t + 1],
                    color="#1f3b5e", lw=1.6)
-        if np.isfinite(contrasts[t]) and contrasts[t] > 0:
+        if np.isfinite(contrasts[t]):
             ax_ct.plot([t], [contrasts[t]], "o",
                        color="#d94a4a", markersize=5)
-        ax_ct.grid(True, which="both", alpha=0.3, lw=0.4)
+        ax_ct.grid(True, alpha=0.3, lw=0.4)
         ax_ct.tick_params(labelsize=TICK_FS, labelbottom=False)
-        ax_ct.set_ylabel("contrast = min(hole) / max(PSF)",
-                         fontsize=TICK_FS + 1)
+        ax_ct.set_title("Contrast (min(hole) / max(PSF))",
+                        fontsize=TITLE_FS, pad=2)
 
-        # Panel 5: peak brightness trace (spans all columns).
+        # Panel 5: peak brightness trace (linear).
         ax_pk = fig.add_subplot(gs[2, :], sharex=ax_ct)
-        ax_pk.set_yscale("log")
         ax_pk.set_ylim(pk_lo, pk_hi)
-        ax_pk.plot(timesteps, np.where(peaks > 0, peaks, np.nan),
+        ax_pk.plot(timesteps, peaks,
                    color="#888888", lw=0.7, alpha=0.4)
-        ax_pk.plot(timesteps[: t + 1],
-                   np.where(peaks[: t + 1] > 0, peaks[: t + 1], np.nan),
+        ax_pk.plot(timesteps[: t + 1], peaks[: t + 1],
                    color="#2a6f4d", lw=1.6)
-        if t < len(peaks) and np.isfinite(peaks[t]) and peaks[t] > 0:
+        if t < len(peaks) and np.isfinite(peaks[t]):
             ax_pk.plot([t], [peaks[t]], "o",
                        color="#d94a4a", markersize=5)
-        ax_pk.grid(True, which="both", alpha=0.3, lw=0.4)
+        ax_pk.grid(True, alpha=0.3, lw=0.4)
         ax_pk.tick_params(labelsize=TICK_FS)
         ax_pk.set_xlabel("step", fontsize=TICK_FS + 1)
-        ax_pk.set_ylabel("peak brightness = max(PSF)",
-                         fontsize=TICK_FS + 1)
+        ax_pk.set_title("Peak brightness (max(PSF))",
+                        fontsize=TITLE_FS, pad=2)
 
         head = (f"target {target_id:02d}  "
                 f"angle={angle:5.1f}°  r={radius_frac:.3f}  "
