@@ -97,7 +97,7 @@ def _build_env(target, max_steps):
 
 
 def _capture_diagnostics(base):
-    """Pull (OPD, raw_psf, contrast) from the env's optical state.
+    """Pull (OPD, raw_psf, contrast, peak_brightness) from the env.
 
     OPD: pupil-plane surface in metres, computed on-the-fly from the
     current actuator state and influence functions.
@@ -106,6 +106,9 @@ def _capture_diagnostics(base):
     contrast: min(raw_psf[hole]) / max(raw_psf), evaluated at full
     intensity precision so the typical 1e-6..1e-10 dark-hole regime
     isn't truncated by detector quantization.
+    peak_brightness: max(raw_psf), full intensity precision (units are
+    whatever the v4 polychromatic accumulator emits — only the
+    relative shape across steps matters).
     """
     os4 = base.optical_system
     actuators = os4._actuators_t              # [n_modes]
@@ -116,7 +119,7 @@ def _capture_diagnostics(base):
     # in OptomechEnv.step before the detector model runs).
     raw_psf = getattr(base, "_last_raw_psf", None)
     if raw_psf is None:
-        return opd, None, float("nan")
+        return opd, None, float("nan"), float("nan")
     raw_psf = np.asarray(raw_psf)
     mask = base._target_zero_mask
     psf_max = float(np.max(raw_psf))
@@ -124,7 +127,7 @@ def _capture_diagnostics(base):
         contrast = float("nan")
     else:
         contrast = float(np.min(raw_psf[mask]) / psf_max)
-    return opd, raw_psf, contrast
+    return opd, raw_psf, contrast, psf_max
 
 
 def run_episode(agent, env, target, seed, device):
@@ -150,13 +153,14 @@ def run_episode(agent, env, target, seed, device):
 
     # Capture initial-state diagnostics (the warm-up frame inside reset
     # already populated _last_raw_psf).
-    opd0, psf0, ct0 = _capture_diagnostics(base)
+    opd0, psf0, ct0, pk0 = _capture_diagnostics(base)
 
     rewards, actions = [], []
     obs_list = [obs_raw.copy()]
     opd_list = [opd0]
     psf_list = [psf0]
     contrast_list = [ct0]
+    peak_list = [pk0]
     strehls = []
 
     done = False
@@ -171,10 +175,11 @@ def run_episode(agent, env, target, seed, device):
         rewards.append(float(reward))
         actions.append(env_action.copy())
         obs_list.append(next_obs.copy())
-        opd_t, psf_t, ct_t = _capture_diagnostics(base)
+        opd_t, psf_t, ct_t, pk_t = _capture_diagnostics(base)
         opd_list.append(opd_t)
         psf_list.append(psf_t)
         contrast_list.append(ct_t)
+        peak_list.append(pk_t)
         if "strehl" in info:
             strehls.append(float(info["strehl"]))
         prior_action = action_t
@@ -189,6 +194,7 @@ def run_episode(agent, env, target, seed, device):
         "opd": opd_list,
         "raw_psf": psf_list,
         "contrast": contrast_list,
+        "peak": peak_list,
         "strehls": strehls,
         "return": float(sum(rewards)),
         "length": len(rewards),
@@ -223,6 +229,7 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     opds = ep_data["opd"]
     psfs = ep_data["raw_psf"]
     contrasts = np.array(ep_data["contrast"], dtype=np.float64)
+    peaks = np.array(ep_data.get("peak", []), dtype=np.float64)
     rewards = ep_data["rewards"]
     strehls = ep_data["strehls"]
     cumulative = np.cumsum(rewards)
@@ -244,6 +251,14 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     ct_hi = min(float(finite.max() * 2.0), 1.0) if finite.size else 1.0
     if ct_hi <= ct_lo:
         ct_hi = ct_lo * 100.0
+    pk_finite = peaks[np.isfinite(peaks) & (peaks > 0)]
+    if pk_finite.size:
+        pk_lo = float(pk_finite.min() * 0.5)
+        pk_hi = float(pk_finite.max() * 2.0)
+        if pk_hi <= pk_lo:
+            pk_hi = pk_lo * 10.0
+    else:
+        pk_lo, pk_hi = 1e-30, 1.0
     timesteps = np.arange(T + 1)
 
     def _circle(ax):
@@ -261,16 +276,15 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     SUP_FS = 11
 
     for t in range(T + 1):
-        # Width tuned so each top cell is roughly square (the imshow
-        # panels use aspect="equal", so any extra cell width becomes
-        # wasted gutters left/right of each image). Right margin
-        # leaves ~6% for the rightmost colorbar tick labels.
-        fig = plt.figure(figsize=(9.0, 4.0), dpi=dpi)
+        # Top row: 3 near-square image panels (aspect="equal").
+        # Bottom: stacked contrast trace + peak-brightness trace.
+        # Right margin leaves ~6% for the rightmost colorbar's labels.
+        fig = plt.figure(figsize=(9.0, 4.7), dpi=dpi)
         gs = fig.add_gridspec(
-            2, 3,
-            height_ratios=[3.8, 0.85],
-            hspace=0.30, wspace=0.04,
-            left=0.025, right=0.94, top=0.85, bottom=0.13,
+            3, 3,
+            height_ratios=[3.8, 0.7, 0.7],
+            hspace=0.55, wspace=0.04,
+            left=0.025, right=0.94, top=0.88, bottom=0.10,
         )
 
         # Panel 1: OPD (per-frame symmetric scale).
@@ -336,9 +350,26 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
             ax_ct.plot([t], [contrasts[t]], "o",
                        color="#d94a4a", markersize=5)
         ax_ct.grid(True, which="both", alpha=0.3, lw=0.4)
-        ax_ct.tick_params(labelsize=TICK_FS)
-        ax_ct.set_xlabel("step", fontsize=TICK_FS + 1)
+        ax_ct.tick_params(labelsize=TICK_FS, labelbottom=False)
         ax_ct.set_ylabel("contrast = min(hole) / max(PSF)",
+                         fontsize=TICK_FS + 1)
+
+        # Panel 5: peak brightness trace (spans all columns).
+        ax_pk = fig.add_subplot(gs[2, :], sharex=ax_ct)
+        ax_pk.set_yscale("log")
+        ax_pk.set_ylim(pk_lo, pk_hi)
+        ax_pk.plot(timesteps, np.where(peaks > 0, peaks, np.nan),
+                   color="#888888", lw=0.7, alpha=0.4)
+        ax_pk.plot(timesteps[: t + 1],
+                   np.where(peaks[: t + 1] > 0, peaks[: t + 1], np.nan),
+                   color="#2a6f4d", lw=1.6)
+        if t < len(peaks) and np.isfinite(peaks[t]) and peaks[t] > 0:
+            ax_pk.plot([t], [peaks[t]], "o",
+                       color="#d94a4a", markersize=5)
+        ax_pk.grid(True, which="both", alpha=0.3, lw=0.4)
+        ax_pk.tick_params(labelsize=TICK_FS)
+        ax_pk.set_xlabel("step", fontsize=TICK_FS + 1)
+        ax_pk.set_ylabel("peak brightness = max(PSF)",
                          fontsize=TICK_FS + 1)
 
         head = (f"target {target_id:02d}  "
