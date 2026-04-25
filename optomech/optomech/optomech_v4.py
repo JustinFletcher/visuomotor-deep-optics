@@ -3029,6 +3029,10 @@ class OptomechEnv(gym.Env):
                     if _record and not reset:
                         self.save_state()
 
+            # Stash the polychromatic pre-detector frame so callers
+            # (rollout viz, contrast diagnostics) can read the unbroken
+            # intensity dynamic range without detector quantization.
+            self._last_raw_psf = frame_t.detach().cpu().numpy()
             frame_t = self._apply_detector_model_gpu(frame_t, _dev)
             self.focal_plane_images.append(frame_t.cpu().numpy())
 

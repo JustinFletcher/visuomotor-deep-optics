@@ -96,6 +96,37 @@ def _build_env(target, max_steps):
     return env
 
 
+def _capture_diagnostics(base):
+    """Pull (OPD, raw_psf, contrast) from the env's optical state.
+
+    OPD: pupil-plane surface in metres, computed on-the-fly from the
+    current actuator state and influence functions.
+    raw_psf: polychromatic, pre-detector intensity frame stashed by v4
+    in OpticalSystem._last_raw_psf.
+    contrast: median(raw_psf[hole]) / max(raw_psf), evaluated at full
+    intensity precision so the typical 1e-6..1e-10 dark-hole regime
+    isn't truncated by detector quantization.
+    """
+    os4 = base.optical_system
+    actuators = os4._actuators_t              # [n_modes]
+    infl = os4._influence_t                   # [n_modes, H, W]
+    opd = torch.einsum("i,ihw->hw", actuators, infl).detach().cpu().numpy()
+    # Pre-detector polychromatic frame is stashed on the env, not the
+    # optical system (it accumulates across the per-step wavelength loop
+    # in OptomechEnv.step before the detector model runs).
+    raw_psf = getattr(base, "_last_raw_psf", None)
+    if raw_psf is None:
+        return opd, None, float("nan")
+    raw_psf = np.asarray(raw_psf)
+    mask = base._target_zero_mask
+    psf_max = float(np.max(raw_psf))
+    if mask is None or psf_max <= 0.0:
+        contrast = float("nan")
+    else:
+        contrast = float(np.median(raw_psf[mask]) / psf_max)
+    return opd, raw_psf, contrast
+
+
 def run_episode(agent, env, target, seed, device):
     """One deterministic rollout. Returns dict of per-step data."""
     angle, radius_frac, size_frac = target
@@ -117,8 +148,15 @@ def run_episode(agent, env, target, seed, device):
     prior_action = torch.zeros(1, agent.action_dim, device=device)
     prior_reward = torch.zeros(1, device=device)
 
+    # Capture initial-state diagnostics (the warm-up frame inside reset
+    # already populated _last_raw_psf).
+    opd0, psf0, ct0 = _capture_diagnostics(base)
+
     rewards, actions = [], []
     obs_list = [obs_raw.copy()]
+    opd_list = [opd0]
+    psf_list = [psf0]
+    contrast_list = [ct0]
     strehls = []
 
     done = False
@@ -133,6 +171,10 @@ def run_episode(agent, env, target, seed, device):
         rewards.append(float(reward))
         actions.append(env_action.copy())
         obs_list.append(next_obs.copy())
+        opd_t, psf_t, ct_t = _capture_diagnostics(base)
+        opd_list.append(opd_t)
+        psf_list.append(psf_t)
+        contrast_list.append(ct_t)
         if "strehl" in info:
             strehls.append(float(info["strehl"]))
         prior_action = action_t
@@ -144,6 +186,9 @@ def run_episode(agent, env, target, seed, device):
         "rewards": rewards,
         "actions": np.array(actions),
         "obs_raw": obs_list,
+        "opd": opd_list,
+        "raw_psf": psf_list,
+        "contrast": contrast_list,
         "strehls": strehls,
         "return": float(sum(rewards)),
         "length": len(rewards),
@@ -163,52 +208,140 @@ def _prep_obs(o):
 
 
 def render_gif(ep_data, save_path, dpi=72, frame_duration=0.1):
-    """Animated GIF of the focal-plane evolution with target overlay."""
+    """4-panel animated GIF: OPD | raw PSF | observation | contrast trace.
+
+    All three image panels carry the target dark-hole circle overlaid as
+    a dotted cyan outline. The contrast trace (raw_psf median in the
+    hole / raw_psf max) is on a log scale and accumulates frame-by-frame
+    so the viewer sees the depth evolve.
+    """
     target = ep_data["target"]
     angle, radius_frac, size_frac = target
     target_id = ep_data.get("target_id", -1)
 
     obs_raw = ep_data["obs_raw"]
+    opds = ep_data["opd"]
+    psfs = ep_data["raw_psf"]
+    contrasts = np.array(ep_data["contrast"], dtype=np.float64)
     rewards = ep_data["rewards"]
     strehls = ep_data["strehls"]
     cumulative = np.cumsum(rewards)
     T = len(rewards)
 
-    all_raw = [_prep_obs(obs_raw[t]) for t in range(T + 1)]
-    global_max = max(float(np.max(img)) for img in all_raw)
-    global_max = max(global_max, 1.0)
-    norm = mcolors.LogNorm(vmin=1.0, vmax=global_max)
+    obs_imgs = [_prep_obs(obs_raw[t]) for t in range(T + 1)]
+    obs_max = max(float(np.max(img)) for img in obs_imgs)
+    obs_max = max(obs_max, 1.0)
+    obs_norm = mcolors.LogNorm(vmin=1.0, vmax=obs_max)
 
-    H, W = all_raw[0].shape[-2:]
+    psf_max = max(float(np.max(p)) for p in psfs if p is not None)
+    psf_max = max(psf_max, 1e-30)
+    psf_floor = max(psf_max * 1e-12, 1e-30)
+    psf_norm = mcolors.LogNorm(vmin=psf_floor, vmax=psf_max)
+
+    opd_max = max(float(np.max(np.abs(o))) for o in opds if o is not None)
+    opd_max = max(opd_max, 1e-12)
+
+    H, W = obs_imgs[0].shape[-2:]
     th = np.deg2rad(angle)
     cx_px = W / 2.0 + radius_frac * (W / 2.0) * np.cos(th)
     cy_px = H / 2.0 + radius_frac * (H / 2.0) * np.sin(th)
     r_px = size_frac * (W / 2.0)
 
+    # Y-bounds for the contrast trace: clip non-finite, set log floor.
+    finite = contrasts[np.isfinite(contrasts) & (contrasts > 0)]
+    ct_lo = max(float(finite.min() * 0.5), 1e-12) if finite.size else 1e-12
+    ct_hi = min(float(finite.max() * 2.0), 1.0) if finite.size else 1.0
+    if ct_hi <= ct_lo:
+        ct_hi = ct_lo * 100.0
+    timesteps = np.arange(T + 1)
+
+    def _circle(ax):
+        ax.add_patch(Circle(
+            (cx_px, cy_px), r_px, fill=False, edgecolor="cyan",
+            linestyle=(0, (1.5, 1.5)), linewidth=0.9, alpha=0.95))
+
     frames = []
     for t in range(T + 1):
-        fig, ax = plt.subplots(figsize=(3.6, 3.6), dpi=dpi)
-        im = ax.imshow(np.maximum(all_raw[t], 1.0),
-                       cmap="inferno", norm=norm, origin="lower")
-        ax.add_patch(Circle(
-            (cx_px, cy_px), r_px, fill=False,
-            edgecolor="cyan", linestyle=(0, (1.5, 1.5)),
-            linewidth=0.9, alpha=0.95))
-        ax.set_xticks([]); ax.set_yticks([])
+        fig = plt.figure(figsize=(8.4, 3.6), dpi=dpi)
+        gs = fig.add_gridspec(
+            2, 3, height_ratios=[3.0, 1.0], hspace=0.55, wspace=0.20,
+            left=0.04, right=0.985, top=0.86, bottom=0.13)
+
+        # Panel 1: OPD.
+        ax_opd = fig.add_subplot(gs[0, 0])
+        opd = opds[t]
+        opd_show = np.where(np.abs(opd) < 1e-14, np.nan, opd)
+        im_opd = ax_opd.imshow(
+            opd_show, cmap="RdBu_r", origin="lower",
+            vmin=-opd_max, vmax=opd_max)
+        _circle(ax_opd)
+        ax_opd.set_xticks([]); ax_opd.set_yticks([])
+        ax_opd.set_title("OPD (m)", fontsize=7, pad=2)
+        cb = fig.colorbar(im_opd, ax=ax_opd, fraction=0.046, pad=0.02)
+        cb.ax.tick_params(labelsize=5)
+        cb.formatter.set_powerlimits((-2, 2))
+        cb.update_ticks()
+
+        # Panel 2: raw PSF.
+        ax_psf = fig.add_subplot(gs[0, 1])
+        psf = psfs[t] if psfs[t] is not None else np.zeros((H, W))
+        im_psf = ax_psf.imshow(
+            np.maximum(psf, psf_floor), cmap="inferno",
+            norm=psf_norm, origin="lower")
+        _circle(ax_psf)
+        ax_psf.set_xticks([]); ax_psf.set_yticks([])
+        ax_psf.set_title("raw PSF (pre-detector, log)", fontsize=7, pad=2)
+        cb = fig.colorbar(im_psf, ax=ax_psf, fraction=0.046, pad=0.02)
+        cb.ax.tick_params(labelsize=5)
+
+        # Panel 3: observation.
+        ax_obs = fig.add_subplot(gs[0, 2])
+        im_obs = ax_obs.imshow(
+            np.maximum(obs_imgs[t], 1.0), cmap="inferno",
+            norm=obs_norm, origin="lower")
+        _circle(ax_obs)
+        ax_obs.set_xticks([]); ax_obs.set_yticks([])
+        ax_obs.set_title("detector obs (DN, log)", fontsize=7, pad=2)
+        cb = fig.colorbar(im_obs, ax=ax_obs, fraction=0.046, pad=0.02)
+        cb.ax.tick_params(labelsize=5)
+
+        # Panel 4: contrast trace (spans all columns).
+        ax_ct = fig.add_subplot(gs[1, :])
+        ax_ct.set_yscale("log")
+        ax_ct.set_ylim(ct_lo, ct_hi)
+        ax_ct.set_xlim(0, max(T, 1))
+        # Faded full trace (so the viewer can see what's coming).
+        ax_ct.plot(timesteps, np.where(contrasts > 0, contrasts, np.nan),
+                   color="#888888", lw=0.6, alpha=0.4)
+        # Solid trace up to current step.
+        ax_ct.plot(timesteps[: t + 1],
+                   np.where(contrasts[: t + 1] > 0,
+                            contrasts[: t + 1], np.nan),
+                   color="#1f3b5e", lw=1.4)
+        # Marker at current step.
+        if np.isfinite(contrasts[t]) and contrasts[t] > 0:
+            ax_ct.plot([t], [contrasts[t]], "o",
+                       color="#d94a4a", markersize=4)
+        ax_ct.grid(True, which="both", alpha=0.3, lw=0.4)
+        ax_ct.tick_params(labelsize=6)
+        ax_ct.set_xlabel("step", fontsize=7)
+        ax_ct.set_ylabel("contrast = median(hole) / max(PSF)", fontsize=7)
+
+        # Suptitle: target metadata + per-step metrics.
         head = (f"target {target_id:02d}  "
                 f"angle={angle:5.1f}°  r={radius_frac:.3f}  "
                 f"size={size_frac:.3f}")
         if t == 0:
-            sub = "t=0  (initial)"
+            sub = (f"t=0  (initial)  "
+                   f"contrast={contrasts[0]:.2e}")
         else:
             r = rewards[t - 1]
             c = cumulative[t - 1]
             s = f"  S={strehls[t-1]:.3f}" if strehls else ""
-            sub = f"t={t:>3d}  r={r:+.3f}  Σ={c:+.2f}{s}"
-        ax.set_title(f"{head}\n{sub}", fontsize=7, pad=3)
-        cb = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
-        cb.ax.tick_params(labelsize=5.5)
-        fig.tight_layout(pad=0.3)
+            sub = (f"t={t:>3d}  r={r:+.3f}  Σ={c:+.2f}{s}  "
+                   f"contrast={contrasts[t]:.2e}")
+        fig.suptitle(f"{head}\n{sub}", fontsize=8, y=0.99)
+
         fig.canvas.draw()
         rgba = np.asarray(fig.canvas.buffer_rgba())
         frames.append(rgba[:, :, :3].copy())
@@ -269,10 +402,16 @@ def main():
                    frame_duration=args.frame_duration)
         env.close()
         final_s = ep["strehls"][-1] if ep["strehls"] else float("nan")
-        summary.append((i, target, ep["return"], final_s))
+        final_ct = ep["contrast"][-1] if ep["contrast"] else float("nan")
+        best_ct = (min(c for c in ep["contrast"]
+                       if np.isfinite(c) and c > 0)
+                   if any(np.isfinite(c) and c > 0 for c in ep["contrast"])
+                   else float("nan"))
+        summary.append((i, target, ep["return"], final_s, final_ct, best_ct))
         print(f"  target {i:>2}: angle={target[0]:6.1f}  "
               f"r={target[1]:.3f}  size={target[2]:.3f}  "
               f"R={ep['return']:+.3f}  final_S={final_s:.4f}  "
+              f"final_C={final_ct:.2e}  best_C={best_ct:.2e}  "
               f"-> {gif_path}")
 
     print(f"\nWrote {len(summary)} GIFs to {args.output_dir}")
