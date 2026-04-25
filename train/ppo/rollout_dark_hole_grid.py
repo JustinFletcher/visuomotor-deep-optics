@@ -275,19 +275,21 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     SUP_FS = 11
 
     for t in range(T + 1):
-        # Top row: 3 near-square image panels (aspect="equal").
-        # Bottom: stacked contrast trace + peak-brightness trace.
+        # Top row: 3 near-square image panels (aspect="equal", each
+        # spans 2 of the 6 sub-columns).
+        # Bottom traces: 2/3 of figure width, centered horizontally
+        # (sub-columns 1..4 inclusive of a 6-column grid).
         # Right margin leaves ~6% for the rightmost colorbar's labels.
         fig = plt.figure(figsize=(9.0, 6.0), dpi=dpi)
         gs = fig.add_gridspec(
-            3, 3,
+            3, 6,
             height_ratios=[3.8, 1.4, 1.4],
             hspace=0.40, wspace=0.04,
             left=0.025, right=0.94, top=0.91, bottom=0.07,
         )
 
         # Panel 1: OPD (per-frame symmetric scale).
-        ax_opd = fig.add_subplot(gs[0, 0])
+        ax_opd = fig.add_subplot(gs[0, 0:2])
         opd = opds[t]
         opd_show = np.where(np.abs(opd) < 1e-14, np.nan, opd)
         opd_max_t = float(np.nanmax(np.abs(opd_show))) if np.any(
@@ -305,7 +307,7 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         cb.update_ticks()
 
         # Panel 2: raw PSF (per-frame log scale).
-        ax_psf = fig.add_subplot(gs[0, 1])
+        ax_psf = fig.add_subplot(gs[0, 2:4])
         psf = psfs[t] if psfs[t] is not None else np.zeros((H, W))
         psf_max_t = max(float(np.max(psf)), 1e-30)
         psf_floor_t = max(psf_max_t * 1e-8, 1e-30)
@@ -321,7 +323,7 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         cb.ax.tick_params(labelsize=CB_FS)
 
         # Panel 3: observation (per-frame log scale).
-        ax_obs = fig.add_subplot(gs[0, 2])
+        ax_obs = fig.add_subplot(gs[0, 4:6])
         obs_max_t = max(float(np.max(obs_imgs[t])), 2.0)
         obs_norm_t = mcolors.LogNorm(vmin=1.0, vmax=obs_max_t)
         im_obs = ax_obs.imshow(
@@ -335,7 +337,7 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         cb.ax.tick_params(labelsize=CB_FS)
 
         # Panel 4: contrast trace (linear, narrower than the image row).
-        ax_ct = fig.add_subplot(gs[1, :2])
+        ax_ct = fig.add_subplot(gs[1, 1:5])
         ax_ct.set_ylim(ct_lo, ct_hi)
         ax_ct.set_xlim(0, max(T, 1))
         ax_ct.plot(timesteps, contrasts,
@@ -351,7 +353,7 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
                         fontsize=TITLE_FS, pad=2)
 
         # Panel 5: peak brightness trace (linear, narrower).
-        ax_pk = fig.add_subplot(gs[2, :2], sharex=ax_ct)
+        ax_pk = fig.add_subplot(gs[2, 1:5], sharex=ax_ct)
         ax_pk.set_ylim(pk_lo, pk_hi)
         ax_pk.plot(timesteps, peaks,
                    color="#888888", lw=0.7, alpha=0.4)
