@@ -103,7 +103,7 @@ def _capture_diagnostics(base):
     current actuator state and influence functions.
     raw_psf: polychromatic, pre-detector intensity frame stashed by v4
     in OpticalSystem._last_raw_psf.
-    contrast: median(raw_psf[hole]) / max(raw_psf), evaluated at full
+    contrast: min(raw_psf[hole]) / max(raw_psf), evaluated at full
     intensity precision so the typical 1e-6..1e-10 dark-hole regime
     isn't truncated by detector quantization.
     """
@@ -123,7 +123,7 @@ def _capture_diagnostics(base):
     if mask is None or psf_max <= 0.0:
         contrast = float("nan")
     else:
-        contrast = float(np.median(raw_psf[mask]) / psf_max)
+        contrast = float(np.min(raw_psf[mask]) / psf_max)
     return opd, raw_psf, contrast
 
 
@@ -334,7 +334,7 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         ax_ct.grid(True, which="both", alpha=0.3, lw=0.4)
         ax_ct.tick_params(labelsize=TICK_FS)
         ax_ct.set_xlabel("step", fontsize=TICK_FS + 1)
-        ax_ct.set_ylabel("contrast = median(hole) / max(PSF)",
+        ax_ct.set_ylabel("contrast = min(hole) / max(PSF)",
                          fontsize=TICK_FS + 1)
 
         head = (f"target {target_id:02d}  "
