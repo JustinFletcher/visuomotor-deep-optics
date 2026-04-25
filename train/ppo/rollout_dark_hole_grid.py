@@ -261,12 +261,16 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     SUP_FS = 11
 
     for t in range(T + 1):
-        fig = plt.figure(figsize=(10.2, 4.3), dpi=dpi)
+        # Width tuned so each top cell is roughly square (the imshow
+        # panels use aspect="equal", so any extra cell width becomes
+        # wasted gutters left/right of each image). Right margin
+        # leaves ~6% for the rightmost colorbar tick labels.
+        fig = plt.figure(figsize=(9.0, 4.0), dpi=dpi)
         gs = fig.add_gridspec(
             2, 3,
             height_ratios=[3.8, 0.85],
-            hspace=0.28, wspace=0.04,
-            left=0.045, right=0.985, top=0.85, bottom=0.13,
+            hspace=0.30, wspace=0.04,
+            left=0.025, right=0.94, top=0.85, bottom=0.13,
         )
 
         # Panel 1: OPD (per-frame symmetric scale).
