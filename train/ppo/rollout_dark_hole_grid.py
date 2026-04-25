@@ -334,8 +334,8 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         cb = fig.colorbar(im_obs, ax=ax_obs, fraction=0.046, pad=0.018)
         cb.ax.tick_params(labelsize=CB_FS)
 
-        # Panel 4: contrast trace (linear).
-        ax_ct = fig.add_subplot(gs[1, :])
+        # Panel 4: contrast trace (linear, narrower than the image row).
+        ax_ct = fig.add_subplot(gs[1, :2])
         ax_ct.set_ylim(ct_lo, ct_hi)
         ax_ct.set_xlim(0, max(T, 1))
         ax_ct.plot(timesteps, contrasts,
@@ -350,8 +350,8 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         ax_ct.set_title("Contrast (min(hole) / max(PSF))",
                         fontsize=TITLE_FS, pad=2)
 
-        # Panel 5: peak brightness trace (linear).
-        ax_pk = fig.add_subplot(gs[2, :], sharex=ax_ct)
+        # Panel 5: peak brightness trace (linear, narrower).
+        ax_pk = fig.add_subplot(gs[2, :2], sharex=ax_ct)
         ax_pk.set_ylim(pk_lo, pk_hi)
         ax_pk.plot(timesteps, peaks,
                    color="#888888", lw=0.7, alpha=0.4)
