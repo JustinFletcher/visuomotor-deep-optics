@@ -207,7 +207,7 @@ def _prep_obs(o):
     return a
 
 
-def render_gif(ep_data, save_path, dpi=72, frame_duration=0.1):
+def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     """4-panel animated GIF: OPD | raw PSF | observation | contrast trace.
 
     All three image panels carry the target dark-hole circle overlaid as
@@ -247,7 +247,6 @@ def render_gif(ep_data, save_path, dpi=72, frame_duration=0.1):
     cy_px = H / 2.0 + radius_frac * (H / 2.0) * np.sin(th)
     r_px = size_frac * (W / 2.0)
 
-    # Y-bounds for the contrast trace: clip non-finite, set log floor.
     finite = contrasts[np.isfinite(contrasts) & (contrasts > 0)]
     ct_lo = max(float(finite.min() * 0.5), 1e-12) if finite.size else 1e-12
     ct_hi = min(float(finite.max() * 2.0), 1.0) if finite.size else 1.0
@@ -258,14 +257,25 @@ def render_gif(ep_data, save_path, dpi=72, frame_duration=0.1):
     def _circle(ax):
         ax.add_patch(Circle(
             (cx_px, cy_px), r_px, fill=False, edgecolor="cyan",
-            linestyle=(0, (1.5, 1.5)), linewidth=0.9, alpha=0.95))
+            linestyle=(0, (1.5, 1.5)), linewidth=1.2, alpha=0.95))
 
+    # Layout sized so each top panel is ~square (good fit for 256x256
+    # imshow), the bottom plot has reasonable headroom, and panel
+    # margins are tight.
     frames = []
+    TITLE_FS = 10
+    TICK_FS = 8
+    CB_FS = 7
+    SUP_FS = 11
+
     for t in range(T + 1):
-        fig = plt.figure(figsize=(8.4, 3.6), dpi=dpi)
+        fig = plt.figure(figsize=(10.2, 4.7), dpi=dpi)
         gs = fig.add_gridspec(
-            2, 3, height_ratios=[3.0, 1.0], hspace=0.55, wspace=0.20,
-            left=0.04, right=0.985, top=0.86, bottom=0.13)
+            2, 3,
+            height_ratios=[3.4, 1.2],
+            hspace=0.32, wspace=0.16,
+            left=0.045, right=0.985, top=0.84, bottom=0.13,
+        )
 
         # Panel 1: OPD.
         ax_opd = fig.add_subplot(gs[0, 0])
@@ -273,12 +283,12 @@ def render_gif(ep_data, save_path, dpi=72, frame_duration=0.1):
         opd_show = np.where(np.abs(opd) < 1e-14, np.nan, opd)
         im_opd = ax_opd.imshow(
             opd_show, cmap="RdBu_r", origin="lower",
-            vmin=-opd_max, vmax=opd_max)
+            vmin=-opd_max, vmax=opd_max, aspect="equal")
         _circle(ax_opd)
         ax_opd.set_xticks([]); ax_opd.set_yticks([])
-        ax_opd.set_title("OPD (m)", fontsize=7, pad=2)
-        cb = fig.colorbar(im_opd, ax=ax_opd, fraction=0.046, pad=0.02)
-        cb.ax.tick_params(labelsize=5)
+        ax_opd.set_title("OPD (m)", fontsize=TITLE_FS, pad=3)
+        cb = fig.colorbar(im_opd, ax=ax_opd, fraction=0.046, pad=0.018)
+        cb.ax.tick_params(labelsize=CB_FS)
         cb.formatter.set_powerlimits((-2, 2))
         cb.update_ticks()
 
@@ -287,60 +297,58 @@ def render_gif(ep_data, save_path, dpi=72, frame_duration=0.1):
         psf = psfs[t] if psfs[t] is not None else np.zeros((H, W))
         im_psf = ax_psf.imshow(
             np.maximum(psf, psf_floor), cmap="inferno",
-            norm=psf_norm, origin="lower")
+            norm=psf_norm, origin="lower", aspect="equal")
         _circle(ax_psf)
         ax_psf.set_xticks([]); ax_psf.set_yticks([])
-        ax_psf.set_title("raw PSF (pre-detector, log)", fontsize=7, pad=2)
-        cb = fig.colorbar(im_psf, ax=ax_psf, fraction=0.046, pad=0.02)
-        cb.ax.tick_params(labelsize=5)
+        ax_psf.set_title("raw PSF (pre-detector, log)",
+                         fontsize=TITLE_FS, pad=3)
+        cb = fig.colorbar(im_psf, ax=ax_psf, fraction=0.046, pad=0.018)
+        cb.ax.tick_params(labelsize=CB_FS)
 
         # Panel 3: observation.
         ax_obs = fig.add_subplot(gs[0, 2])
         im_obs = ax_obs.imshow(
             np.maximum(obs_imgs[t], 1.0), cmap="inferno",
-            norm=obs_norm, origin="lower")
+            norm=obs_norm, origin="lower", aspect="equal")
         _circle(ax_obs)
         ax_obs.set_xticks([]); ax_obs.set_yticks([])
-        ax_obs.set_title("detector obs (DN, log)", fontsize=7, pad=2)
-        cb = fig.colorbar(im_obs, ax=ax_obs, fraction=0.046, pad=0.02)
-        cb.ax.tick_params(labelsize=5)
+        ax_obs.set_title("detector obs (DN, log)",
+                         fontsize=TITLE_FS, pad=3)
+        cb = fig.colorbar(im_obs, ax=ax_obs, fraction=0.046, pad=0.018)
+        cb.ax.tick_params(labelsize=CB_FS)
 
         # Panel 4: contrast trace (spans all columns).
         ax_ct = fig.add_subplot(gs[1, :])
         ax_ct.set_yscale("log")
         ax_ct.set_ylim(ct_lo, ct_hi)
         ax_ct.set_xlim(0, max(T, 1))
-        # Faded full trace (so the viewer can see what's coming).
         ax_ct.plot(timesteps, np.where(contrasts > 0, contrasts, np.nan),
-                   color="#888888", lw=0.6, alpha=0.4)
-        # Solid trace up to current step.
+                   color="#888888", lw=0.7, alpha=0.4)
         ax_ct.plot(timesteps[: t + 1],
                    np.where(contrasts[: t + 1] > 0,
                             contrasts[: t + 1], np.nan),
-                   color="#1f3b5e", lw=1.4)
-        # Marker at current step.
+                   color="#1f3b5e", lw=1.6)
         if np.isfinite(contrasts[t]) and contrasts[t] > 0:
             ax_ct.plot([t], [contrasts[t]], "o",
-                       color="#d94a4a", markersize=4)
+                       color="#d94a4a", markersize=5)
         ax_ct.grid(True, which="both", alpha=0.3, lw=0.4)
-        ax_ct.tick_params(labelsize=6)
-        ax_ct.set_xlabel("step", fontsize=7)
-        ax_ct.set_ylabel("contrast = median(hole) / max(PSF)", fontsize=7)
+        ax_ct.tick_params(labelsize=TICK_FS)
+        ax_ct.set_xlabel("step", fontsize=TICK_FS + 1)
+        ax_ct.set_ylabel("contrast = median(hole) / max(PSF)",
+                         fontsize=TICK_FS + 1)
 
-        # Suptitle: target metadata + per-step metrics.
         head = (f"target {target_id:02d}  "
                 f"angle={angle:5.1f}°  r={radius_frac:.3f}  "
                 f"size={size_frac:.3f}")
         if t == 0:
-            sub = (f"t=0  (initial)  "
-                   f"contrast={contrasts[0]:.2e}")
+            sub = f"t=0  (initial)  contrast={contrasts[0]:.2e}"
         else:
             r = rewards[t - 1]
             c = cumulative[t - 1]
             s = f"  S={strehls[t-1]:.3f}" if strehls else ""
             sub = (f"t={t:>3d}  r={r:+.3f}  Σ={c:+.2f}{s}  "
                    f"contrast={contrasts[t]:.2e}")
-        fig.suptitle(f"{head}\n{sub}", fontsize=8, y=0.99)
+        fig.suptitle(f"{head}\n{sub}", fontsize=SUP_FS, y=0.985)
 
         fig.canvas.draw()
         rgba = np.asarray(fig.canvas.buffer_rgba())
@@ -365,7 +373,7 @@ def main():
         "--target-id", type=int, default=None,
         help="Limit to one target id (0..15) for quick iteration.")
     parser.add_argument("--frame-duration", type=float, default=0.10)
-    parser.add_argument("--dpi", type=int, default=72)
+    parser.add_argument("--dpi", type=int, default=110)
     args = parser.parse_args()
 
     targets = build_grid()
