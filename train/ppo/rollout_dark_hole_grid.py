@@ -278,12 +278,12 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
         # Top row: 3 near-square image panels (aspect="equal").
         # Bottom: stacked contrast trace + peak-brightness trace.
         # Right margin leaves ~6% for the rightmost colorbar's labels.
-        fig = plt.figure(figsize=(9.0, 4.7), dpi=dpi)
+        fig = plt.figure(figsize=(9.0, 6.0), dpi=dpi)
         gs = fig.add_gridspec(
             3, 3,
-            height_ratios=[3.8, 0.7, 0.7],
-            hspace=0.55, wspace=0.04,
-            left=0.025, right=0.94, top=0.88, bottom=0.10,
+            height_ratios=[3.8, 1.4, 1.4],
+            hspace=0.40, wspace=0.04,
+            left=0.025, right=0.94, top=0.91, bottom=0.07,
         )
 
         # Panel 1: OPD (per-frame symmetric scale).
