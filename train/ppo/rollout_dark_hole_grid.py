@@ -79,12 +79,7 @@ def _load_agent(ckpt_path, env, device):
     return agent, config
 
 
-def _build_env(target, max_steps, rail_baseline_random=None):
-    """Build a target-aware v4 env for one geometry.
-
-    rail_baseline_random: None  -> inherit from ELF_DARK_HOLE_ENV_KWARGS
-                          True / False -> override
-    """
+def _build_env(target, max_steps):
     angle, radius_frac, size_frac = target
     kw = dict(ELF_DARK_HOLE_ENV_KWARGS)
     kw["dark_hole"] = True
@@ -92,8 +87,6 @@ def _build_env(target, max_steps, rail_baseline_random=None):
     kw["dark_hole_location_radius_fraction"] = float(radius_frac)
     kw["dark_hole_size_radius"] = float(size_frac)
     kw["dark_hole_randomize_on_reset"] = False
-    if rail_baseline_random is not None:
-        kw["rail_baseline_random"] = bool(rail_baseline_random)
     kw["max_episode_steps"] = int(max_steps)
     kw["silence"] = True
     kw["observation_window_size"] = 1
@@ -373,13 +366,7 @@ def main():
         help="Limit to one target id (0..15) for quick iteration.")
     parser.add_argument("--frame-duration", type=float, default=0.10)
     parser.add_argument("--dpi", type=int, default=72)
-    parser.add_argument(
-        "--no-rail-baseline-random", action="store_true",
-        help="Force rail_baseline_random off (matches the env an "
-             "old, pre-rail-shift checkpoint was trained against). "
-             "Default: inherit from ELF_DARK_HOLE_ENV_KWARGS (= on).")
     args = parser.parse_args()
-    rail_random_override = False if args.no_rail_baseline_random else None
 
     targets = build_grid()
     if args.target_id is not None:
@@ -394,9 +381,7 @@ def main():
 
     # Build a one-off env to instantiate the agent. The space shape is
     # geometry-independent, so any target works.
-    env0 = _build_env(
-        targets[target_indices[0]], args.max_steps,
-        rail_baseline_random=rail_random_override)
+    env0 = _build_env(targets[target_indices[0]], args.max_steps)
     agent, config = _load_agent(args.checkpoint, env0, args.device)
     td = int(config.get("target_dim", 0))
     print(f"Loaded checkpoint: target_dim={td}")
@@ -409,8 +394,7 @@ def main():
     summary = []
     for i in target_indices:
         target = targets[i]
-        env = _build_env(target, args.max_steps,
-                         rail_baseline_random=rail_random_override)
+        env = _build_env(target, args.max_steps)
         ep = run_episode(agent, env, target, args.seed, args.device)
         ep["target_id"] = i
         gif_path = os.path.join(args.output_dir, f"target_{i:02d}.gif")
