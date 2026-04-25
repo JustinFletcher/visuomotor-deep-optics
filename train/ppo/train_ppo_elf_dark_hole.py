@@ -96,6 +96,16 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "init_piston_clip_micron": 0.0,
     "init_tip_arcsec_std": 0.0,
     "init_tilt_arcsec_std": 0.0,
+    # The actuator state starts coherent (zero perturbation), but the
+    # per-segment rail centres are shifted by random offsets so
+    # peg-everything-to-the-rail produces distinct optical pistons per
+    # segment instead of a uniform integer-λ shift that accidentally
+    # restores coherence. Tip/tilt offsets are zero here because the
+    # script commands piston only, but the keys are honoured.
+    "rail_baseline_random": True,
+    "rail_baseline_piston_micron": 3.0,
+    "rail_baseline_tip_arcsec": 0.0,
+    "rail_baseline_tilt_arcsec": 0.0,
     "simulate_differential_motion": False,
     "model_wind_diff_motion": False,
     "model_gravity_diff_motion": False,
@@ -151,16 +161,10 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "align_mse_expand_threshold": -1.25,
     "ao_closed_inv_slope_threshold": 2e6,
     "dark_hole_alpha": 0.0,
-    # Re-enabled at modest weights so the agent cannot park at the
-    # actuator rails. With both off and the holding bonus only firing
-    # near optimal reward, any rail-pegged state that happened to
-    # produce decent dark-hole flux became a stable attractor (the
-    # holding bonus's stillness factor *did* zero out at full action,
-    # but nothing in the reward actively pushed back).
-    "action_penalty": True,
-    "action_penalty_weight": 0.1,
-    "oob_penalty": True,
-    "oob_penalty_weight": 0.5,
+    "action_penalty": False,
+    "action_penalty_weight": 0.0,
+    "oob_penalty": False,
+    "oob_penalty_weight": 0.0,
     # Stingy holding bonus. With threshold = -0.008 and min_reward = -1.0
     # the quality factor stays at zero until the dark-hole reward clears
     # -0.008, then ramps linearly to 1.0 as the reward approaches 0. Max

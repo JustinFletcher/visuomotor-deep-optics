@@ -191,6 +191,20 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # every env simply gets an identical mask at build.
         _v4_mask = getattr(v4, "_target_zero_mask", None)
 
+        # Rail-baseline randomisation: shifts the per-env per-segment
+        # baseline by a random offset at reset so the actuator rails
+        # sit at non-coherent positions. Inert when the flag is off.
+        self._rail_baseline_random = bool(
+            cfg.get("rail_baseline_random", False))
+        self._rail_baseline_p_range_m = (
+            float(cfg.get("rail_baseline_piston_micron", 0.0)) * 1e-6)
+        self._rail_baseline_t_range_rad = (
+            float(cfg.get("rail_baseline_tip_arcsec", 0.0))
+            * math.pi / (180.0 * 3600.0))
+        self._rail_baseline_tl_range_rad = (
+            float(cfg.get("rail_baseline_tilt_arcsec", 0.0))
+            * math.pi / (180.0 * 3600.0))
+
         # Dark-hole randomisation envelope (shared across envs).
         self._dh_randomize_on_reset = bool(
             cfg.get("dark_hole_randomize_on_reset", False))
@@ -1390,6 +1404,24 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
 
         # Store baselines
         self._baselines_t[env_mask] = self._actuators_t[env_mask].clone()
+
+        # Optional rail-baseline randomisation: shifts the rail centre
+        # per-env per-segment without touching the actuator state, so
+        # the visible PSF stays at its initialised configuration but
+        # the rails are no longer at integer-λ multiples of zero. The
+        # actuator state we just stored remains the agent's commanded
+        # zero point; only the clamp window moves.
+        if self._rail_baseline_random:
+            K = int(env_mask.sum().item())
+            n_seg = self._num_apertures
+            p_off = ((torch.rand(K, n_seg, device=self.dev) * 2.0 - 1.0)
+                     * self._rail_baseline_p_range_m)
+            t_off = ((torch.rand(K, n_seg, device=self.dev) * 2.0 - 1.0)
+                     * self._rail_baseline_t_range_rad)
+            tl_off = ((torch.rand(K, n_seg, device=self.dev) * 2.0 - 1.0)
+                      * self._rail_baseline_tl_range_rad)
+            offsets = torch.cat([p_off, t_off, tl_off], dim=1)
+            self._baselines_t[env_mask] += offsets
 
         # Reset step counts and episode tracking
         self._step_counts[env_mask] = 0

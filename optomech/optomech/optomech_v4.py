@@ -103,6 +103,20 @@ DEFAULT_CONFIG = {
     "init_tip_arcsec_std": 0.0,
     "init_tilt_arcsec_std": 0.0,
 
+    # Rail-baseline randomisation. When True, the per-segment
+    # actuator-baseline (around which the ±max_corr rails are
+    # centered) is shifted by a random per-segment offset drawn at
+    # reset. The actuator state itself stays at its initialised value,
+    # so the agent's initial observation is unchanged, but the rails
+    # are no longer at integer-λ multiples of the aligned state — the
+    # 'peg-everything-to-the-rail' degenerate solution that produces
+    # accidental coherence is broken because each segment's rail sits
+    # at a different physical position.
+    "rail_baseline_random": False,
+    "rail_baseline_piston_micron": 3.0,
+    "rail_baseline_tip_arcsec": 5.0,
+    "rail_baseline_tilt_arcsec": 5.0,
+
     "init_differential_motion": False,
     "simulate_differential_motion": False,
     "model_wind_diff_motion": False,
@@ -1823,6 +1837,26 @@ class OpticalSystem(object):
                 np.array(self.segmented_mirror.actuators),
                 dtype=torch.float32, device=self._torch_device)
 
+    def _apply_random_rail_baseline(self):
+        """Shift each segment's stored baseline by an independent
+        random offset. Affects only the rail-clamping window — the
+        actuator state and the optical wavefront are untouched.
+        """
+        cfg = self._cfg
+        p_range = float(cfg.get("rail_baseline_piston_micron", 0.0)) * 1e-6
+        t_range = (float(cfg.get("rail_baseline_tip_arcsec", 0.0))
+                   * np.pi / (180.0 * 3600.0))
+        tl_range = (float(cfg.get("rail_baseline_tilt_arcsec", 0.0))
+                    * np.pi / (180.0 * 3600.0))
+        for seg_id in range(self.num_apertures):
+            bl = self.segment_baseline_dict[seg_id]
+            if p_range > 0.0:
+                bl["piston"] += float(np.random.uniform(-p_range, p_range))
+            if t_range > 0.0:
+                bl["tip"] += float(np.random.uniform(-t_range, t_range))
+            if tl_range > 0.0:
+                bl["tilt"] += float(np.random.uniform(-tl_range, tl_range))
+
     # ================================================================
     # Tensioner & secondary commands
     # ================================================================
@@ -2827,6 +2861,16 @@ class OptomechEnv(gym.Env):
                 self.optical_system._init_natural_diff_motion()
 
         self.optical_system._store_baseline_segment_displacements()
+
+        # Optional: shift the per-segment baseline by a random offset
+        # so the actuator rails sit at non-coherent positions. The
+        # actuator state itself is unchanged, so the warm-up frame
+        # below still shows the agent the aligned initial PSF — the
+        # only thing that moves is where the [-max_corr, +max_corr]
+        # window lives in actuator space. Inert when the cfg flag is
+        # off.
+        if self.cfg.get("rail_baseline_random", False):
+            self.optical_system._apply_random_rail_baseline()
 
         # Warm-up: run frames to generate the initial observation.
         # In bootstrap mode, use zero action so excluded segments stay
