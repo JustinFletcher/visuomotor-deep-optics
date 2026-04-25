@@ -2977,6 +2977,12 @@ class OptomechEnv(gym.Env):
         for frame_num in range(_frames_per_decision):
             frame_t = torch.zeros(_image_shape, dtype=torch.float32,
                                   device=_dev)
+            # Polychromatic raw PSF accumulator (|E_focal|^2, NO object
+            # convolution, NO detector). Captured separately from
+            # frame_t so callers can see the unbroken intensity dynamic
+            # range needed to read deep-coronagraph contrasts.
+            raw_psf_acc = torch.zeros(_image_shape, dtype=torch.float32,
+                                      device=_dev)
 
             for command_num in range(_cmds_per_frame):
                 self.episode_time_ms += _control_interval
@@ -3021,6 +3027,14 @@ class OptomechEnv(gym.Env):
                         if _report:
                             _v3_timer("AO correction", time.time() - ao_t0, indent=2)
 
+                        # Raw PSF for this wavelength, before object
+                        # convolution. Accumulated for the polychromatic
+                        # diagnostic; absolute units don't matter (only
+                        # the ratio is reported as "contrast").
+                        raw_psf_acc += (
+                            torch.abs(_optical_sys._focal_field_t) ** 2
+                            * _n_wl_inv)
+
                         science_t = _optical_sys.get_science_frame(
                             integration_seconds=integration_sec)
                         # science_t is a GPU tensor (num_px, num_px)
@@ -3029,10 +3043,12 @@ class OptomechEnv(gym.Env):
                     if _record and not reset:
                         self.save_state()
 
-            # Stash the polychromatic pre-detector frame so callers
-            # (rollout viz, contrast diagnostics) can read the unbroken
-            # intensity dynamic range without detector quantization.
-            self._last_raw_psf = frame_t.detach().cpu().numpy()
+            # Stash the polychromatic raw PSF (|E|^2 only — no object
+            # convolution, no detector) for downstream contrast and
+            # rollout-viz diagnostics. Convolving with the object
+            # smooths the dynamic range away, so we use raw_psf_acc
+            # rather than frame_t.
+            self._last_raw_psf = raw_psf_acc.detach().cpu().numpy()
             frame_t = self._apply_detector_model_gpu(frame_t, _dev)
             self.focal_plane_images.append(frame_t.cpu().numpy())
 

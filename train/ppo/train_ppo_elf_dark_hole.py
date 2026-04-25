@@ -151,10 +151,16 @@ ELF_DARK_HOLE_ENV_KWARGS = {
     "align_mse_expand_threshold": -1.25,
     "ao_closed_inv_slope_threshold": 2e6,
     "dark_hole_alpha": 0.0,
-    "action_penalty": False,
-    "action_penalty_weight": 0.0,
-    "oob_penalty": False,
-    "oob_penalty_weight": 0.0,
+    # Re-enabled at modest weights so the agent cannot park at the
+    # actuator rails. With both off and the holding bonus only firing
+    # near optimal reward, any rail-pegged state that happened to
+    # produce decent dark-hole flux became a stable attractor (the
+    # holding bonus's stillness factor *did* zero out at full action,
+    # but nothing in the reward actively pushed back).
+    "action_penalty": True,
+    "action_penalty_weight": 0.1,
+    "oob_penalty": True,
+    "oob_penalty_weight": 0.5,
     # Stingy holding bonus. With threshold = -0.008 and min_reward = -1.0
     # the quality factor stays at zero until the dark-hole reward clears
     # -0.008, then ramps linearly to 1.0 as the reward approaches 0. Max
