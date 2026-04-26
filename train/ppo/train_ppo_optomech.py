@@ -1388,6 +1388,7 @@ def run_ppo_training(config: dict, run_dir: str):
         freeze_encoder=freeze_encoder,
         model_type=config.get("model_type", "small"),
         target_dim=int(config.get("target_dim", 0)),
+        log_std_max=config.get("log_std_max", None),
     ).to(device)
 
     # Load bottleneck weights into the MLP layer if available
@@ -1892,6 +1893,8 @@ def run_ppo_training(config: dict, run_dir: str):
                     agent.parameters(), config["max_grad_norm"]
                 )
                 optimizer.step()
+                # No-op when log_std_max is None (legacy default).
+                agent.apply_log_std_clamp()
 
                 all_pg_losses.append(pg_loss.item())
                 all_v_losses.append(v_loss.item())

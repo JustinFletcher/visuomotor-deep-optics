@@ -26,10 +26,22 @@ from train.ppo.train_ppo_elf_dark_hole import (
 LOCAL_CONFIG = dict(BASE_LOCAL_CONFIG)
 LOCAL_CONFIG["env_kwargs"] = dict(ELF_DARK_HOLE_ENV_KWARGS)
 LOCAL_CONFIG["target_dim"] = 4
+# Entropy regulation: with norm_adv=True the PG gradient on log_std
+# is roughly O(1) but noisy, while ent_coef contributes a constant
+# +0.005 per dim per update — when advantages don't reliably
+# distinguish actions (this task), the entropy term wins on average
+# and log_std drifts up monotonically until the policy is uniformly
+# random. Drop ent_coef ~3x and clamp log_std at -1 (sigma <= 0.37,
+# plenty of exploration room for piston shaping but not enough to
+# sample uniformly across the [-1, 1] action range).
+LOCAL_CONFIG["ent_coef"] = 0.0015
+LOCAL_CONFIG["log_std_max"] = -1.0
 
 HPC_CONFIG = dict(BASE_HPC_CONFIG)
 HPC_CONFIG["env_kwargs"] = dict(ELF_DARK_HOLE_ENV_KWARGS)
 HPC_CONFIG["target_dim"] = 4
+HPC_CONFIG["ent_coef"] = 0.0015
+HPC_CONFIG["log_std_max"] = -1.0
 
 
 if __name__ == "__main__":
