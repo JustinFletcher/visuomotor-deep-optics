@@ -28,6 +28,7 @@ import contextlib
 import io
 import os
 import sys
+from glob import glob
 from pathlib import Path
 
 import imageio.v2 as imageio
@@ -388,15 +389,54 @@ def render_gif(ep_data, save_path, dpi=110, frame_duration=0.1):
     imageio.mimsave(save_path, frames, duration=frame_duration)
 
 
+_DEFAULT_DYNAMIC_ROOT = "dark_hole_runs"
+_DYNAMIC_PREFIXES = ("dark_hole_dynamic_contrast_", "dark_hole_dynamic_")
+
+
+def _latest_dynamic_checkpoint(root: str = _DEFAULT_DYNAMIC_ROOT):
+    """Return (run_dir, ckpt_path) for the newest dynamic dark-hole
+    run. Prefers ``dark_hole_dynamic_contrast_*`` over plain
+    ``dark_hole_dynamic_*`` only if they tie on mtime; otherwise picks
+    whichever is newest. Inside the chosen run, picks
+    ppo_optomech_*/checkpoints/best.pt (falling back to the latest
+    update_*.pt). Returns (None, None) if nothing matches.
+    """
+    if not os.path.isdir(root):
+        return None, None
+    candidates = []
+    for name in os.listdir(root):
+        for pref in _DYNAMIC_PREFIXES:
+            if name.startswith(pref):
+                full = os.path.join(root, name)
+                if os.path.isdir(full):
+                    candidates.append(full)
+                break
+    if not candidates:
+        return None, None
+    candidates.sort(key=os.path.getmtime)
+    run_dir = candidates[-1]
+    ckpt = sorted(glob(os.path.join(
+        run_dir, "ppo_optomech_*", "checkpoints", "best.pt")))
+    if not ckpt:
+        ckpt = sorted(glob(os.path.join(
+            run_dir, "ppo_optomech_*", "checkpoints", "update_*.pt")))
+        if not ckpt:
+            return run_dir, None
+    return run_dir, ckpt[-1]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Roll a target-aware dark-hole policy across the grid.")
     parser.add_argument(
-        "--checkpoint", type=str, required=True,
-        help="Path to a target-aware checkpoint (config.target_dim > 0).")
+        "--checkpoint", type=str, default=None,
+        help="Path to a target-aware checkpoint (config.target_dim > 0). "
+             "If omitted, the newest dark_hole_runs/dark_hole_dynamic*"
+             "/ppo_optomech_*/checkpoints/best.pt is used.")
     parser.add_argument(
-        "--output-dir", type=str, required=True,
-        help="Directory to write target_NN.gif files into.")
+        "--output-dir", type=str, default=None,
+        help="Directory to write target_NN.gif files into. Default: "
+             "test_output/<run_basename>_grid/.")
     parser.add_argument("--max-steps", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
@@ -416,12 +456,33 @@ def main():
     else:
         target_indices = list(range(len(targets)))
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    checkpoint = args.checkpoint
+    output_dir = args.output_dir
+    if checkpoint is None:
+        run_dir, resolved = _latest_dynamic_checkpoint()
+        if resolved is None:
+            print(f"Error: no dynamic dark-hole checkpoint found under "
+                  f"{_DEFAULT_DYNAMIC_ROOT}/. Pass --checkpoint explicitly.")
+            sys.exit(1)
+        checkpoint = resolved
+        print(f"--checkpoint not given; using newest:\n  {checkpoint}")
+        if output_dir is None:
+            output_dir = os.path.join(
+                "test_output",
+                f"{os.path.basename(run_dir.rstrip('/'))}_grid")
+    if output_dir is None:
+        # Explicit checkpoint but no output-dir: derive from ckpt path.
+        run_dir = os.path.dirname(os.path.dirname(
+            os.path.dirname(checkpoint)))
+        output_dir = os.path.join(
+            "test_output",
+            f"{os.path.basename(run_dir.rstrip('/'))}_grid")
+    os.makedirs(output_dir, exist_ok=True)
 
     # Build a one-off env to instantiate the agent. The space shape is
     # geometry-independent, so any target works.
     env0 = _build_env(targets[target_indices[0]], args.max_steps)
-    agent, config = _load_agent(args.checkpoint, env0, args.device)
+    agent, config = _load_agent(checkpoint, env0, args.device)
     td = int(config.get("target_dim", 0))
     print(f"Loaded checkpoint: target_dim={td}")
     if td == 0:
@@ -436,7 +497,7 @@ def main():
         env = _build_env(target, args.max_steps)
         ep = run_episode(agent, env, target, args.seed, args.device)
         ep["target_id"] = i
-        gif_path = os.path.join(args.output_dir, f"target_{i:02d}.gif")
+        gif_path = os.path.join(output_dir, f"target_{i:02d}.gif")
         render_gif(ep, gif_path, dpi=args.dpi,
                    frame_duration=args.frame_duration)
         env.close()
@@ -453,7 +514,7 @@ def main():
               f"final_C={final_ct:.2e}  best_C={best_ct:.2e}  "
               f"-> {gif_path}")
 
-    print(f"\nWrote {len(summary)} GIFs to {args.output_dir}")
+    print(f"\nWrote {len(summary)} GIFs to {output_dir}")
 
 
 if __name__ == "__main__":
