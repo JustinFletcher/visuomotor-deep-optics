@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -180,6 +181,30 @@ def test_ssh_connection(remote_host: str | None = None) -> bool:
     print("✗")
     print(f"  SSH stderr: {result.stderr.strip()}")
     return False
+
+
+def find_latest_remote_subdir(
+    remote_host: str, remote_base: str, pattern: str = "*"
+) -> str | None:
+    """SSH to remote_host and return the basename of the newest
+    directory matching ``<remote_base>/<pattern>``. Returns None if
+    nothing matches or the SSH call fails."""
+    # ls -1dt prints directories matching the glob, newest first.
+    # 2>/dev/null suppresses "no match" stderr; head -1 gives the newest.
+    glob = f"{remote_base.rstrip('/')}/{pattern}"
+    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+           remote_host,
+           f"ls -1dt {glob} 2>/dev/null | head -1"]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        print(f"  SSH timeout while resolving --latest under {remote_base}")
+        return None
+    line = result.stdout.strip()
+    if not line:
+        return None
+    return os.path.basename(line.rstrip("/"))
 
 
 def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False,
@@ -471,6 +496,13 @@ def main():
              "preserving the enclosing directory structure. Useful for "
              "lightweight monitoring of in-progress runs.",
     )
+    parser.add_argument(
+        "--latest", nargs="?", const="*", default=None, metavar="GLOB",
+        help="Resolve --run to the newest matching subdir on the remote "
+             "(by mtime). Bare --latest matches anything. Pass a glob "
+             "(e.g. --latest 'dark_hole_static_*_grid') to filter. "
+             "Combine with --test-output / --dark-hole / etc.",
+    )
     args = parser.parse_args()
 
     remote_cfg = REMOTES[args.remote]
@@ -486,6 +518,21 @@ def main():
         remote_path = remote_cfg["runs"]
     print(f"Remote: {args.remote} ({remote_cfg['host']})")
     print(f"Path:   {remote_path}\n")
+
+    if args.latest is not None:
+        print(f"Resolving --latest '{args.latest}' on remote...")
+        if not ensure_ticket():
+            sys.exit(1)
+        latest = find_latest_remote_subdir(
+            remote_cfg["host"], remote_path, args.latest)
+        if not latest:
+            print(f"Error: no subdir matching '{args.latest}' under "
+                  f"{remote_path} on {args.remote}.")
+            sys.exit(1)
+        if args.run and args.run != latest:
+            print(f"  (overriding --run {args.run!r} with {latest!r})")
+        args.run = latest
+        print(f"  -> {latest}\n")
 
     if args.interval is not None:
         print(f"Polling every {args.interval}s (Ctrl-C to stop)\n")
