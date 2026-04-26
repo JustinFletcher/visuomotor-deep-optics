@@ -242,6 +242,7 @@ DEFAULT_CONFIG = {
     "reward_weight_peak": 0.0,
     "reward_weight_centered_strehl": 0.0,
     "reward_weight_contrast_strehl": 0.0,
+    "reward_weight_log_mean_dark_hole": 0.0,
     "centering_sigma_fraction": 0.25,
     "centering_mode": "gaussian",           # "gaussian" or "circular"
     "centering_radius_fraction": 0.25,      # radius as fraction of image size (circular mode)
@@ -2145,6 +2146,7 @@ class OptomechEnv(gym.Env):
         self._reward_weight_peak = cfg.get('reward_weight_peak', 0.0)
         self._reward_weight_centered_strehl = cfg.get('reward_weight_centered_strehl', 0.0)
         self._reward_weight_contrast_strehl = cfg.get('reward_weight_contrast_strehl', 0.0)
+        self._reward_weight_log_mean_dark_hole = cfg.get('reward_weight_log_mean_dark_hole', 0.0)
         self._reward_weight_shape = cfg['reward_weight_shape']
 
         self.ao_loop_active = cfg['ao_loop_active']
@@ -3615,6 +3617,31 @@ class OptomechEnv(gym.Env):
                     contrast = float(np.clip(contrast, 0.0, 1.0))
                 ct_vals.append(-(1.0 - contrast * strehl))
             total += self._reward_weight_contrast_strehl * float(np.mean(ct_vals))
+
+        # --- Log-mean dark hole -----------------------------------------
+        # Smooth, dense dark-hole shaping signal. Computed from the raw
+        # pre-detector PSF (full intensity precision; the detector
+        # quantization would floor anything below ~1 DN). Per-pixel
+        # decades-of-darkness, averaged across the hole, capped at the
+        # 1e-12 floor so the gradient stays bounded.
+        #     depth_per_pixel = log10(I_max) - log10(max(I_pixel, floor))
+        #     reward_value    = mean(depth_per_pixel)  over hole pixels
+        # Higher value = deeper hole = better. Larger reward range than
+        # the linear -mean(I/I_max) formulation, so each per-pixel
+        # improvement keeps producing gradient even after the bulk of
+        # the hole has been suppressed.
+        if (self._reward_weight_log_mean_dark_hole > 0
+                and self._target_zero_mask is not None):
+            raw_psf = getattr(self, "_last_raw_psf", None)
+            if raw_psf is not None:
+                psf_max = float(np.max(raw_psf))
+                if psf_max > 0:
+                    floor = max(psf_max * 1e-12, 1e-30)
+                    log_max = float(np.log10(psf_max))
+                    log_hole = np.log10(np.maximum(
+                        raw_psf[self._target_zero_mask], floor))
+                    lm_val = float(log_max - np.mean(log_hole))
+                    total += self._reward_weight_log_mean_dark_hole * lm_val
 
         # --- Peak pixel: -(1 - max(I)/max(I_ref)), zero when merged ---
         # Constructive interference when spots merge ~quadruples peak.

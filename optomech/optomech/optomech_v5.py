@@ -443,6 +443,8 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._rw_centered_strehl = cfg.get("reward_weight_centered_strehl", 0.0)
         self._rw_contrast_strehl = cfg.get("reward_weight_contrast_strehl", 0.0)
         self._rw_dark_hole = cfg.get("reward_weight_dark_hole", 0.0)
+        self._rw_log_mean_dark_hole = cfg.get(
+            "reward_weight_log_mean_dark_hole", 0.0)
         self._rw_strehl = cfg.get("reward_weight_strehl", 0.0)
         self._rw_centering = cfg.get("reward_weight_centering", 0.0)
         self._rw_flux = cfg.get("reward_weight_flux", 0.0)
@@ -643,6 +645,14 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             # PSF = |E_focal|^2 * grid_weight * integration_time
             psf = (torch.abs(E_focal) ** 2) * (
                 self._focal_grid_weight * self._integration_sec)
+
+            # Polychromatic raw-PSF accumulator (no object convolution,
+            # no detector). Used by the log-mean-dark-hole reward and
+            # the rollout-viz contrast diagnostic.
+            if wl is self._wavelengths[0]:
+                self._last_raw_psf_t = psf * self._n_wl_inv
+            else:
+                self._last_raw_psf_t = self._last_raw_psf_t + psf * self._n_wl_inv
 
             # Object convolution: image = |IFFT(FFT(PSF) * obj_spectrum)|
             otf = torch.fft.fft2(psf)
@@ -1049,6 +1059,30 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
                 dh_val = -masked.sum(dim=(1, 2)) / n_hole
             if self._rw_dark_hole > 0:
                 total += self._rw_dark_hole * dh_val
+
+        # --- log-mean dark hole (raw PSF, full intensity precision) ---
+        # depth_per_pixel = log10(I_max) - log10(max(I_pixel, floor))
+        # value           = mean over hole pixels (per env)
+        # Higher = deeper hole. Smooth, dense gradient — every per-pixel
+        # decade of darkening keeps producing reward, unlike the linear
+        # mean-intensity formulation which plateaus after ~1e-3.
+        lm_val = None
+        if self._rw_log_mean_dark_hole > 0 or vec:
+            raw_psf_t = getattr(self, "_last_raw_psf_t", None)
+            if raw_psf_t is None or self._hole_mask_t is None:
+                lm_val = torch.zeros(N, dtype=torch.float32, device=self.dev)
+            else:
+                psf_max_t = raw_psf_t.amax(dim=(1, 2)).clamp(min=1e-30)  # [N]
+                floor = (psf_max_t * 1e-12).view(N, 1, 1)
+                log_max = torch.log10(psf_max_t)                 # [N]
+                log_psf = torch.log10(torch.maximum(raw_psf_t, floor))
+                hole = self._hole_mask_t
+                n_hole = hole.sum(dim=(1, 2)).clamp(min=1).to(log_psf.dtype)
+                masked = torch.where(hole, log_psf, torch.zeros_like(log_psf))
+                log_hole_mean = masked.sum(dim=(1, 2)) / n_hole
+                lm_val = log_max - log_hole_mean
+            if self._rw_log_mean_dark_hole > 0:
+                total += self._rw_log_mean_dark_hole * lm_val
 
         # --- centering ---
         cen_component = None
