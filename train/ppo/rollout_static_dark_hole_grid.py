@@ -66,11 +66,16 @@ def _latest_sweep_dir(root: str = _DEFAULT_SWEEP_ROOT) -> str | None:
     return candidates[-1]
 
 
-def _resolve_checkpoint(sweep_dir: str, target_idx: int) -> str:
+def _resolve_checkpoint(sweep_dir: str, target_idx: int,
+                        prefer_latest: bool = False) -> str:
     """Find the best.pt under <sweep_dir>/target_<NN>/ppo_optomech_*/.
 
     Each static sweep job lives in target_NN/ with a single
     ppo_optomech_<seed>_<ts>/ subdir holding the checkpoints/.
+
+    prefer_latest: if True, use the newest update_*.pt (or history_*)
+    instead of best.pt. Falls back to best.pt if no numbered
+    checkpoint is found.
     """
     target_dir = os.path.join(sweep_dir, f"target_{target_idx:02d}")
     if not os.path.isdir(target_dir):
@@ -78,19 +83,24 @@ def _resolve_checkpoint(sweep_dir: str, target_idx: int) -> str:
             f"target dir missing: {target_dir} "
             f"(expected layout: <sweep_dir>/target_NN/ppo_optomech_*/checkpoints/)")
 
+    if prefer_latest:
+        ck_glob = os.path.join(
+            target_dir, "ppo_optomech_*", "checkpoints", "*update_*.pt")
+        latest = sorted(glob(ck_glob), key=os.path.getmtime)
+        if latest:
+            return latest[-1]
+        # fall through to best.pt below
+
     candidates = sorted(glob(os.path.join(
         target_dir, "ppo_optomech_*", "checkpoints", "best.pt")))
     if not candidates:
-        # Fall back to the latest update_*.pt if best.pt isn't there.
         candidates = sorted(glob(os.path.join(
-            target_dir, "ppo_optomech_*", "checkpoints", "update_*.pt")))
+            target_dir, "ppo_optomech_*", "checkpoints", "*update_*.pt")))
         if not candidates:
             raise FileNotFoundError(
                 f"no checkpoints under {target_dir}/ppo_optomech_*/checkpoints/")
-        return candidates[-1]
+        return sorted(candidates, key=os.path.getmtime)[-1]
     if len(candidates) > 1:
-        # Defensive: more than one ppo_optomech_* subdir — pick the
-        # newest by mtime.
         candidates.sort(key=lambda p: os.path.getmtime(p))
     return candidates[-1]
 
@@ -115,6 +125,11 @@ def main():
         help="Limit to one target id (0..15) for quick iteration.")
     parser.add_argument("--frame-duration", type=float, default=0.10)
     parser.add_argument("--dpi", type=int, default=110)
+    parser.add_argument(
+        "--prefer-latest", action="store_true",
+        help="Use the newest update_*.pt instead of best.pt for "
+             "checkpoint selection (per target). Falls back to "
+             "best.pt if no numbered checkpoint exists.")
     args = parser.parse_args()
 
     targets = build_grid()
@@ -154,7 +169,8 @@ def main():
     for i in target_indices:
         target = targets[i]
         try:
-            ckpt_path = _resolve_checkpoint(sweep_dir, i)
+            ckpt_path = _resolve_checkpoint(
+                sweep_dir, i, prefer_latest=args.prefer_latest)
         except FileNotFoundError as e:
             print(f"  target {i:>2}: SKIP — {e}")
             continue
