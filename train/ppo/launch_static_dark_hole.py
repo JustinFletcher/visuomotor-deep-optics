@@ -120,7 +120,18 @@ def make_sbatch_script(target_idx, run_id, run_dir_base, seed,
 # --illustrate: render the coverage figure
 # --------------------------------------------------------------------------
 
-def render_illustration(targets, out_path: Path):
+def _ids_for_ring(ring_idx):
+    """Return the slice of target ids belonging to ring ring_idx."""
+    offset = 0
+    for k, (_, _, n, _) in enumerate(RINGS):
+        if k == ring_idx:
+            return list(range(offset, offset + n))
+        offset += n
+    raise IndexError(f"ring {ring_idx} out of range (have {len(RINGS)})")
+
+
+def render_illustration(targets, out_path: Path,
+                        only_ids=None, title_suffix=""):
     """Render a paper-quality figure of the 16 holes overlaid on the PSF."""
     # Deferred imports so --dry-run / single-job re-launch don't pay
     # the cost of building an env just to validate.
@@ -171,7 +182,10 @@ def render_illustration(targets, out_path: Path):
         ax.spines[side].set_linewidth(0.6)
 
     # Overlay each hole (convert fractional coords to pixel coords).
+    keep = set(only_ids) if only_ids is not None else None
     for i, (angle, r, size) in enumerate(targets):
+        if keep is not None and i not in keep:
+            continue
         theta = np.deg2rad(angle)
         cx = W / 2.0 + r * (W / 2.0) * np.cos(theta)
         cy = H / 2.0 + r * (H / 2.0) * np.sin(theta)
@@ -197,10 +211,15 @@ def render_illustration(targets, out_path: Path):
     cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
     cb.set_label("reference PSF (log DN)", fontsize=8)
     cb.ax.tick_params(labelsize=6.5)
-    ax.set_title(
-        "Dark-hole grid coverage (16 targets, id 0-15)\n"
-        r"overlapping rings: 6@r=0.16 (size 0.09) + 10@r=0.32 (size 0.099)",
-        fontsize=9)
+    if title_suffix:
+        title = ("Dark-hole grid coverage" + title_suffix
+                 + "\n" + r"overlapping rings: 6@r=0.16 (size 0.095)"
+                 + r" + 10@r=0.32 (size 0.099)")
+    else:
+        title = ("Dark-hole grid coverage (16 targets, id 0-15)\n"
+                 + r"overlapping rings: 6@r=0.16 (size 0.095)"
+                 + r" + 10@r=0.32 (size 0.099)")
+    ax.set_title(title, fontsize=9)
     fig.tight_layout(pad=0.3)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(str(out_path) + ".png", dpi=600, bbox_inches="tight")
@@ -231,6 +250,10 @@ def main():
                         help="Print sbatch scripts without executing.")
     parser.add_argument("--time", type=str, default=SLURM_TIME,
                         help=f"SLURM wall time (default: {SLURM_TIME})")
+    parser.add_argument("--ring", type=int, default=None,
+                        help="Restrict --illustrate to one ring "
+                             "(0=inner 6 holes, 1=outer 10 holes). "
+                             "If omitted, all 16 are drawn.")
     parser.add_argument("--illustrate", action="store_true",
                         help="Render a paper-quality figure of the 16 "
                              "hole positions on the reference PSF (with "
@@ -245,7 +268,15 @@ def main():
     targets = build_grid()
 
     if cli.illustrate:
-        render_illustration(targets, Path(cli.illustrate_out))
+        only_ids = None
+        suffix = ""
+        if cli.ring is not None:
+            only_ids = _ids_for_ring(cli.ring)
+            ring_label = "inner" if cli.ring == 0 else f"ring {cli.ring}"
+            suffix = (f" — {ring_label} only "
+                      f"(ids {only_ids[0]}-{only_ids[-1]})")
+        render_illustration(targets, Path(cli.illustrate_out),
+                            only_ids=only_ids, title_suffix=suffix)
         return
 
     run_id = cli.run_id or f"dark_hole_static_{int(time.time())}"
