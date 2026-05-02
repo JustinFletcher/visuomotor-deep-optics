@@ -61,6 +61,12 @@ from train.ppo.rollout_dark_hole_grid import (                 # noqa: E402
 # Inner ring is the first six grid targets.
 INNER_IDS = list(range(6))
 
+# Focal-plane sampling for the ELF dark-hole env config (256-px focal
+# plane, λ=1 μm). The env's startup log emits "sampling (px/res-el)"
+# at exactly this value; we hard-code it because every dark-hole run
+# in this paper shares the same optical config.
+FOCAL_PX_PER_LAMBDA_D = 7.8082
+
 # Scholarly palette + serif rcParams (mirrors the stress / hero
 # figures so all paper graphics have a coherent look).
 NEURIPS_RC = {
@@ -258,6 +264,125 @@ def render_before_after(rollouts, out_path):
 
 
 # --------------------------------------------------------------------------
+# Composite figure: Joy-Division-style radial-cut intensity per target.
+# --------------------------------------------------------------------------
+
+def _sample_radial_line(img, target, n_samples):
+    """Sample img along the line from frame center, through the dark
+    hole center, to the frame edge in that direction.
+
+    Returns (distances_lambda_d, intensities). Distances are signed —
+    zero at center, positive outward along the cut direction."""
+    H, W = img.shape[-2:]
+    cx0, cy0 = W / 2.0, H / 2.0
+    angle, _, _ = target
+    th = np.deg2rad(angle)
+    dxhat, dyhat = np.cos(th), np.sin(th)
+
+    # How far in pixels can we go before either x or y leaves the frame?
+    far = []
+    if dxhat > 0:   far.append((W - 1 - cx0) / dxhat)
+    elif dxhat < 0: far.append(cx0 / -dxhat)
+    if dyhat > 0:   far.append((H - 1 - cy0) / dyhat)
+    elif dyhat < 0: far.append(cy0 / -dyhat)
+    far_px = min(far) if far else min(W, H) / 2.0
+
+    s_px = np.linspace(0.0, far_px, n_samples)
+    xs = cx0 + s_px * dxhat
+    ys = cy0 + s_px * dyhat
+    xs_int = np.clip(np.round(xs).astype(int), 0, W - 1)
+    ys_int = np.clip(np.round(ys).astype(int), 0, H - 1)
+    intensities = img[ys_int, xs_int]
+    distances_lambda_d = s_px / FOCAL_PX_PER_LAMBDA_D
+    return distances_lambda_d, intensities
+
+
+def render_joy_division_traces(rollouts, out_path, n_steps=16,
+                               n_samples=256):
+    """2x3 grid of radial cuts as a Joy-Division ridge plot per target.
+
+    For each target we render the first ``n_steps + 1`` frames (initial
+    plus the first n_steps actions) as stacked traces along the radial
+    cut from frame centre through the dark-hole centre to the frame
+    edge. Y axis is raw counts (linear). Step 0 is at the top of each
+    panel; later steps stack downward toward the viewer (newer frames
+    occlude older ones).
+    """
+    plt.rcParams.update(NEURIPS_RC)
+    fig, axes = plt.subplots(2, 3, figsize=(7.0, 5.4))
+
+    for ax, (tid, target, ep) in zip(axes.flat, rollouts):
+        psfs = ep["raw_psf"]
+        n_avail = min(n_steps + 1, len(psfs))
+
+        # Pre-sample all traces and find a common scaling.
+        traces = []
+        for t in range(n_avail):
+            xs, ys = _sample_radial_line(np.asarray(psfs[t]), target,
+                                         n_samples)
+            traces.append((xs, ys))
+        global_max = max(float(np.max(y)) for _, y in traces)
+        if global_max <= 0:
+            global_max = 1.0
+        # Vertical layout: each trace gets a band of height = OFFSET,
+        # and within its band the intensity is scaled to AMPLITUDE * OFFSET.
+        OFFSET = 1.0
+        AMPLITUDE = 1.4   # >1 lets peaks bleed into the band above (Joy-D)
+        baselines = [(n_avail - 1 - t) * OFFSET for t in range(n_avail)]
+
+        # Hole center for the reference vline (in λ/D units).
+        hole_center_pos_px = target[1] * (256 / 2.0)
+        hole_center_pos_ld = hole_center_pos_px / FOCAL_PX_PER_LAMBDA_D
+        hole_size_ld = target[2] * (256 / 2.0) / FOCAL_PX_PER_LAMBDA_D
+
+        # Faint reference shading for the dark-hole interval.
+        ax.axvspan(hole_center_pos_ld - hole_size_ld,
+                   hole_center_pos_ld + hole_size_ld,
+                   color=BAND_C, alpha=0.18, zorder=0)
+
+        # Draw earliest first, latest last → latest sits on top.
+        for t in range(n_avail):
+            xs, ys = traces[t]
+            base = baselines[t]
+            curve = base + (ys / global_max) * AMPLITUDE * OFFSET
+            ax.fill_between(xs, base, curve,
+                            facecolor="white", edgecolor="none",
+                            zorder=t * 2 + 1)
+            ax.plot(xs, curve, color="black", linewidth=0.55,
+                    zorder=t * 2 + 2)
+            # Thin baseline tick on the left for the first/last steps
+            # so the eye can register the stacking direction.
+            if t == 0 or t == n_avail - 1:
+                ax.plot([xs[0]], [base], "o",
+                        color=ACCENT_C if t == n_avail - 1 else "#888888",
+                        markersize=2.2, zorder=t * 2 + 3)
+
+        ax.set_xlim(0, traces[0][0][-1])
+        ax.set_ylim(-0.05, n_avail * OFFSET + AMPLITUDE * OFFSET)
+        ax.set_yticks([])
+        ax.tick_params(length=2.5, width=0.5)
+        ax.set_xlabel(r"distance from PSF centre ($\lambda/D$)",
+                      fontsize=8)
+        ax.set_title(
+            f"target {tid:02d}   "
+            f"$\\theta={target[0]:.0f}^\\circ$,  hole at "
+            f"{hole_center_pos_ld:.2f}$\\lambda/D$",
+            fontsize=8.5, pad=3)
+        for side in ("top", "right", "left"):
+            ax.spines[side].set_visible(False)
+        ax.spines["bottom"].set_linewidth(0.6)
+
+    fig.suptitle(
+        "Radial intensity cut through the dark-hole centre, "
+        f"first {n_steps} steps (Joy-Division stacking; "
+        "later steps toward viewer)",
+        fontsize=10, y=0.99)
+    fig.tight_layout(pad=0.6, rect=[0.0, 0.0, 1.0, 0.96])
+    _saveboth(fig, str(out_path))
+    plt.close(fig)
+
+
+# --------------------------------------------------------------------------
 # Main pipeline.
 # --------------------------------------------------------------------------
 
@@ -341,6 +466,10 @@ def main():
         render_before_after(
             rollouts, Path(out_dir) / "inner_ring_before_after")
         print("  wrote inner_ring_before_after.{png,pdf}")
+        if len(rollouts) == 6:
+            render_joy_division_traces(
+                rollouts, Path(out_dir) / "inner_ring_joy_division")
+            print("  wrote inner_ring_joy_division.{png,pdf}")
 
     print(f"\nAll outputs under {out_dir}")
 
