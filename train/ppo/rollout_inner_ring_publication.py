@@ -357,11 +357,12 @@ def render_joy_division_traces(rollouts, out_path, n_steps=16,
                         color=ACCENT_C if t == n_avail - 1 else "#888888",
                         markersize=2.2, zorder=t * 2 + 3)
 
-        ax.set_xlim(0, traces[0][0][-1])
+        ax.set_xscale("log")
+        ax.set_xlim(0.1, 5.0)
         ax.set_ylim(-0.05, n_avail * OFFSET + AMPLITUDE * OFFSET)
         ax.set_yticks([])
         ax.tick_params(length=2.5, width=0.5)
-        ax.set_xlabel(r"distance from PSF centre ($\lambda/D$)",
+        ax.set_xlabel(r"distance from PSF centre ($\lambda/D$, log)",
                       fontsize=8)
         ax.set_title(
             f"target {tid:02d}   "
