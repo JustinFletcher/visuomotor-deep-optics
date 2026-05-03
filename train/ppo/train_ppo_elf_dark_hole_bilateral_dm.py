@@ -156,17 +156,27 @@ def _patch(cfg):
     #      saturating the clip every update, drop the learning rate so
     #      per-dim gradient steps shrink. sqrt(40) ~ 6, so 3e-4 / 6
     #      ~ 5e-5. Round to 1e-4 as a less aggressive starting point.
-    cfg["ent_coef"] = 4e-5
+    # Empirically: even at ent_coef = 4e-5, the entropy term dominates
+    # past ~10M env steps -- the policy that learned a useful early
+    # solution drifts toward a uniform (high-sigma) distribution and
+    # the OPD scatter blacks out the entire frame. The per-dim
+    # advantage signal in this task is too weak to defend against
+    # entropy pressure summed over 612 dims for that long, so we cut
+    # entropy regularization off entirely and tighten log_std_max
+    # another decade.
+    cfg["ent_coef"] = 0.0
     cfg["learning_rate"] = 1e-4
-    cfg["log_std_max"] = -1.0
+    cfg["log_std_max"] = -2.0          # per-dim sigma cap = exp(-2) ~ 0.135
+    cfg["init_log_std"] = -2.5         # per-dim sigma init = exp(-2.5) ~ 0.082
     # Slightly sharper eval figures than the piston runs default to.
     # Bumping local from 48 -> 64 and HPC from 72 -> 96 roughly doubles
     # the per-figure byte size but keeps it well under the TB event
     # file threshold and gives readable detail in the blind region.
     cfg["eval_figure_dpi"] = 96 if cfg.get("num_envs", 8) >= 32 else 64
-    # init_log_std stays at -2 (per-dim sigma 0.135). With 612 dims, the
-    # joint exploration radius is sqrt(612) * 0.135 ~ 3.3 in unit-stroke
-    # space, which is large but bounded by the env's [-1, 1] action clip.
+    # Joint exploration radius: sqrt(612) * 0.135 ~ 3.3 at the cap and
+    # sqrt(612) * 0.082 ~ 2.0 at init -- both bounded by the env's
+    # [-1, 1] action clip, so the policy still has room to explore
+    # without runaway scatter.
     return cfg
 
 
