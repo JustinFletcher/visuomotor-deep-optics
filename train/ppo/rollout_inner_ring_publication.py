@@ -384,6 +384,89 @@ def render_joy_division_traces(rollouts, out_path, n_steps=16,
 
 
 # --------------------------------------------------------------------------
+# Composite figure: step-0 vs step-final radial cuts, mean/std + per-target.
+# --------------------------------------------------------------------------
+
+def render_radial_step_compare(rollouts, out_path, n_samples=256):
+    """Two-panel radial intensity profile: step 0 (left) and step
+    final (right). Each panel overlays the six per-target traces faintly
+    and draws their mean ± 1 std on top.
+    """
+    plt.rcParams.update(NEURIPS_RC)
+    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(7.5, 3.4),
+                                     sharex=True, sharey=True)
+
+    distances = None
+    init_traces, final_traces = [], []
+    for tid, target, ep in rollouts:
+        psfs = ep["raw_psf"]
+        if not psfs:
+            continue
+        d_init, y_init = _sample_radial_line(np.asarray(psfs[0]), target,
+                                             n_samples)
+        d_final, y_final = _sample_radial_line(np.asarray(psfs[-1]), target,
+                                               n_samples)
+        if distances is None:
+            distances = d_init
+        init_traces.append(y_init)
+        final_traces.append(y_final)
+    init_mat = np.stack(init_traces, axis=0)     # [6, n_samples]
+    final_mat = np.stack(final_traces, axis=0)
+
+    # Color per target id (same viridis lineage as the contrast traces).
+    cmap = plt.get_cmap("viridis")
+    colors = [cmap(i / max(len(rollouts) - 1, 1))
+              for i in range(len(rollouts))]
+
+    def _draw(ax, mat, panel_title):
+        # Faint individual traces, one colour per target id.
+        for i, ((tid, _, _), color) in enumerate(zip(rollouts, colors)):
+            ax.plot(distances, mat[i], color=color, lw=0.7, alpha=0.45,
+                    label=f"target {tid:02d}", zorder=2)
+        # Mean ± std band on top.
+        mean = mat.mean(axis=0)
+        std = mat.std(axis=0)
+        ax.fill_between(distances,
+                        np.maximum(mean - std, 1e-30),
+                        mean + std,
+                        color=BAND_C, alpha=0.30, lw=0, zorder=3)
+        ax.plot(distances, mean, color=LINE_C, lw=1.6,
+                label=r"mean $\pm 1\sigma$", zorder=4)
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(0.1, 5.0)
+        ax.set_xlabel(r"distance from PSF centre ($\lambda/D$, log)",
+                      fontsize=8)
+        ax.set_title(panel_title, fontsize=10, pad=4)
+        ax.grid(True, which="both", alpha=0.25, lw=0.4)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.spines["left"].set_linewidth(0.6)
+        ax.spines["bottom"].set_linewidth(0.6)
+        ax.tick_params(length=2.5, width=0.5)
+
+    _draw(ax_l, init_mat,  "step 0 (initial)")
+    _draw(ax_r, final_mat, f"step {len(rollouts[0][2]['raw_psf']) - 1} (final)")
+
+    ax_l.set_ylabel("raw PSF intensity (log)", fontsize=8)
+
+    # Single shared legend at the bottom (six target colours + mean band).
+    handles, labels = ax_r.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=4,
+               fontsize=7.5, frameon=False,
+               bbox_to_anchor=(0.5, -0.02), handlelength=1.6,
+               handletextpad=0.5, columnspacing=1.2)
+
+    fig.suptitle("Inner-ring radial intensity cuts: "
+                 "initial vs final, mean across six targets",
+                 fontsize=10, y=0.99)
+    fig.tight_layout(pad=0.6, rect=[0.0, 0.06, 1.0, 0.95])
+    _saveboth(fig, str(out_path))
+    plt.close(fig)
+
+
+# --------------------------------------------------------------------------
 # Main pipeline.
 # --------------------------------------------------------------------------
 
@@ -471,6 +554,9 @@ def main():
             render_joy_division_traces(
                 rollouts, Path(out_dir) / "inner_ring_joy_division")
             print("  wrote inner_ring_joy_division.{png,pdf}")
+            render_radial_step_compare(
+                rollouts, Path(out_dir) / "inner_ring_radial_step_compare")
+            print("  wrote inner_ring_radial_step_compare.{png,pdf}")
 
     print(f"\nAll outputs under {out_dir}")
 
