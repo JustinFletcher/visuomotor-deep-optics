@@ -2829,7 +2829,16 @@ class OptomechEnv(gym.Env):
         self._cache_reward_images()
         self._cache_center_masks()
 
-        if self.command_dm or self.ao_loop_active:
+        # The DM interaction matrix is only consumed by the AO closed-
+        # loop reconstructor. When command_dm is set but the AO loop
+        # isn't (e.g. the policy drives the DM directly), the
+        # calibration is dead work -- expensive on a 1225-actuator DM
+        # because it sweeps every actuator individually through HCIPy
+        # propagation. The dm_skip_calibration flag short-circuits it
+        # for those configurations. Default off preserves prior
+        # behaviour for any existing AO-loop callers.
+        skip_cal = bool(self.cfg.get("dm_skip_calibration", False))
+        if (self.command_dm or self.ao_loop_active) and not skip_cal:
             self.optical_system.calibrate_dm_interaction_matrix(self.uuid)
             rcond = self.cfg['dm_interaction_rcond']
             self.reconstruction_matrix = hcipy.inverse_tikhonov(

@@ -70,6 +70,13 @@ ENV_KWARGS["command_secondaries"] = True
 ENV_KWARGS["command_tip_tilt"] = False
 ENV_KWARGS["dm_model_type"] = "gaussian_influence"
 ENV_KWARGS["dm_num_actuators_across"] = 35           # 1225 actuators
+# Skip v4's per-actuator interaction-matrix calibration. The matrix
+# only feeds v4's AO closed-loop reconstructor, which we don't run --
+# the policy drives the DM directly. On 1225 actuators the calibration
+# takes many minutes (per-actuator HCIPy propagation sweep). Inert in
+# v5 because v5 already forces this flag on its internal v4 build,
+# but set here too in case the script is run against v4 directly.
+ENV_KWARGS["dm_skip_calibration"] = True
 
 # DM uses incremental control: each step's action is a delta from the
 # current DM state, accumulated and clipped to +/- stroke_limit_m. This

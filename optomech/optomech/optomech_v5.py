@@ -97,6 +97,14 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         v4_kwargs["optomech_version"] = "v4"
         v4_kwargs["device"] = "cpu"  # extract on CPU, then move to target
         v4_kwargs["silence"] = silence
+        # The DM interaction-matrix calibration that v4.reset() runs
+        # for command_dm=True is only consumed by v4's AO closed-loop
+        # reconstructor. v5 doesn't run that loop -- the policy drives
+        # the DM directly -- so the calibration is dead work, and on a
+        # 1225-actuator DM it is extremely slow (a per-actuator HCIPy
+        # propagation sweep). Force it off for the v4 instance v5
+        # uses purely as an extraction source.
+        v4_kwargs["dm_skip_calibration"] = True
         v4 = V4Env(**v4_kwargs)
 
         os4 = v4.optical_system

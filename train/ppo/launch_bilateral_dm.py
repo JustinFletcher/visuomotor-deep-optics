@@ -71,7 +71,9 @@ def make_sbatch_script(target_idx, run_id, run_dir_base, seed,
         export LD_LIBRARY_PATH=$HOME/local/lib:$HOME/local/lib64:${{LD_LIBRARY_PATH:-}}
 
         cd {HPC_WORKDIR}
-        poetry run python {_TRAIN_SCRIPT} \\
+        # python -u forces unbuffered stdout/stderr so SLURM's redirected
+        # .out file shows progress live instead of buffering for minutes.
+        poetry run python -u {_TRAIN_SCRIPT} \\
             --hpc \\
             --dark-hole-angle {angle_deg:.4f} \\
             --dark-hole-radius-frac {radius_frac:.4f} \\

@@ -437,8 +437,15 @@ def evaluate_with_visualization(
         if int(getattr(agent, "target_dim", 0)) > 0 and isinstance(infos, dict):
             _tv = infos.get("target_vec")
             if _tv is not None:
+                # Same v4-vs-v5 shape mismatch fix as in run_ppo_training:
+                # SyncVectorEnv-wrapped v4 produces an object dtype array
+                # of per-env (4,) arrays; v5 produces a clean [N, 4].
+                _tv_arr = np.asarray(_tv)
+                if _tv_arr.dtype == object:
+                    _tv_arr = np.stack(
+                        [np.asarray(x, dtype=np.float32) for x in _tv_arr])
                 tv_t = torch.from_numpy(
-                    np.asarray(_tv[agnt_idx], dtype=np.float32)).to(device)
+                    _tv_arr[agnt_idx].astype(np.float32, copy=False)).to(device)
         with torch.no_grad():
             action_t, (h, c) = wrapper(
                 obs_t, prior_action, prior_reward, (h, c),
@@ -1698,8 +1705,16 @@ def run_ppo_training(config: dict, run_dir: str):
             if running_target_vec is not None:
                 tv_np = infos.get("target_vec")
                 if tv_np is not None:
+                    # v5 returns a clean [N, 4] float32 array; v4 wrapped
+                    # in SyncVectorEnv returns a length-N object array
+                    # of (4,) per-env arrays via gymnasium's _add_info.
+                    # Stack the object case before casting.
+                    tv_arr = np.asarray(tv_np)
+                    if tv_arr.dtype == object:
+                        tv_arr = np.stack(
+                            [np.asarray(x, dtype=np.float32) for x in tv_arr])
                     running_target_vec = torch.from_numpy(
-                        np.asarray(tv_np, dtype=np.float32))
+                        tv_arr.astype(np.float32, copy=False))
 
             # Reset LSTM hidden states for done envs (vectorized)
             done_mask_t = next_done.bool()
