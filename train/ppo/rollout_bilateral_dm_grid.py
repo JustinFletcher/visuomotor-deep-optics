@@ -131,7 +131,14 @@ def _build_env(target, max_steps, device):
     kw["dark_hole_location_radius_fraction"] = float(r_frac)
     kw["dark_hole_size_radius"] = float(s_frac)
     kw["dark_hole_randomize_on_reset"] = False
-    kw["max_episode_steps"] = int(max_steps)
+    # Extend the env's truncation horizon by one step beyond what the
+    # rollout will actually take. v5 auto-resets on the truncating
+    # step (zeroes _dm_actuators_t, re-simulates from a fresh state,
+    # overwrites _obs_history) -- that reset is what was making the
+    # last GIF frame look like an episode start. Loop control below
+    # stops the rollout one step short of this, so the env never
+    # auto-resets within the captured window.
+    kw["max_episode_steps"] = int(max_steps) + 1
     kw["silence"] = True
     kw["observation_window_size"] = 1
     from optomech.optomech.optomech_v5 import BatchedOptomechEnv
@@ -189,7 +196,7 @@ def _capture_diagnostics(base, blind_mask_t):
     return dm_opd, raw_psf, target_ct, blind_ct
 
 
-def run_episode(agent, env, base, target, seed, device):
+def run_episode(agent, env, base, target, seed, device, max_steps):
     """One deterministic rollout, with both blinded and unblinded
     detector frames captured per step."""
     angle, r_frac, s_frac = target
@@ -226,14 +233,22 @@ def run_episode(agent, env, base, target, seed, device):
     blind_ct_list = [bct0]
     strehls = []
 
+    # Stop manually after max_steps env steps so the env (whose
+    # max_episode_steps was set to max_steps + 1 in _build_env) never
+    # reaches truncation and never auto-resets within the captured
+    # window. Without this, v5 would zero _dm_actuators_t and re-run
+    # _batched_simulate from the reset state on the truncating step,
+    # producing a final GIF frame that looks like an episode start.
     done = False
-    while not done:
+    steps_taken = 0
+    while not done and steps_taken < max_steps:
         obs_t = torch.from_numpy(obs_norm).float().to(device)
         with torch.no_grad():
             action_t, (h, c) = agent.get_deterministic_action(
                 obs_t, prior_action, prior_reward, (h, c), target_vec=tv)
         a_np = action_t.detach().cpu().numpy()                      # [1, n_half]
         next_obs_blind, reward, term, trunc, info = env.step(a_np)
+        steps_taken += 1
         # Capture unblinded view from the env BEFORE the wrapper masks.
         next_obs_unblind = base._obs_history.detach().cpu().numpy()
         done = bool(term[0] or trunc[0])
@@ -511,7 +526,8 @@ def main():
         if td == 0:
             print(f"  target {i:>2}: WARNING -- target_dim=0 in checkpoint")
         ep = run_episode(
-            agent, env, base, target, args.seed, args.device)
+            agent, env, base, target, args.seed, args.device,
+            max_steps=args.max_steps)
         ep["target_id"] = i
 
         gif_path = os.path.join(output_dir, f"target_{i:02d}.gif")
