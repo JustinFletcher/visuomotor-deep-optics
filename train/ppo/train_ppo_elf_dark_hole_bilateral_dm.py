@@ -161,10 +161,11 @@ def _patch(cfg):
     # solution drifts toward a uniform (high-sigma) distribution and
     # the OPD scatter blacks out the entire frame. The per-dim
     # advantage signal in this task is too weak to defend against
-    # entropy pressure summed over 612 dims for that long, so we cut
-    # entropy regularization off entirely and tighten log_std_max
-    # another decade.
-    cfg["ent_coef"] = 0.0
+    # entropy pressure summed over 612 dims for that long, so we drop
+    # the entropy coefficient most of the way down and tighten the
+    # log_std envelope. A tiny non-zero ent_coef stays in as a floor
+    # so the policy never collapses entirely to a deterministic mean.
+    cfg["ent_coef"] = 1e-7
     cfg["learning_rate"] = 1e-4
     cfg["log_std_max"] = -2.0          # per-dim sigma cap = exp(-2) ~ 0.135
     cfg["init_log_std"] = -2.5         # per-dim sigma init = exp(-2.5) ~ 0.082
