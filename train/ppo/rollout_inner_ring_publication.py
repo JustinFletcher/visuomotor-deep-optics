@@ -423,20 +423,15 @@ def render_radial_step_compare(rollouts, out_path, n_samples=256):
         for i, ((tid, _, _), color) in enumerate(zip(rollouts, colors)):
             ax.plot(distances, mat[i], color=color, lw=0.7, alpha=0.45,
                     label=f"target {tid:02d}", zorder=2)
-        # Mean ± std band on top.
+        # Mean line on top. (Std band intentionally disabled — there's a
+        # plotting artefact under investigation; restore once fixed.)
         mean = mat.mean(axis=0)
-        std = mat.std(axis=0)
-        ax.fill_between(distances,
-                        np.maximum(mean - std, 1e-30),
-                        mean + std,
-                        color=BAND_C, alpha=0.30, lw=0, zorder=3)
         ax.plot(distances, mean, color=LINE_C, lw=1.6,
-                label=r"mean $\pm 1\sigma$", zorder=4)
+                label="mean", zorder=4)
 
-        ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlim(0.1, 5.0)
-        ax.set_xlabel(r"distance from PSF centre ($\lambda/D$, log)",
+        ax.set_xlim(0.0, 5.0)
+        ax.set_xlabel(r"distance from PSF centre ($\lambda/D$)",
                       fontsize=8)
         ax.set_title(panel_title, fontsize=10, pad=4)
         ax.grid(True, which="both", alpha=0.25, lw=0.4)
