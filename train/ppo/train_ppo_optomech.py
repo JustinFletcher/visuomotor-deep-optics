@@ -382,7 +382,8 @@ def evaluate_with_visualization(
             from train.ppo.bilateral_dm import BilateralDMVectorEnv
             eval_envs = BilateralDMVectorEnv(
                 eval_envs,
-                freeze_segments=config.get("bilateral_freeze_segments", True))
+                freeze_segments=config.get("bilateral_freeze_segments", True),
+                mode=config.get("bilateral_dm_mode", "per_target_radial"))
     else:
         eval_envs = gym.vector.SyncVectorEnv([
             make_optomech_env(env_kwargs, max_episode_steps=max_steps, idx=i)
@@ -1146,7 +1147,8 @@ def _make_eval_env(config):
             from train.ppo.bilateral_dm import BilateralDMVectorEnv
             env = BilateralDMVectorEnv(
                 env,
-                freeze_segments=config.get("bilateral_freeze_segments", True))
+                freeze_segments=config.get("bilateral_freeze_segments", True),
+                mode=config.get("bilateral_dm_mode", "per_target_radial"))
         return env
     else:
         env = gym.make(_ENV_ID, **env_kwargs)
@@ -1350,7 +1352,8 @@ def run_ppo_training(config: dict, run_dir: str):
             from train.ppo.bilateral_dm import BilateralDMVectorEnv
             envs = BilateralDMVectorEnv(
                 envs,
-                freeze_segments=config.get("bilateral_freeze_segments", True))
+                freeze_segments=config.get("bilateral_freeze_segments", True),
+                mode=config.get("bilateral_dm_mode", "per_target_radial"))
             print(f"  Wrapped with BilateralDMVectorEnv: "
                   f"action_dim={envs.single_action_space.shape[0]}, "
                   f"n_half={envs._n_half}")

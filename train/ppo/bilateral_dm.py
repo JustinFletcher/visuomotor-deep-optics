@@ -58,11 +58,31 @@ class BilateralDMVectorEnv(vector.VectorEnv):
     dim ``n_seg_actions + n_half`` where ``n_half = n_dm_acts // 2``.
     """
 
-    def __init__(self, env, freeze_segments: bool = True):
+    # Symmetry-axis modes:
+    #   "per_target_radial" (default, original): per episode, axis is
+    #       perpendicular to the target's radial direction. Controlled
+    #       side = target side. Blind region is the diametric opposite
+    #       of the target. Strict bilateral symmetry only for cardinal
+    #       angles; off-cardinal targets fall back to nearest-neighbor
+    #       mirror partners on the Cartesian actuator grid, so the
+    #       symmetry is approximate.
+    #   "fixed_vertical": axis is the y-axis (x=0) for every episode and
+    #       every target. The 35x35 actuator grid is exactly bijective
+    #       under (x, y) -> (-x, y), so symmetry is strict per-actuator.
+    #       Blind region is the left/right mirror of the target across
+    #       the vertical focal-plane axis.
+    _SUPPORTED_MODES = ("per_target_radial", "fixed_vertical")
+
+    def __init__(self, env, freeze_segments: bool = True,
+                 mode: str = "per_target_radial"):
         if env._n_dm_acts == 0:
             raise ValueError(
                 "BilateralDMVectorEnv requires the underlying env to be "
                 "built with command_dm=True (n_dm_acts > 0)")
+        if mode not in self._SUPPORTED_MODES:
+            raise ValueError(
+                f"BilateralDMVectorEnv mode {mode!r} not in "
+                f"{self._SUPPORTED_MODES}")
 
         self._env = env
         self._N = env.num_envs
@@ -71,6 +91,7 @@ class BilateralDMVectorEnv(vector.VectorEnv):
         self._W = env._W
         self._n_seg = env._n_seg_actions
         self._n_dm = env._n_dm_acts
+        self._mode = mode
         # When freeze_segments is True the policy outputs only the DM
         # half-slice; the seg slice in the expanded action is zeroed.
         # This is the natural mode for the DM dark-hole task where
@@ -149,11 +170,22 @@ class BilateralDMVectorEnv(vector.VectorEnv):
         for n in torch.where(needs)[0].cpu().tolist():
             sin_t = float(target_vec[n, 0].item())
             cos_t = float(target_vec[n, 1].item())
-            self._build_partition_for_env(n, sin_t, cos_t)
-            self._build_blind_mask_for_env(
-                n, sin_t, cos_t,
-                float(target_vec[n, 2].item()),
-                float(target_vec[n, 3].item()))
+            r_frac = float(target_vec[n, 2].item())
+            s_frac = float(target_vec[n, 3].item())
+            if self._mode == "fixed_vertical":
+                # Symmetry axis is x=0 for every env. The partition
+                # uses the same code path as per_target_radial but
+                # forces the radial direction to (cos_t=1, sin_t=0),
+                # which makes d = x and the topk pick the right (x>0)
+                # half. Mirror partners are exact under (x,y)->(-x,y)
+                # because the actuator grid is symmetric in x.
+                self._build_partition_for_env(n, sin_t=0.0, cos_t=1.0)
+                self._build_blind_mask_fixed_vertical(
+                    n, sin_t, cos_t, r_frac, s_frac)
+            else:
+                self._build_partition_for_env(n, sin_t, cos_t)
+                self._build_blind_mask_for_env(
+                    n, sin_t, cos_t, r_frac, s_frac)
 
         self._last_target_vec = target_vec.detach().clone()
 
@@ -227,6 +259,30 @@ class BilateralDMVectorEnv(vector.VectorEnv):
         size_px = int(s_frac * H / 2)
         cx = int(H / 2 - loc_px * cos_t)
         cy = int(H / 2 - loc_px * sin_t)
+        yy, xx = torch.meshgrid(
+            torch.arange(H, device=self._dev),
+            torch.arange(self._W, device=self._dev),
+            indexing="ij")
+        mask = ((xx - cx) ** 2 + (yy - cy) ** 2) <= size_px ** 2
+        self._blind_mask[n] = mask
+
+    def _build_blind_mask_fixed_vertical(
+            self, n: int, sin_t: float, cos_t: float,
+            r_frac: float, s_frac: float):
+        """Blind region for fixed_vertical mode.
+
+        The symmetry axis is x = 0 (vertical line through the focal-
+        plane centre). The bilateral mirror of the target sends
+        (x, y) -> (-x, y), so a target at angle theta maps to angle
+        pi - theta at the same radius. Pixel arithmetic mirrors the
+        cx component but preserves cy; same circle radius as the
+        target hole.
+        """
+        H = self._H
+        loc_px = int(r_frac * H / 2)
+        size_px = int(s_frac * H / 2)
+        cx = int(H / 2 - loc_px * cos_t)        # mirrored x: 2*ctr - x_target
+        cy = int(H / 2 + loc_px * sin_t)        # y unchanged
         yy, xx = torch.meshgrid(
             torch.arange(H, device=self._dev),
             torch.arange(self._W, device=self._dev),
