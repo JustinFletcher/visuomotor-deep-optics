@@ -347,7 +347,11 @@ class BilateralDMVectorEnv(vector.VectorEnv):
             tv_t = torch.as_tensor(
                 tv_np, dtype=torch.float32, device=self._dev)
         self._rebuild_partition(tv_t)
-        return self.mask_obs(obs), info
+        # The env emits the unmasked observation. Callers that feed the
+        # observation to a policy should call mask_obs() on it first;
+        # callers that only log/visualise should use it as-is so the
+        # blind region is visible (it is the only honest test signal).
+        return obs, info
 
     def step(self, agent_action):
         full_action = self.expand_action(agent_action)
@@ -359,7 +363,10 @@ class BilateralDMVectorEnv(vector.VectorEnv):
             tv_t = torch.as_tensor(
                 tv_np, dtype=torch.float32, device=self._dev)
             self._rebuild_partition(tv_t)
-        return self.mask_obs(obs), rew, term, trunc, info
+        # Same contract as reset(): unmasked obs goes to the caller;
+        # mask_obs() is a separate explicit step right before the
+        # policy forward.
+        return obs, rew, term, trunc, info
 
     def close(self):
         return self._env.close()

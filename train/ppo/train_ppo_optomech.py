@@ -429,8 +429,16 @@ def evaluate_with_visualization(
         # Random-action slots
         for idx in rand_idx:
             actions[idx] = action_space.sample()
-        # Agent slots: batched inference
-        agent_obs = obs_all[agnt_idx]
+        # Agent slots: batched inference. Apply the bilateral blind
+        # mask here -- between env emission and policy input -- so the
+        # captured filmstrip (agnt_obs_raw) keeps the unmasked frame
+        # for verification, while the policy sees the same masked
+        # input it was trained on.
+        if hasattr(eval_envs, "mask_obs"):
+            policy_obs_all = eval_envs.mask_obs(obs_all)
+            agent_obs = policy_obs_all[agnt_idx]
+        else:
+            agent_obs = obs_all[agnt_idx]
         obs_norm = normalize_obs_fixed(agent_obs, obs_ref_max)
         obs_t = torch.from_numpy(obs_norm).float().to(device)
         # Target vec: forward only the agent slots' target info.
@@ -1537,8 +1545,19 @@ def run_ppo_training(config: dict, run_dir: str):
     # ------------------------------------------------------------------
     obs_np, _ = envs.reset(seed=seed)
 
-    # One-shot TensorBoard figure: start observation, reference PSF, start OPD.
+    # One-shot TensorBoard figure: start observation, reference PSF,
+    # start OPD. Logged BEFORE bilateral masking so the figure shows
+    # the env's true emitted observation (the blind region is part of
+    # the science scene, not part of the policy's input).
     log_startup_visualization(writer, envs, obs_np, env_version, config=config)
+
+    # Bilateral DM task: env emits the unmasked observation. The
+    # bilateral wrapper's mask_obs() is applied here, after the env
+    # emits and before the observation enters the policy / replay
+    # buffer. Logging and visualisation paths see the unmasked frame
+    # so the blind region remains visible at eval time.
+    if hasattr(envs, "mask_obs"):
+        obs_np = envs.mask_obs(obs_np)
 
     obs_np = normalize_obs_fixed(obs_np, obs_ref_max)
     next_obs = torch.from_numpy(obs_np).float()
@@ -1693,6 +1712,14 @@ def run_ppo_training(config: dict, run_dir: str):
             next_obs_np, rewards_np, terminations, truncations, infos = envs.step(
                 env_action.cpu().numpy()
             )
+            # See the matching note at the post-reset masking site:
+            # apply the bilateral blind mask between env emission and
+            # policy/buffer ingestion. Pure replay paths above would
+            # otherwise feed the policy unmasked frames at update time
+            # while the rollout fed it masked ones, breaking PPO's
+            # log-prob consistency.
+            if hasattr(envs, "mask_obs"):
+                next_obs_np = envs.mask_obs(next_obs_np)
             next_obs_np = normalize_obs_fixed(next_obs_np, obs_ref_max)
             rewards_np = reward_scale * rewards_np
 
