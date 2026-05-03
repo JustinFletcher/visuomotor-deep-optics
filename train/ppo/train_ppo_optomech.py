@@ -378,6 +378,11 @@ def evaluate_with_visualization(
             num_envs=total_envs, device="auto", **env_kwargs)
         if obs_ref_max is None:
             obs_ref_max = eval_envs._reference_fpi_max
+        if config.get("bilateral_dm", False):
+            from train.ppo.bilateral_dm import BilateralDMVectorEnv
+            eval_envs = BilateralDMVectorEnv(
+                eval_envs,
+                freeze_segments=config.get("bilateral_freeze_segments", True))
     else:
         eval_envs = gym.vector.SyncVectorEnv([
             make_optomech_env(env_kwargs, max_episode_steps=max_steps, idx=i)
@@ -1129,7 +1134,13 @@ def _make_eval_env(config):
     env_version = config.get("env_version", "v3")
     if env_version == "v5":
         from optomech.optomech.optomech_v5 import BatchedOptomechEnv
-        return BatchedOptomechEnv(num_envs=1, device="auto", **env_kwargs)
+        env = BatchedOptomechEnv(num_envs=1, device="auto", **env_kwargs)
+        if config.get("bilateral_dm", False):
+            from train.ppo.bilateral_dm import BilateralDMVectorEnv
+            env = BilateralDMVectorEnv(
+                env,
+                freeze_segments=config.get("bilateral_freeze_segments", True))
+        return env
     else:
         env = gym.make(_ENV_ID, **env_kwargs)
         return gym.wrappers.RecordEpisodeStatistics(env)
@@ -1322,6 +1333,20 @@ def run_ppo_training(config: dict, run_dir: str):
         )
         obs_ref_max = envs._reference_fpi_max
         print(f"  Created BatchedOptomechEnv (v5): {config['num_envs']} envs on {envs.dev}")
+
+        # Optional: bilateral-DM wrapper for the symmetric dark-hole task.
+        # The wrapper presents a halved DM action space (only one side
+        # of the symmetry axis is policy-controlled) and zeroes the
+        # bilaterally-mirrored "blind" focal-plane region in the obs.
+        # Has no effect when command_dm is False.
+        if config.get("bilateral_dm", False):
+            from train.ppo.bilateral_dm import BilateralDMVectorEnv
+            envs = BilateralDMVectorEnv(
+                envs,
+                freeze_segments=config.get("bilateral_freeze_segments", True))
+            print(f"  Wrapped with BilateralDMVectorEnv: "
+                  f"action_dim={envs.single_action_space.shape[0]}, "
+                  f"n_half={envs._n_half}")
     else:
         # V3/V4: individual envs wrapped in Sync/AsyncVectorEnv.
         env_fns = [

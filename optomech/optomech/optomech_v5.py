@@ -78,8 +78,10 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             "V5 requires command_secondaries=True"
         assert not env_kwargs.get("command_tensioners", False), \
             "V5 does not support command_tensioners"
-        assert not env_kwargs.get("command_dm", False), \
-            "V5 does not support command_dm"
+        # DM is supported. The DM action slice is appended AFTER the
+        # segment piston/tip/tilt slice; commands are absolute (each step
+        # writes the full DM state in [-1, 1] units of stroke limit).
+        self._command_dm = bool(env_kwargs.get("command_dm", False))
         self._incremental_control = env_kwargs.get("incremental_control", True)
         assert not env_kwargs.get("ao_loop_active", False), \
             "V5 does not support ao_loop_active"
@@ -143,6 +145,66 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         inf_list = [np.array(m) for m in os4.segmented_mirror._influence_functions]
         inf_np = np.stack(inf_list, axis=0).reshape(self._n_modes, self._H, self._W)
         self._influence_t = torch.tensor(inf_np, dtype=torch.float32, device=self.dev)
+
+        # --- DM basis [n_dm_acts, H, W] (optional) ---
+        # When command_dm is set, v4 forces model_ao=True and builds the
+        # HCIPy DeformableMirror in _build_ao_subsystem. We pull its
+        # influence functions, stroke limit, and noise fraction here so
+        # v5 can run the DM forward path entirely on GPU.
+        self._n_dm_acts = 0
+        self._dm_basis_t = None
+        self._dm_basis_t_flat = None
+        self._dm_stroke_limit_m = 0.0
+        self._dm_actuator_noise = False
+        self._dm_actuator_noise_fraction = 0.0
+        self._dm_actuator_xy_t = None
+        if self._command_dm:
+            dm = os4.dm
+            dm_inf = [np.array(m) for m in dm.influence_functions]
+            self._n_dm_acts = len(dm_inf)
+            dm_inf_np = np.stack(dm_inf, axis=0).reshape(
+                self._n_dm_acts, self._H, self._W)
+            self._dm_basis_t = torch.tensor(
+                dm_inf_np, dtype=torch.float32, device=self.dev)
+            self._dm_basis_t_flat = self._dm_basis_t.reshape(
+                self._n_dm_acts, -1)               # [A, H*W]
+            self._dm_stroke_limit_m = float(os4._dm_stroke_limit_m)
+            # Per-env DM repeatability noise. v4 adds gaussian noise of
+            # std (noise_frac * 2 * stroke_limit_m) to the absolute DM
+            # command when actuator_noise is on. We mirror that here.
+            self._dm_actuator_noise = bool(cfg.get("actuator_noise", False))
+            self._dm_actuator_noise_fraction = float(
+                cfg.get("actuator_noise_fraction", 1e-4))
+            # Absolute (v4-parity): each step writes the full DM state
+            # in [-1, 1] units of stroke_limit_m.
+            # Incremental: each step's action is a delta, accumulated
+            # and clipped to +/- stroke_limit_m. Mirrors the segment
+            # piston/tip/tilt control mode (which is also incremental
+            # by default in v4/v5).
+            self._dm_incremental_control = bool(
+                cfg.get("dm_incremental_control", False))
+            # Per-actuator (x, y) positions in pupil meters, ordered to
+            # match _dm_basis_t. Used by external wrappers (e.g. the
+            # bilateral DM symmetrizer) that need geometric partitions
+            # of the actuator grid without re-running v4.
+            # HCIPy's gaussian-influence DM lays actuators on a regular
+            # grid of side n_act with spacing = pupil_diameter / n_act,
+            # ordered row-major (x varies fastest). We rebuild that grid
+            # here in normalised pupil coords ([-1, 1] across the
+            # diameter); only the relative positions matter for the
+            # bilateral wrapper. For non-square actuator counts (e.g.
+            # disk_harmonic_basis) this falls back to None and the
+            # wrapper must derive geometry by other means.
+            n_act = int(round(math.sqrt(self._n_dm_acts)))
+            if n_act * n_act == self._n_dm_acts:
+                axis = (np.arange(n_act, dtype=np.float32) - (n_act - 1) / 2.0)
+                axis = axis * (2.0 / n_act)         # pupil radius = 1
+                xx, yy = np.meshgrid(axis, axis, indexing="xy")
+                xy = np.stack([xx.ravel(), yy.ravel()], axis=1)
+                self._dm_actuator_xy_t = torch.tensor(
+                    xy, dtype=torch.float32, device=self.dev)
+            else:
+                self._dm_actuator_xy_t = None
 
         # MFT matrices per wavelength
         self._mft_cache = {}
@@ -533,9 +595,16 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             low=0.0, high=np.float32(self._det_max_dn),
             shape=(self._obs_window, self._H, self._W),
             dtype=np.float32)
+        # Action layout: [seg_actions ..., dm_actions ...]
+        #   seg slice: per-segment grouped (p0, t0, tl0, p1, t1, tl1, ...)
+        #              dim = num_apertures * n_dof_per_seg
+        #   dm slice (optional): one entry per DM actuator, absolute,
+        #              in [-1, 1] units of stroke_limit_m
+        self._n_seg_actions = self._num_apertures * self._n_dof_per_seg
+        action_dim = self._n_seg_actions + self._n_dm_acts
         single_action_space = spaces.Box(
             low=-1.0, high=1.0,
-            shape=(self._num_apertures * self._n_dof_per_seg,),
+            shape=(action_dim,),
             dtype=np.float32)
         super().__init__(
             num_envs=num_envs,
@@ -548,6 +617,15 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Baselines: [N, n_modes] — the baseline actuator values around which
         # incremental commands are centered and clipped.
         self._baselines_t = torch.zeros(N, self._n_modes, dtype=torch.float32, device=self.dev)
+        # DM state: per-env actuator displacements in METERS. Holds the
+        # absolute DM surface heights set by the most recent action.
+        # Allocated even when _command_dm is off (zero-size tensor) so
+        # the rest of the code can branch uniformly on _n_dm_acts.
+        if self._n_dm_acts > 0:
+            self._dm_actuators_t = torch.zeros(
+                N, self._n_dm_acts, dtype=torch.float32, device=self.dev)
+        else:
+            self._dm_actuators_t = None
         self._step_counts = torch.zeros(N, dtype=torch.long, device=self.dev)
         self._prior_actions = torch.zeros(N, single_action_space.shape[0],
                                           dtype=torch.float32, device=self.dev)
@@ -624,6 +702,18 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             # theta_t: [N] → [N, 1, 1]; tilt_pattern: [H, W] broadcasts.
             surface = surface + (theta_t.view(N, 1, 1)
                                  * self._vibration_tilt_pattern_t.unsqueeze(0))
+
+        # DM OPD: surface += sum_a (dm_actuators[n,a] * dm_basis[a,h,w]).
+        # _dm_actuators_t is in meters of surface displacement, matching
+        # the segment _actuators_t convention. The factor of 2 for
+        # reflective phase is applied uniformly below in the wavelength
+        # loop via `2.0 * k * surface`, identical to HCIPy's
+        # DeformableMirror.forward convention.
+        if self._dm_actuators_t is not None:
+            dm_surface_flat = torch.matmul(
+                self._dm_actuators_t,                # [N, A]
+                self._dm_basis_t_flat)               # [A, H*W]
+            surface = surface + dm_surface_flat.reshape(N, self._H, self._W)
 
         frame = torch.zeros(N, self._H, self._W, dtype=torch.float32, device=dev)
 
@@ -734,9 +824,19 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         n_seg = self._num_apertures
         n_dof = self._n_dof_per_seg
 
+        # Slice off the DM portion (if any) — action layout is
+        # [seg_actions ..., dm_actions ...]. The DM is handled
+        # absolutely below; segments use the existing incremental path.
+        if self._n_dm_acts > 0:
+            seg_actions_t = actions_t[:, :self._n_seg_actions]
+            dm_actions_t = actions_t[:, self._n_seg_actions:]
+        else:
+            seg_actions_t = actions_t
+            dm_actions_t = None
+
         # Remap action (per-segment: [p0,t0,tl0, p1,t1,tl1, ...]) to
         # actuator (per-DOF: [p0,p1,..., t0,t1,..., tl0,tl1,...])
-        action_reshaped = actions_t.reshape(N, n_seg, n_dof)  # [N, n_seg, n_dof]
+        action_reshaped = seg_actions_t.reshape(N, n_seg, n_dof)  # [N, n_seg, n_dof]
         # Transpose to [N, n_dof, n_seg] then flatten to [N, n_active]
         action_reordered = action_reshaped.permute(0, 2, 1).reshape(N, -1)
 
@@ -780,6 +880,33 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             post_clip = torch.where(cmd_nonzero, post_clip + rep_noise, post_clip)
 
         self._actuators_t = post_clip
+
+        # --- DM ------------------------------------------------------
+        # Two modes, switched by cfg["dm_incremental_control"]:
+        #   absolute (default, v4-parity): each step writes the full DM
+        #     state from action * stroke_limit_m;
+        #   incremental: each step's action is a delta, accumulated
+        #     into _dm_actuators_t and clipped to +/- stroke_limit_m
+        #     (reset zeros the accumulator; mirrors the segment
+        #     piston/tip/tilt control mode).
+        # Optional gaussian repeatability noise of std
+        # (noise_frac * 2 * stroke_limit_m) is added to whichever
+        # quantity is being written, matching v4.command_dm's per-call
+        # noise model.
+        if dm_actions_t is not None:
+            dm_meters = dm_actions_t * self._dm_stroke_limit_m
+            if self._dm_actuator_noise:
+                noise_std = (
+                    self._dm_actuator_noise_fraction
+                    * (2.0 * self._dm_stroke_limit_m))
+                dm_meters = dm_meters + torch.randn_like(dm_meters) * noise_std
+            if self._dm_incremental_control:
+                self._dm_actuators_t = torch.clamp(
+                    self._dm_actuators_t + dm_meters,
+                    -self._dm_stroke_limit_m,
+                    self._dm_stroke_limit_m)
+            else:
+                self._dm_actuators_t = dm_meters
 
     def _measure_rescale_baselines(self):
         """Measure (strehl * centering) at this phase's prior-solved
@@ -1311,6 +1438,8 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
 
         # Start from zero actuators
         self._actuators_t[env_mask] = 0.0
+        if self._dm_actuators_t is not None:
+            self._dm_actuators_t[env_mask] = 0.0
 
         if self._bootstrap:
             # --- Bootstrap mode ---
