@@ -166,6 +166,17 @@ def _patch(cfg):
     # log_std envelope. A tiny non-zero ent_coef stays in as a floor
     # so the policy never collapses entirely to a deterministic mean.
     cfg["ent_coef"] = 1e-7
+    # Floor on per-dim policy log-sigma. With ent_coef ~ 0 there's no
+    # entropy pressure pushing log_std up, and PPO updates can drift
+    # log_std toward -inf. Once any per-dim sigma underflows to zero,
+    # the next Normal log-prob computes 1/sigma -> inf, the backward
+    # pass produces NaN gradients, and the policy head silently
+    # poisons itself with NaN weights -- the run then crashes minutes
+    # later when Normal(loc=NaN, scale=...) is constructed. Floor at
+    # log_std = -5 keeps sigma >= ~6.7e-3 per dim, well clear of
+    # float32 underflow and small enough that exploration stays
+    # essentially deterministic at the operating point.
+    cfg["log_std_min"] = -5.0
     cfg["learning_rate"] = 1e-4
     cfg["log_std_max"] = -2.0          # per-dim sigma cap = exp(-2) ~ 0.135
     cfg["init_log_std"] = -2.5         # per-dim sigma init = exp(-2.5) ~ 0.082

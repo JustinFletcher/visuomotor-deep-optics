@@ -58,6 +58,7 @@ class RecurrentActorCritic(nn.Module):
         model_type: str = "small",
         target_dim: int = 0,
         log_std_max: Optional[float] = None,
+        log_std_min: Optional[float] = None,
     ):
         super().__init__()
         assert model_type in VALID_MODEL_TYPES, \
@@ -70,12 +71,20 @@ class RecurrentActorCritic(nn.Module):
         # [sin(θ), cos(θ), radius, size]). Default 0 preserves the
         # pre-existing LSTM input width so old checkpoints load cleanly.
         self.target_dim = int(target_dim)
-        # Optional hard ceiling on log_std (per-dim) to prevent
-        # entropy-bonus-driven runaway growth in low-advantage-signal
-        # regimes. None = no clamp (legacy behaviour). Apply via
+        # Optional hard envelope on log_std (per-dim).
+        #   max: prevents entropy-bonus-driven runaway growth in
+        #        low-advantage-signal regimes.
+        #   min: prevents drift to -inf when entropy pressure is near
+        #        zero. Without a floor, std underflows toward zero,
+        #        the next Normal log-prob blows up (1/std), the
+        #        backward pass produces NaN gradients, and the policy
+        #        head weights become NaN.
+        # Both default to None (legacy behaviour). Apply via
         # ``apply_log_std_clamp()`` after each optimiser step.
         self.log_std_max = (None if log_std_max is None
                             else float(log_std_max))
+        self.log_std_min = (None if log_std_min is None
+                            else float(log_std_min))
 
         obs_shape = envs.single_observation_space.shape
         self.action_dim = envs.single_action_space.shape[0]
@@ -213,8 +222,11 @@ class RecurrentActorCritic(nn.Module):
 
     @torch.no_grad()
     def apply_log_std_clamp(self) -> None:
-        """Clip self.log_std to ``[-inf, log_std_max]`` per-dim. No-op
-        when ``log_std_max`` is None. Call after each optimiser step."""
+        """Clip self.log_std to ``[log_std_min, log_std_max]`` per-dim.
+        No-op when both bounds are None. Call after each optimiser step.
+        """
+        if self.log_std_min is not None:
+            self.log_std.data.clamp_(min=self.log_std_min)
         if self.log_std_max is None:
             return
         self.log_std.data.clamp_(max=self.log_std_max)

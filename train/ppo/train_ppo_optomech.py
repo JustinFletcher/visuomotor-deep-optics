@@ -1432,6 +1432,7 @@ def run_ppo_training(config: dict, run_dir: str):
         model_type=config.get("model_type", "small"),
         target_dim=int(config.get("target_dim", 0)),
         log_std_max=config.get("log_std_max", None),
+        log_std_min=config.get("log_std_min", None),
     ).to(device)
 
     # Load bottleneck weights into the MLP layer if available
@@ -1959,11 +1960,32 @@ def run_ppo_training(config: dict, run_dir: str):
 
                 optimizer.zero_grad()
                 loss.backward()
+                # NaN guard: if any parameter gradient is NaN/Inf, drop
+                # this minibatch update entirely. Without this guard a
+                # single bad update propagates NaN into the policy
+                # weights and every subsequent forward emits NaN means,
+                # crashing the run several million steps later when
+                # Normal(loc=NaN, scale=...) is constructed.
+                bad_grad = False
+                for p in agent.parameters():
+                    if p.grad is not None and not torch.isfinite(p.grad).all():
+                        bad_grad = True
+                        break
+                if bad_grad:
+                    optimizer.zero_grad(set_to_none=True)
+                    if not getattr(agent, "_nan_warned", False):
+                        print("  [warn] non-finite gradient encountered; "
+                              "skipping minibatch (further occurrences silent)")
+                        agent._nan_warned = True
+                    continue
                 nn.utils.clip_grad_norm_(
                     agent.parameters(), config["max_grad_norm"]
                 )
                 optimizer.step()
-                # No-op when log_std_max is None (legacy default).
+                # No-op when log_std_max / log_std_min are None (legacy
+                # default). With log_std_min set, prevents std underflow
+                # to zero (which is the most common upstream cause of
+                # the NaN gradient the guard above catches).
                 agent.apply_log_std_clamp()
 
                 all_pg_losses.append(pg_loss.item())
