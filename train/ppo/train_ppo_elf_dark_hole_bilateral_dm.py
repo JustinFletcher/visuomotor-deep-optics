@@ -165,7 +165,7 @@ def _patch(cfg):
     # the entropy coefficient most of the way down and tighten the
     # log_std envelope. A tiny non-zero ent_coef stays in as a floor
     # so the policy never collapses entirely to a deterministic mean.
-    cfg["ent_coef"] = 1e-7
+    cfg["ent_coef"] = 1e-6
     # Floor on per-dim policy log-sigma. With ent_coef ~ 0 there's no
     # entropy pressure pushing log_std up, and PPO updates can drift
     # log_std toward -inf. Once any per-dim sigma underflows to zero,
