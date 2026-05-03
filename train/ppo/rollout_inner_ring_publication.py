@@ -395,44 +395,46 @@ def render_joy_division_traces(rollouts, out_path, n_steps=4,
 # --------------------------------------------------------------------------
 
 def render_radial_step_compare(rollouts, out_path, n_samples=256):
-    """Two-panel radial intensity profile: step 0 (left) and step
-    final (right). Each panel overlays the six per-target traces faintly
-    and draws their mean ± 1 std on top.
+    """Single panel showing initial (blue) and final (red) radial
+    intensity profiles overlaid. Per-target context traces faint in
+    each colour family; geometric mean and ±1 std band on top.
     """
     plt.rcParams.update(NEURIPS_RC)
-    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(7.5, 3.4),
-                                     sharex=True, sharey=True)
+    fig, ax = plt.subplots(figsize=(5.6, 3.6))
 
     distances = None
     init_traces, final_traces = [], []
-    for tid, target, ep in rollouts:
+    for _, target, ep in rollouts:
         psfs = ep["raw_psf"]
         if not psfs:
             continue
         d_init, y_init = _sample_radial_line(np.asarray(psfs[0]), target,
                                              n_samples)
-        d_final, y_final = _sample_radial_line(np.asarray(psfs[-1]), target,
-                                               n_samples)
+        _, y_final = _sample_radial_line(np.asarray(psfs[-1]), target,
+                                         n_samples)
         if distances is None:
             distances = d_init
         init_traces.append(y_init)
         final_traces.append(y_final)
-    init_mat = np.stack(init_traces, axis=0)     # [6, n_samples]
+    init_mat = np.stack(init_traces, axis=0)
     final_mat = np.stack(final_traces, axis=0)
+    final_step_idx = len(rollouts[0][2]["raw_psf"]) - 1
 
-    def _draw(ax, mat, panel_title):
-        # Faint, single-colour individual traces for context (no per-
-        # target labels — kept neutral so the eye reads the mean band
-        # as the headline and the spread as ambient).
-        for i in range(mat.shape[0]):
-            ax.plot(distances, mat[i], color="#888888", lw=0.6,
-                    alpha=0.45, zorder=2)
+    # Two colour families.
+    INIT_LINE  = "#1f3b5e"     # deep navy
+    INIT_BAND  = "#6c8ebf"     # pale navy
+    INIT_FAINT = "#9ab2cf"     # very pale navy (per-target context)
+    FINAL_LINE = "#8a1d1d"     # deep red
+    FINAL_BAND = "#d96c6c"     # pale red
+    FINAL_FAINT = "#e2a4a4"    # very pale red
 
-        # Geometric mean ± 1 geometric std, computed in log space so
-        # the band stays meaningful under the log y-axis. Avoids the
-        # "std reaches 1e-28" artifact that linear-space std produced
-        # when (mean - std) went negative and got floored.
+    def _stack(mat, line_c, band_c, faint_c, label_prefix):
         floor = max(float(np.max(mat)) * 1e-12, 1e-30)
+        # Faint per-target context.
+        for i in range(mat.shape[0]):
+            ax.plot(distances, mat[i], color=faint_c, lw=0.6,
+                    alpha=0.6, zorder=2)
+        # Geometric stats.
         log_mat = np.log10(np.maximum(mat, floor))
         log_mean = log_mat.mean(axis=0)
         log_std = log_mat.std(axis=0)
@@ -440,35 +442,35 @@ def render_radial_step_compare(rollouts, out_path, n_samples=256):
         lo = 10.0 ** (log_mean - log_std)
         hi = 10.0 ** (log_mean + log_std)
         ax.fill_between(distances, lo, hi,
-                        color=BAND_C, alpha=0.30, lw=0,
-                        zorder=3, label=r"mean $\pm 1\sigma$ (geom.)")
-        ax.plot(distances, mean_geom, color=LINE_C, lw=1.6,
-                label="mean (geom.)", zorder=4)
+                        color=band_c, alpha=0.32, lw=0, zorder=3,
+                        label=fr"{label_prefix}: mean $\pm\,1\sigma$")
+        ax.plot(distances, mean_geom, color=line_c, lw=1.7, zorder=4,
+                label=f"{label_prefix}: mean")
 
-        ax.set_yscale("log")
-        ax.set_xlim(0.0, 5.0)
-        ax.set_xlabel(r"distance from PSF centre ($\lambda/D$)",
-                      fontsize=8)
-        ax.set_title(panel_title, fontsize=10, pad=4)
-        ax.grid(True, which="both", alpha=0.25, lw=0.4)
-        for side in ("top", "right"):
-            ax.spines[side].set_visible(False)
-        ax.spines["left"].set_linewidth(0.6)
-        ax.spines["bottom"].set_linewidth(0.6)
-        ax.tick_params(length=2.5, width=0.5)
+    _stack(init_mat,  INIT_LINE,  INIT_BAND,  INIT_FAINT,
+           "step 0")
+    _stack(final_mat, FINAL_LINE, FINAL_BAND, FINAL_FAINT,
+           f"step {final_step_idx}")
 
-    _draw(ax_l, init_mat,  "step 0 (initial)")
-    _draw(ax_r, final_mat, f"step {len(rollouts[0][2]['raw_psf']) - 1} (final)")
+    ax.set_yscale("log")
+    ax.set_xlim(0.0, 5.0)
+    ax.set_xlabel(r"distance from PSF centre ($\lambda/D$)",
+                  fontsize=8)
+    ax.set_ylabel("raw PSF intensity (log)", fontsize=8)
+    ax.set_title("Inner-ring radial intensity, initial vs final  "
+                 "(geometric mean across six targets)",
+                 fontsize=9.5, pad=6)
+    ax.grid(True, which="both", alpha=0.22, lw=0.4)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.spines["left"].set_linewidth(0.6)
+    ax.spines["bottom"].set_linewidth(0.6)
+    ax.tick_params(length=2.5, width=0.5)
+    ax.legend(loc="lower left", fontsize=7.2, frameon=False,
+              handlelength=1.6, handletextpad=0.5,
+              labelspacing=0.35, ncol=2, columnspacing=1.0)
 
-    ax_l.set_ylabel("raw PSF intensity (log)", fontsize=8)
-
-    ax_r.legend(loc="upper right", fontsize=7.5, frameon=False,
-                handlelength=1.6, handletextpad=0.5)
-
-    fig.suptitle("Inner-ring radial intensity cuts: "
-                 "initial vs final, geometric mean across six targets",
-                 fontsize=10, y=0.99)
-    fig.tight_layout(pad=0.6, rect=[0.0, 0.0, 1.0, 0.95])
+    fig.tight_layout(pad=0.5)
     _saveboth(fig, str(out_path))
     plt.close(fig)
 
