@@ -39,6 +39,7 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from gymnasium import vector
+from scipy.optimize import linear_sum_assignment
 
 
 class BilateralDMVectorEnv(vector.VectorEnv):
@@ -198,14 +199,29 @@ class BilateralDMVectorEnv(vector.VectorEnv):
         d = x*cos_t + y*sin_t, is positive on the target side and
         negative on the blind side.
 
-        We pick the n_half actuators with the largest d as controlled.
-        For each controlled actuator, the mirror partner is the actuator
-        nearest its reflected position p' = p - 2 d (cos_t, sin_t) on
-        the opposite side. Ties (or non-bijective mappings on off-axis
-        rotations) are tolerated -- multiple mirror slots may copy the
-        same controlled command. On-axis actuators (those that are not
-        anyone's mirror partner and are not in controlled) are left at
-        zero in expand_action.
+        We pick the n_half actuators with the largest d as controlled,
+        then build a bijective mirror assignment via the Hungarian
+        (Jonker-Volgenant) algorithm: every controlled actuator is
+        paired with a unique opposite-side actuator that minimises the
+        controlled-to-reflected pairing distance subject to a one-to-one
+        constraint.
+
+        Bijection is critical. With nearest-neighbour matching, several
+        controlled actuators can collapse onto the same mirror partner
+        and ``scatter_(mirror_idx, half)`` lets only the last write
+        survive on the mirror side -- the lost copies produce regions
+        of the OPD that are unmirrored at all, the dominant source of
+        broken bilateral symmetry in eval frames. Hungarian matching
+        eliminates that channel; the residual is bounded below by the
+        Cartesian grid pitch (no actuator lives exactly at an arbitrary
+        reflected position) and is irreducible without modifying the
+        env's simulate path.
+
+        For an odd actuator-grid side the controlled set has size
+        n_dm // 2 and the opposite set has size n_dm // 2 + 1;
+        rectangular Hungarian leaves exactly one opposite-side
+        actuator unassigned (the natural axis-singularity slot, which
+        ``expand_action`` then leaves at zero).
         """
         xy = self._dm_xy                              # [A, 2]
         d = xy[:, 0] * cos_t + xy[:, 1] * sin_t       # [A] signed distance
@@ -214,25 +230,34 @@ class BilateralDMVectorEnv(vector.VectorEnv):
         _, top_idx = torch.topk(d, k=self._n_half, largest=True, sorted=False)
         self._controlled_idx[n] = top_idx                              # [n_half]
 
-        # For each controlled actuator k, compute its reflected position
-        # p_k - 2 d_k (cos_t, sin_t), then find the nearest actuator on
-        # the opposite side.
+        # Reflected positions of the controlled actuators.
         p_ctrl = xy[top_idx]                          # [n_half, 2]
         d_ctrl = d[top_idx]                           # [n_half]
         refl = p_ctrl - 2.0 * d_ctrl.unsqueeze(1) * torch.tensor(
             [cos_t, sin_t], dtype=xy.dtype, device=xy.device)          # [n_half, 2]
 
-        # Restrict candidate mirror set to actuators with d <= 0 (the
-        # opposite side, including on-axis). With odd A there's exactly
-        # one on-axis actuator and n_half on each side after the topk.
+        # Opposite-side candidates (d <= 0 includes the axis singleton).
         opp_mask = (d <= 0.0)
         opp_idx = torch.where(opp_mask)[0]            # [n_opp]
         opp_xy = xy[opp_idx]                          # [n_opp, 2]
 
-        # Pairwise distances [n_half, n_opp].
+        # Cost matrix: SQUARED distance from each refl[i] to each
+        # opp[j]. Squared cost smooths the worst-case pair distance --
+        # min-sum on linear distance lets a few pairs stretch to
+        # arbitrary lengths to keep many others near-perfect, which
+        # produces visibly jagged OPD asymmetry. Min-sum on squared
+        # distance balances the residual across pairs (slightly worse
+        # mean, but the p95 and max drop dramatically) so the residual
+        # asymmetry is smooth and small everywhere instead of hidden in
+        # a few wild outliers.
         dist = torch.cdist(refl.unsqueeze(0), opp_xy.unsqueeze(0))[0]
-        nearest = torch.argmin(dist, dim=1)           # [n_half]
-        self._mirror_partner_idx[n] = opp_idx[nearest]
+        cost = (dist ** 2).detach().cpu().numpy()
+
+        # Bijective assignment. row_ind = sorted [0..n_half-1]; col_ind
+        # gives the unique opp index assigned to each controlled.
+        row_ind, col_ind = linear_sum_assignment(cost)
+        partner_local = torch.from_numpy(col_ind).to(self._dev)
+        self._mirror_partner_idx[n] = opp_idx[partner_local]
 
     def _build_blind_mask_for_env(
             self, n: int, sin_t: float, cos_t: float,

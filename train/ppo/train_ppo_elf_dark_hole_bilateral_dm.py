@@ -159,6 +159,11 @@ def _patch(cfg):
     cfg["ent_coef"] = 4e-5
     cfg["learning_rate"] = 1e-4
     cfg["log_std_max"] = -1.0
+    # Slightly sharper eval figures than the piston runs default to.
+    # Bumping local from 48 -> 64 and HPC from 72 -> 96 roughly doubles
+    # the per-figure byte size but keeps it well under the TB event
+    # file threshold and gives readable detail in the blind region.
+    cfg["eval_figure_dpi"] = 96 if cfg.get("num_envs", 8) >= 32 else 64
     # init_log_std stays at -2 (per-dim sigma 0.135). With 612 dims, the
     # joint exploration radius is sqrt(612) * 0.135 ~ 3.3 in unit-stroke
     # space, which is large but bounded by the env's [-1, 1] action clip.
