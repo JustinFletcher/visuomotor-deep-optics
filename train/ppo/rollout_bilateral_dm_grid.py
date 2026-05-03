@@ -96,6 +96,14 @@ def _resolve_checkpoint(sweep_dir: str, target_idx: int,
     if not os.path.isdir(target_dir):
         raise FileNotFoundError(f"target dir missing: {target_dir}")
     if prefer_latest:
+        # Prefer an explicit latest.pt (the running pointer the trainer
+        # rewrites every save), fall back to the newest numbered
+        # update_*.pt, then to best.pt.
+        latest_ptr = sorted(glob(os.path.join(
+            target_dir, "ppo_optomech_*", "checkpoints", "latest.pt")),
+            key=os.path.getmtime)
+        if latest_ptr:
+            return latest_ptr[-1]
         ck = sorted(glob(os.path.join(
             target_dir, "ppo_optomech_*", "checkpoints", "*update_*.pt")),
             key=os.path.getmtime)
