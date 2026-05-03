@@ -324,11 +324,16 @@ def render_joy_division_traces(rollouts, out_path, n_steps=16,
         global_max = max(float(np.max(y)) for _, y in traces)
         if global_max <= 0:
             global_max = 1.0
-        # Vertical layout: each trace gets a band of height = OFFSET,
-        # and within its band the intensity is scaled to AMPLITUDE * OFFSET.
-        OFFSET = 1.0
-        AMPLITUDE = 1.4   # >1 lets peaks bleed into the band above (Joy-D)
+        # Vertical layout: small offset between traces (<<AMPLITUDE)
+        # so neighbouring frames visibly overlap — flatter "slant"
+        # toward the viewer than canonical Joy-Division. Intensity is
+        # log-normalised so the dark-hole notch reads as a dramatic
+        # dip rather than a near-zero pixel of a near-zero floor.
+        OFFSET = 0.3
+        AMPLITUDE = 1.4
         baselines = [(n_avail - 1 - t) * OFFSET for t in range(n_avail)]
+        log_max = np.log10(global_max)
+        log_floor = log_max - 8.0   # 8 decades visible per trace
 
         # Hole center for the reference vline (in λ/D units).
         hole_center_pos_px = target[1] * (256 / 2.0)
@@ -340,18 +345,20 @@ def render_joy_division_traces(rollouts, out_path, n_steps=16,
                    hole_center_pos_ld + hole_size_ld,
                    color=BAND_C, alpha=0.18, zorder=0)
 
-        # Draw earliest first, latest last → latest sits on top.
+        # Draw earliest first, latest last → latest sits on top. Each
+        # trace fills with a faint navy tint so overlap reads visibly.
         for t in range(n_avail):
             xs, ys = traces[t]
             base = baselines[t]
-            curve = base + (ys / global_max) * AMPLITUDE * OFFSET
+            log_y = np.log10(np.maximum(ys, 10.0 ** log_floor))
+            norm_y = np.clip((log_y - log_floor) / (log_max - log_floor),
+                             0.0, 1.0)
+            curve = base + norm_y * AMPLITUDE * OFFSET
             ax.fill_between(xs, base, curve,
-                            facecolor="white", edgecolor="none",
-                            zorder=t * 2 + 1)
-            ax.plot(xs, curve, color="black", linewidth=0.55,
+                            facecolor=BAND_C, alpha=0.32,
+                            edgecolor="none", zorder=t * 2 + 1)
+            ax.plot(xs, curve, color="black", linewidth=0.5,
                     zorder=t * 2 + 2)
-            # Thin baseline tick on the left for the first/last steps
-            # so the eye can register the stacking direction.
             if t == 0 or t == n_avail - 1:
                 ax.plot([xs[0]], [base], "o",
                         color=ACCENT_C if t == n_avail - 1 else "#888888",
@@ -359,7 +366,8 @@ def render_joy_division_traces(rollouts, out_path, n_steps=16,
 
         ax.set_xscale("log")
         ax.set_xlim(0.1, 5.0)
-        ax.set_ylim(-0.05, n_avail * OFFSET + AMPLITUDE * OFFSET)
+        ax.set_ylim(-0.05,
+                    (n_avail - 1) * OFFSET + AMPLITUDE * OFFSET + 0.1)
         ax.set_yticks([])
         ax.tick_params(length=2.5, width=0.5)
         ax.set_xlabel(r"distance from PSF centre ($\lambda/D$, log)",
@@ -413,21 +421,30 @@ def render_radial_step_compare(rollouts, out_path, n_samples=256):
     init_mat = np.stack(init_traces, axis=0)     # [6, n_samples]
     final_mat = np.stack(final_traces, axis=0)
 
-    # Color per target id (same viridis lineage as the contrast traces).
-    cmap = plt.get_cmap("viridis")
-    colors = [cmap(i / max(len(rollouts) - 1, 1))
-              for i in range(len(rollouts))]
-
     def _draw(ax, mat, panel_title):
-        # Faint individual traces, one colour per target id.
-        for i, ((tid, _, _), color) in enumerate(zip(rollouts, colors)):
-            ax.plot(distances, mat[i], color=color, lw=0.7, alpha=0.45,
-                    label=f"target {tid:02d}", zorder=2)
-        # Mean line on top. (Std band intentionally disabled — there's a
-        # plotting artefact under investigation; restore once fixed.)
-        mean = mat.mean(axis=0)
-        ax.plot(distances, mean, color=LINE_C, lw=1.6,
-                label="mean", zorder=4)
+        # Faint, single-colour individual traces for context (no per-
+        # target labels — kept neutral so the eye reads the mean band
+        # as the headline and the spread as ambient).
+        for i in range(mat.shape[0]):
+            ax.plot(distances, mat[i], color="#888888", lw=0.6,
+                    alpha=0.45, zorder=2)
+
+        # Geometric mean ± 1 geometric std, computed in log space so
+        # the band stays meaningful under the log y-axis. Avoids the
+        # "std reaches 1e-28" artifact that linear-space std produced
+        # when (mean - std) went negative and got floored.
+        floor = max(float(np.max(mat)) * 1e-12, 1e-30)
+        log_mat = np.log10(np.maximum(mat, floor))
+        log_mean = log_mat.mean(axis=0)
+        log_std = log_mat.std(axis=0)
+        mean_geom = 10.0 ** log_mean
+        lo = 10.0 ** (log_mean - log_std)
+        hi = 10.0 ** (log_mean + log_std)
+        ax.fill_between(distances, lo, hi,
+                        color=BAND_C, alpha=0.30, lw=0,
+                        zorder=3, label=r"mean $\pm 1\sigma$ (geom.)")
+        ax.plot(distances, mean_geom, color=LINE_C, lw=1.6,
+                label="mean (geom.)", zorder=4)
 
         ax.set_yscale("log")
         ax.set_xlim(0.0, 5.0)
@@ -446,17 +463,13 @@ def render_radial_step_compare(rollouts, out_path, n_samples=256):
 
     ax_l.set_ylabel("raw PSF intensity (log)", fontsize=8)
 
-    # Single shared legend at the bottom (six target colours + mean band).
-    handles, labels = ax_r.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=4,
-               fontsize=7.5, frameon=False,
-               bbox_to_anchor=(0.5, -0.02), handlelength=1.6,
-               handletextpad=0.5, columnspacing=1.2)
+    ax_r.legend(loc="upper right", fontsize=7.5, frameon=False,
+                handlelength=1.6, handletextpad=0.5)
 
     fig.suptitle("Inner-ring radial intensity cuts: "
-                 "initial vs final, mean across six targets",
+                 "initial vs final, geometric mean across six targets",
                  fontsize=10, y=0.99)
-    fig.tight_layout(pad=0.6, rect=[0.0, 0.06, 1.0, 0.95])
+    fig.tight_layout(pad=0.6, rect=[0.0, 0.0, 1.0, 0.95])
     _saveboth(fig, str(out_path))
     plt.close(fig)
 
