@@ -166,6 +166,7 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._dm_actuator_noise = False
         self._dm_actuator_noise_fraction = 0.0
         self._dm_actuator_xy_t = None
+        self._dm_bilateral_partner_t = None
         if self._command_dm:
             dm = os4.dm
             dm_inf = [np.array(m) for m in dm.influence_functions]
@@ -211,8 +212,21 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
                 xy = np.stack([xx.ravel(), yy.ravel()], axis=1)
                 self._dm_actuator_xy_t = torch.tensor(
                     xy, dtype=torch.float32, device=self.dev)
+                # Bilateral partner index for each actuator under the
+                # vertical-axis mirror (x, y) -> (-x, y). On a square
+                # odd-side grid in row-major (x-fastest) order, the
+                # partner of actuator at (row r, col c) is at
+                # (row r, col (n-1-c)). The centre column is its own
+                # partner. Used by init_dm_symmetric and any other
+                # consumer that needs an exact bijective mirror map.
+                idx = torch.arange(self._n_dm_acts, device=self.dev)
+                rows = idx // n_act
+                cols = idx % n_act
+                self._dm_bilateral_partner_t = (
+                    rows * n_act + (n_act - 1 - cols)).contiguous()
             else:
                 self._dm_actuator_xy_t = None
+                self._dm_bilateral_partner_t = None
 
         # MFT matrices per wavelength
         self._mft_cache = {}
@@ -1448,6 +1462,30 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._actuators_t[env_mask] = 0.0
         if self._dm_actuators_t is not None:
             self._dm_actuators_t[env_mask] = 0.0
+            # Optional random initial DM perturbation. When
+            # init_dm_micron_std > 0, draw an iid Gaussian per
+            # actuator with that std (in microns of surface
+            # displacement), clipped to the stroke envelope. When
+            # init_dm_symmetric is also True the perturbation is
+            # forced bilaterally symmetric across the vertical axis
+            # x = 0 by averaging each actuator with its mirror
+            # partner -- exact bijection on a square odd-side grid.
+            init_std_um = float(
+                self._env_kwargs.get("init_dm_micron_std", 0.0))
+            if init_std_um > 0.0:
+                init_std_m = init_std_um * 1e-6
+                raw = (torch.randn(
+                    n_reset, self._n_dm_acts,
+                    dtype=torch.float32, device=self.dev)
+                    * init_std_m)
+                if (bool(self._env_kwargs.get("init_dm_symmetric", False))
+                        and self._dm_bilateral_partner_t is not None):
+                    partner = self._dm_bilateral_partner_t
+                    raw = 0.5 * (raw + raw[:, partner])
+                lim = self._dm_stroke_limit_m
+                if lim > 0.0:
+                    raw = torch.clamp(raw, -lim, lim)
+                self._dm_actuators_t[env_mask] = raw
 
         if self._bootstrap:
             # --- Bootstrap mode ---
