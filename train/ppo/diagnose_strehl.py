@@ -82,9 +82,13 @@ c = torch.zeros(agent.lstm_num_layers, 4, agent.lstm_hidden_dim)
 prior_action = torch.zeros(4, agent.action_dim)
 prior_reward = torch.zeros(4)
 
+N_STEPS = 64  # full episode -- the policy has a transient at step 0
+              # (LSTM h=0, fresh reset, big corrective action) and only
+              # converges over the next ~30 steps as the LSTM accumulates
+              # state. An 8-step window only sees the transient.
 print(f"\n{'step':>4} {'|mean_act|_L1':>14} {'|mean_act|_max':>14} "
       f"{'env_strehl':>11} {'reward':>11}")
-for step in range(8):
+for step in range(N_STEPS):
     obs_t = torch.from_numpy(obs).float()
     with torch.no_grad():
         action_t, (h, c) = wrapper(obs_t, prior_action, prior_reward, (h, c))
@@ -103,9 +107,10 @@ obs, info = env.reset(seed=0)
 print(f"\n-- control rollout: action forced to 0 each step --")
 print(f"{'step':>4} {'env_strehl':>11} {'reward':>11}")
 A = env.single_action_space.shape[0]
-for step in range(8):
+for step in range(N_STEPS):
     a_np = np.zeros((4, A), dtype=np.float32)
     obs, rew, term, trunc, info = env.step(a_np)
-    print(f"{step:>4d} "
-          f"{float(info['strehl'].mean()):>11.4f} "
-          f"{float(rew.mean()):>11.4f}")
+    if step < 8 or step % 8 == 7 or step == N_STEPS - 1:
+        print(f"{step:>4d} "
+              f"{float(info['strehl'].mean()):>11.4f} "
+              f"{float(rew.mean()):>11.4f}")
