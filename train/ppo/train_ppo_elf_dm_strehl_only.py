@@ -64,6 +64,19 @@ ENV_KWARGS["holding_bonus_weight"] = 0.0
 ENV_KWARGS["init_dm_micron_std"] = 0.05
 ENV_KWARGS["init_dm_symmetric"] = True
 
+# Absolute DM control. Each step writes the full DM state directly
+# rather than accumulating a delta. Removes the accumulation channel
+# that, under incremental control with even a small bias in the
+# policy mean, drove the DM to full stroke over an episode and
+# scrambled all light into the noise floor. With absolute control,
+# the policy outputs a complete corrective shape every step and any
+# mean bias is a fixed offset, not a growing one. Action scale is
+# set to 1.0 so the policy can reach the full +/- stroke envelope
+# in one step -- the corrective shape for a 50 nm symmetric init is
+# well within that range.
+ENV_KWARGS["dm_incremental_control"] = False
+ENV_KWARGS["env_action_scale"] = 1.0
+
 
 # ----------------------------------------------------------------------
 # PPO config
