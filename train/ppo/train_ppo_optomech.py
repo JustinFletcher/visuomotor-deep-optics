@@ -1627,23 +1627,32 @@ def run_ppo_training(config: dict, run_dir: str):
               f"{_hb_warmup:,} steps, then ramp to {_hb_end:.2f} "
               f"over {_hb_anneal_steps:,} steps")
 
-    # --- Dark-hole reward curriculum ---
-    # Linear ramp of reward_weight_dark_hole between two values across
-    # a window of training steps. Used to introduce the dark-hole signal
-    # gradually after the policy has first learned wavefront control
-    # under a Strehl-only reward. Acts on the underlying v5 env's
-    # ``_rw_dark_hole`` attribute (the live weight read each reward
-    # call). When the env is wrapped (e.g. BilateralDMVectorEnv) we
-    # walk through ``_env`` to reach the v5 env that owns the attribute.
-    dh_cur_cfg = config.get("dark_hole_curriculum")
-    if dh_cur_cfg:
-        _dh_start = float(dh_cur_cfg.get("start_value", 0.0))
-        _dh_end = float(dh_cur_cfg.get("end_value", 1.0))
-        _dh_warmup = int(dh_cur_cfg.get("warmup_timesteps", 0))
-        _dh_anneal_steps = int(dh_cur_cfg["anneal_timesteps"])
-        print(f"  Dark-hole curriculum: hold at {_dh_start:.2f} for "
-              f"{_dh_warmup:,} steps, then ramp to {_dh_end:.2f} "
-              f"over {_dh_anneal_steps:,} steps")
+    # --- Reward-weight curriculum ---
+    # Linear ramp of an arbitrary v5 reward weight between two values
+    # across a window of training steps. The attribute to drive is
+    # specified by ``attr`` (default "_rw_log_contrast"). Used to
+    # introduce a new reward term gradually after the policy has
+    # first learned a baseline behaviour under a different reward.
+    # When the env is wrapped (e.g. BilateralDMVectorEnv) we walk
+    # through ``_env`` to reach the v5 env that owns the attribute.
+    rw_cur_cfg = config.get("reward_weight_curriculum")
+    if rw_cur_cfg is None:
+        # Backward compatibility with the older "dark_hole_curriculum"
+        # name: synthesise an equivalent reward-weight-curriculum block.
+        _legacy = config.get("dark_hole_curriculum")
+        if _legacy is not None:
+            rw_cur_cfg = dict(_legacy)
+            rw_cur_cfg.setdefault("attr", "_rw_dark_hole")
+    if rw_cur_cfg:
+        _rw_attr = str(rw_cur_cfg.get("attr", "_rw_log_contrast"))
+        _rw_start = float(rw_cur_cfg.get("start_value", 0.0))
+        _rw_end = float(rw_cur_cfg.get("end_value", 1.0))
+        _rw_warmup = int(rw_cur_cfg.get("warmup_timesteps", 0))
+        _rw_anneal_steps = int(rw_cur_cfg["anneal_timesteps"])
+        print(f"  Reward-weight curriculum: {_rw_attr} held at "
+              f"{_rw_start:.3f} for {_rw_warmup:,} steps, then "
+              f"ramped to {_rw_end:.3f} over {_rw_anneal_steps:,} "
+              f"steps")
 
     for update in range(start_update, num_updates + 1):
         # LR annealing
@@ -1694,32 +1703,39 @@ def run_ppo_training(config: dict, run_dir: str):
             if update % 100 == 1:
                 writer.add_scalar("curriculum/holding_bonus_weight", cur_hb, global_step)
 
-        # Dark-hole reward curriculum (linear ramp of _rw_dark_hole).
-        if dh_cur_cfg:
-            if global_step < _dh_warmup:
-                cur_dh = _dh_start
+        # Reward-weight curriculum: linear ramp of an arbitrary v5
+        # reward-weight attribute (configured by attr).
+        if rw_cur_cfg:
+            if global_step < _rw_warmup:
+                cur_w = _rw_start
             else:
                 progress = min(
-                    (global_step - _dh_warmup) / _dh_anneal_steps, 1.0)
-                cur_dh = _dh_start + progress * (_dh_end - _dh_start)
+                    (global_step - _rw_warmup) / _rw_anneal_steps, 1.0)
+                cur_w = _rw_start + progress * (_rw_end - _rw_start)
             # Walk through any wrappers (e.g. BilateralDMVectorEnv) to
-            # find the v5 env that actually owns _rw_dark_hole. Setattr
-            # on the wrapper would not propagate, since __getattr__
-            # only intercepts reads.
+            # find the v5 env that actually owns the target attribute.
+            # hasattr() on a wrapper returns True via __getattr__
+            # delegation even when the attribute is owned by the
+            # wrapped env, and a setattr in that case would write to
+            # the wrapper instead of propagating; check the instance
+            # __dict__ explicitly to identify the true owner.
             base_env = envs
-            while hasattr(base_env, "_env") and not hasattr(
-                    type(base_env), "_rw_dark_hole"):
+            while hasattr(base_env, "_env") and _rw_attr not in vars(
+                    base_env):
                 base_env = base_env._env
-            if hasattr(base_env, "_rw_dark_hole"):
-                base_env._rw_dark_hole = cur_dh
+            if _rw_attr in vars(base_env):
+                setattr(base_env, _rw_attr, cur_w)
             elif hasattr(envs, "envs"):
                 for env_wrapper in envs.envs:
                     sub = env_wrapper.unwrapped
-                    if hasattr(sub, "_rw_dark_hole"):
-                        sub._rw_dark_hole = cur_dh
+                    if _rw_attr in vars(sub):
+                        setattr(sub, _rw_attr, cur_w)
             if update % 100 == 1:
+                # Tag stays generic; the attr name is included so the
+                # dashboard makes clear which weight is being driven.
                 writer.add_scalar(
-                    "curriculum/dark_hole_weight", cur_dh, global_step)
+                    f"curriculum/{_rw_attr.lstrip('_')}",
+                    cur_w, global_step)
 
         # ==============================================================
         # ROLLOUT PHASE

@@ -529,6 +529,8 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         self._rw_dark_hole = cfg.get("reward_weight_dark_hole", 0.0)
         self._rw_log_mean_dark_hole = cfg.get(
             "reward_weight_log_mean_dark_hole", 0.0)
+        self._rw_log_contrast = cfg.get(
+            "reward_weight_log_contrast", 0.0)
         self._rw_strehl = cfg.get("reward_weight_strehl", 0.0)
         self._rw_centering = cfg.get("reward_weight_centering", 0.0)
         self._rw_flux = cfg.get("reward_weight_flux", 0.0)
@@ -1233,6 +1235,40 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             if self._rw_log_mean_dark_hole > 0:
                 total += self._rw_log_mean_dark_hole * lm_val
 
+        # --- log contrast (raw PSF, hole-vs-out-of-hole ratio) ---
+        # value = log10(max(I[~hole])) - log10(mean(I[hole]))
+        # Higher = deeper hole relative to the brightest off-target
+        # pixel, which is the conventional HCI contrast quantity.
+        # Built on the raw pre-detector PSF so the dynamic range
+        # extends over many decades and the gradient is uniform
+        # across operating regimes (init, partial dig, deep dig);
+        # detector quantisation does not interfere. The mean is
+        # floored at max(I[~hole]) * 1e-12 so the value caps at 12
+        # decades, preventing a degenerate "no flux at all in the
+        # hole" regime from giving infinite reward.
+        lc_val = None
+        if self._rw_log_contrast > 0 or vec:
+            raw_psf_t = getattr(self, "_last_raw_psf_t", None)
+            if raw_psf_t is None or self._hole_mask_t is None:
+                lc_val = torch.zeros(N, dtype=torch.float32, device=self.dev)
+            else:
+                hole = self._hole_mask_t                          # [N, H, W]
+                neg_inf = torch.full_like(raw_psf_t, float("-inf"))
+                zero = torch.zeros_like(raw_psf_t)
+                # max outside the target hole
+                max_out = torch.where(~hole, raw_psf_t, neg_inf).amax(
+                    dim=(1, 2)).clamp(min=1e-30)                  # [N]
+                # mean inside the target hole, floored against
+                # max_out * 1e-12 so the value does not blow up.
+                n_hole = hole.sum(dim=(1, 2)).clamp(min=1).to(raw_psf_t.dtype)
+                mean_in = torch.where(hole, raw_psf_t, zero).sum(
+                    dim=(1, 2)) / n_hole                          # [N]
+                mean_in_floor = (max_out * 1e-12)
+                mean_in = torch.maximum(mean_in, mean_in_floor)
+                lc_val = torch.log10(max_out) - torch.log10(mean_in)
+            if self._rw_log_contrast > 0:
+                total += self._rw_log_contrast * lc_val
+
         # --- centering ---
         cen_component = None
         if self._rw_centering > 0 or vec:
@@ -1373,6 +1409,8 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
                 self._reward_components_t["piston_shape_alignment"] = psa_component
             if prr_component is not None:
                 self._reward_components_t["psf_rms_radius"] = prr_component
+            if lc_val is not None:
+                self._reward_components_t["log_contrast"] = lc_val
 
         # Store raw reward before bonuses/penalties
         self._raw_reward = total.clone()
