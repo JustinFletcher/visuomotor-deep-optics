@@ -1483,9 +1483,13 @@ def run_ppo_training(config: dict, run_dir: str):
     reward_scale = config.get("reward_scale", 1.0)
     save_interval = config.get("model_save_interval", 0)
     max_keep_checkpoints = config.get("max_keep_checkpoints", 10)
-    # Per-step TB scalar downsample interval (1 = log every env step).
-    # Set higher to shrink TB event files on long HPC runs.
-    tb_step_log_interval = max(1, int(config.get("tb_step_log_interval", 1)))
+    # tb_step_log_interval is retained for backward compatibility but
+    # no longer actively used: per-step diagnostic scalars are now
+    # emitted as rollout-wide means (one value per rollout) instead of
+    # single-step snapshots, which removes the alias-to-transient
+    # artifact that previously made train/step_strehl trend to zero
+    # while episode-level metrics improved.
+    _ = config.get("tb_step_log_interval", 1)  # noqa: F841
 
     run_name = f"ppo_optomech_{seed}_{int(time.time())}"
     this_run_dir = os.path.join(run_dir, run_name)
@@ -1678,6 +1682,27 @@ def run_ppo_training(config: dict, run_dir: str):
         agent.eval()
         update_start_time = time.time()
         rollout_start_time = time.time()
+
+        # Per-step diagnostics accumulator. Previously we sampled these
+        # at one step per rollout (tb_step_log_interval), which on HPC
+        # config landed exactly at rollout step 0 -- always at or near
+        # an episode boundary, where the policy's transient overshoot
+        # is at its worst. The resulting "step_*" scalars trended toward
+        # worst case even when full-episode metrics were improving.
+        # Accumulate here and log rollout-wide means below.
+        rollout_reward_sum = 0.0
+        rollout_reward_raw_sum = 0.0
+        rollout_strehl_sum = 0.0
+        rollout_strehl_imp_sum = 0.0
+        rollout_oob_frac_sum = 0.0
+        rollout_contrast_sum = 0.0
+        rollout_hole_flux_sum = 0.0
+        rollout_n_strehl = 0
+        rollout_n_contrast = 0
+        rollout_n_hole_flux = 0
+        rollout_step_sps_sum = 0.0
+        rollout_n_sps = 0
+
         for step in range(num_steps):
             step_start_time = time.time()
             global_step += num_envs
@@ -1781,52 +1806,31 @@ def run_ppo_training(config: dict, run_dir: str):
             else:
                 step_strehl = None
 
-            # Per-step diagnostic scalars — downsampled by tb_step_log_interval
-            # to keep TB event files manageable on long HPC runs. With 128
-            # num_steps and interval=32, we emit 4 step-logs per rollout.
-            if step % tb_step_log_interval == 0:
-                step_dt = time.time() - step_start_time
-                step_sps = num_envs / step_dt if step_dt > 0 else 0
-                writer.add_scalar("performance/step_SPS", step_sps, global_step)
+            # Per-step diagnostic accumulation. Aggregate every step
+            # of the rollout (across all envs) and emit a single
+            # rollout-mean scalar after the inner loop. tb_step_log_interval
+            # is retained only for the SPS measurement, since that
+            # genuinely is a per-step quantity.
+            step_dt = time.time() - step_start_time
+            if step_dt > 0:
+                rollout_step_sps_sum += num_envs / step_dt
+                rollout_n_sps += 1
 
-                if step_strehl is not None:
-                    # Improvement = current / start (ε-guarded).
-                    denom = np.maximum(np.abs(episode_start_strehl), 1e-6)
-                    step_strehl_improvement = step_strehl / denom
-
-                    writer.add_scalar(
-                        "train/step_strehl",
-                        float(np.mean(step_strehl)), global_step,
-                    )
-                    writer.add_scalar(
-                        "train/step_strehl_improvement",
-                        float(np.mean(step_strehl_improvement)), global_step,
-                    )
-                    writer.add_scalar(
-                        "train/step_oob_frac",
-                        float(np.mean(infos["oob_frac"])), global_step,
-                    )
-                    writer.add_scalar(
-                        "train/step_reward",
-                        float(np.mean(rewards_np)), global_step,
-                    )
-                    writer.add_scalar(
-                        "train/step_reward_raw",
-                        float(np.mean(infos["reward_raw"])), global_step,
-                    )
-
-                # Dark-hole diagnostics (present whenever a hole is
-                # configured; absent otherwise).
-                if "contrast" in infos:
-                    writer.add_scalar(
-                        "train/step_contrast",
-                        float(np.mean(infos["contrast"])), global_step,
-                    )
-                if "hole_flux_frac" in infos:
-                    writer.add_scalar(
-                        "train/step_hole_flux_frac",
-                        float(np.mean(infos["hole_flux_frac"])), global_step,
-                    )
+            if step_strehl is not None:
+                denom = np.maximum(np.abs(episode_start_strehl), 1e-6)
+                step_strehl_improvement = step_strehl / denom
+                rollout_strehl_sum += float(np.mean(step_strehl))
+                rollout_strehl_imp_sum += float(np.mean(step_strehl_improvement))
+                rollout_oob_frac_sum += float(np.mean(infos["oob_frac"]))
+                rollout_reward_sum += float(np.mean(rewards_np))
+                rollout_reward_raw_sum += float(np.mean(infos["reward_raw"]))
+                rollout_n_strehl += 1
+            if "contrast" in infos:
+                rollout_contrast_sum += float(np.mean(infos["contrast"]))
+                rollout_n_contrast += 1
+            if "hole_flux_frac" in infos:
+                rollout_hole_flux_sum += float(np.mean(infos["hole_flux_frac"]))
+                rollout_n_hole_flux += 1
 
             # Envs that finished this step need a fresh start_strehl
             # captured on the next step (must run every step — does not
@@ -1837,6 +1841,41 @@ def run_ppo_training(config: dict, run_dir: str):
         rollout_end_time = time.time()
         rollout_dt = rollout_end_time - rollout_start_time
         rollout_sps = (num_steps * num_envs) / rollout_dt if rollout_dt > 0 else 0
+
+        # Emit rollout-wide mean diagnostics. Same TB tag names as before
+        # so existing dashboards keep working, but the values now reflect
+        # the average over every step of every env in the rollout instead
+        # of a single-step snapshot at one position in the rollout
+        # (which previously aliased to the post-reset transient on HPC).
+        if rollout_n_sps > 0:
+            writer.add_scalar(
+                "performance/step_SPS",
+                rollout_step_sps_sum / rollout_n_sps, global_step)
+        if rollout_n_strehl > 0:
+            inv = 1.0 / rollout_n_strehl
+            writer.add_scalar(
+                "train/step_strehl",
+                rollout_strehl_sum * inv, global_step)
+            writer.add_scalar(
+                "train/step_strehl_improvement",
+                rollout_strehl_imp_sum * inv, global_step)
+            writer.add_scalar(
+                "train/step_oob_frac",
+                rollout_oob_frac_sum * inv, global_step)
+            writer.add_scalar(
+                "train/step_reward",
+                rollout_reward_sum * inv, global_step)
+            writer.add_scalar(
+                "train/step_reward_raw",
+                rollout_reward_raw_sum * inv, global_step)
+        if rollout_n_contrast > 0:
+            writer.add_scalar(
+                "train/step_contrast",
+                rollout_contrast_sum / rollout_n_contrast, global_step)
+        if rollout_n_hole_flux > 0:
+            writer.add_scalar(
+                "train/step_hole_flux_frac",
+                rollout_hole_flux_sum / rollout_n_hole_flux, global_step)
 
         # ==============================================================
         # COMPUTE GAE
