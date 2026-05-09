@@ -17,6 +17,7 @@ from train.ppo.train_ppo_elf_dm_strehl_only import ENV_KWARGS, LOCAL_CONFIG
 from optomech.optomech.optomech_v5 import BatchedOptomechEnv
 from train.ppo.bilateral_dm import BilateralDMVectorEnv
 from train.ppo.ppo_models import RecurrentActorCritic, PPOActorWrapper
+from train.ppo.train_ppo_optomech import normalize_obs_fixed
 
 run_dir = sys.argv[1] if len(sys.argv) > 1 else "."
 ckpt_path = sorted(glob(os.path.join(
@@ -66,7 +67,16 @@ print(f"sigma stats:   mean={ls.exp().mean():.4f}  min={ls.exp().min():.4f}  "
       f"max={ls.exp().max():.4f}")
 
 # 2. Run one episode with deterministic mean, capture per-step mean L1 + Strehl.
+# CRITICAL: training and eval normalise obs by _reference_fpi_max before
+# feeding the policy (see train_ppo_optomech.py:442). Without this, the
+# policy receives raw DN values ~1000x larger than the training
+# distribution -- massively out-of-distribution input -> garbage action
+# -> meaningless diagnostic. Apply the same normalisation here.
+obs_ref_max = float(getattr(base, "_reference_fpi_max", 1.0))
+print(f"obs_ref_max = {obs_ref_max:.3f}")
+
 obs, info = env.reset(seed=0)
+obs = normalize_obs_fixed(obs, obs_ref_max)
 h = torch.zeros(agent.lstm_num_layers, 4, agent.lstm_hidden_dim)
 c = torch.zeros(agent.lstm_num_layers, 4, agent.lstm_hidden_dim)
 prior_action = torch.zeros(4, agent.action_dim)
@@ -80,6 +90,7 @@ for step in range(8):
         action_t, (h, c) = wrapper(obs_t, prior_action, prior_reward, (h, c))
     a_np = action_t.cpu().numpy()
     obs, rew, term, trunc, info = env.step(a_np)
+    obs = normalize_obs_fixed(obs, obs_ref_max)
     print(f"{step:>4d} "
           f"{float(np.abs(a_np).mean()):>14.5f} "
           f"{float(np.abs(a_np).max()):>14.5f} "
