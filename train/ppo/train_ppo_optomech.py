@@ -1627,6 +1627,24 @@ def run_ppo_training(config: dict, run_dir: str):
               f"{_hb_warmup:,} steps, then ramp to {_hb_end:.2f} "
               f"over {_hb_anneal_steps:,} steps")
 
+    # --- Dark-hole reward curriculum ---
+    # Linear ramp of reward_weight_dark_hole between two values across
+    # a window of training steps. Used to introduce the dark-hole signal
+    # gradually after the policy has first learned wavefront control
+    # under a Strehl-only reward. Acts on the underlying v5 env's
+    # ``_rw_dark_hole`` attribute (the live weight read each reward
+    # call). When the env is wrapped (e.g. BilateralDMVectorEnv) we
+    # walk through ``_env`` to reach the v5 env that owns the attribute.
+    dh_cur_cfg = config.get("dark_hole_curriculum")
+    if dh_cur_cfg:
+        _dh_start = float(dh_cur_cfg.get("start_value", 0.0))
+        _dh_end = float(dh_cur_cfg.get("end_value", 1.0))
+        _dh_warmup = int(dh_cur_cfg.get("warmup_timesteps", 0))
+        _dh_anneal_steps = int(dh_cur_cfg["anneal_timesteps"])
+        print(f"  Dark-hole curriculum: hold at {_dh_start:.2f} for "
+              f"{_dh_warmup:,} steps, then ramp to {_dh_end:.2f} "
+              f"over {_dh_anneal_steps:,} steps")
+
     for update in range(start_update, num_updates + 1):
         # LR annealing
         if config["anneal_lr"]:
@@ -1675,6 +1693,33 @@ def run_ppo_training(config: dict, run_dir: str):
                     base_env._holding_bonus_weight = cur_hb
             if update % 100 == 1:
                 writer.add_scalar("curriculum/holding_bonus_weight", cur_hb, global_step)
+
+        # Dark-hole reward curriculum (linear ramp of _rw_dark_hole).
+        if dh_cur_cfg:
+            if global_step < _dh_warmup:
+                cur_dh = _dh_start
+            else:
+                progress = min(
+                    (global_step - _dh_warmup) / _dh_anneal_steps, 1.0)
+                cur_dh = _dh_start + progress * (_dh_end - _dh_start)
+            # Walk through any wrappers (e.g. BilateralDMVectorEnv) to
+            # find the v5 env that actually owns _rw_dark_hole. Setattr
+            # on the wrapper would not propagate, since __getattr__
+            # only intercepts reads.
+            base_env = envs
+            while hasattr(base_env, "_env") and not hasattr(
+                    type(base_env), "_rw_dark_hole"):
+                base_env = base_env._env
+            if hasattr(base_env, "_rw_dark_hole"):
+                base_env._rw_dark_hole = cur_dh
+            elif hasattr(envs, "envs"):
+                for env_wrapper in envs.envs:
+                    sub = env_wrapper.unwrapped
+                    if hasattr(sub, "_rw_dark_hole"):
+                        sub._rw_dark_hole = cur_dh
+            if update % 100 == 1:
+                writer.add_scalar(
+                    "curriculum/dark_hole_weight", cur_dh, global_step)
 
         # ==============================================================
         # ROLLOUT PHASE
