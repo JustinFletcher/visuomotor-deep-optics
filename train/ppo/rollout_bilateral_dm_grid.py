@@ -479,6 +479,12 @@ def main():
     parser.add_argument("--frame-duration", type=float, default=0.10)
     parser.add_argument("--dpi", type=int, default=110)
     parser.add_argument("--prefer-latest", action="store_true")
+    parser.add_argument(
+        "--checkpoint", type=str, default=None,
+        help="Explicit checkpoint path. When set, --sweep-dir / "
+             "--target-id selection and --prefer-latest are ignored; "
+             "the rollout uses this exact file. Useful for rolling a "
+             "specific update_NNN.pt step.")
     args = parser.parse_args()
 
     targets = build_grid()
@@ -492,14 +498,29 @@ def main():
     else:
         target_indices = list(inner_ids)
 
-    sweep_dir = args.sweep_dir or _latest_sweep_dir()
-    if sweep_dir is None or not os.path.isdir(sweep_dir):
-        print(f"Error: sweep dir not found "
-              f"(--sweep-dir or newest {_SWEEP_PREFIX}* under "
-              f"{_DEFAULT_SWEEP_ROOT}/)")
-        sys.exit(1)
-    if args.sweep_dir is None:
-        print(f"--sweep-dir not given; using newest: {sweep_dir}")
+    # Explicit-checkpoint path: bypass sweep-dir / per-target search
+    # and roll exactly one checkpoint (still routed through whichever
+    # target_id was selected on the CLI for target geometry).
+    if args.checkpoint:
+        if not os.path.isfile(args.checkpoint):
+            print(f"Error: --checkpoint {args.checkpoint!r} not found")
+            sys.exit(1)
+        if args.target_id is None:
+            print("Error: --checkpoint requires --target-id so the env "
+                  "can be built with the correct dark-hole geometry.")
+            sys.exit(1)
+        sweep_dir = args.sweep_dir or os.path.dirname(
+            os.path.dirname(os.path.dirname(
+                os.path.abspath(args.checkpoint))))
+    else:
+        sweep_dir = args.sweep_dir or _latest_sweep_dir()
+        if sweep_dir is None or not os.path.isdir(sweep_dir):
+            print(f"Error: sweep dir not found "
+                  f"(--sweep-dir or newest {_SWEEP_PREFIX}* under "
+                  f"{_DEFAULT_SWEEP_ROOT}/)")
+            sys.exit(1)
+        if args.sweep_dir is None:
+            print(f"--sweep-dir not given; using newest: {sweep_dir}")
 
     output_dir = args.output_dir or os.path.join(
         "test_output", f"{os.path.basename(sweep_dir.rstrip('/'))}_grid")
@@ -508,17 +529,22 @@ def main():
     print(f"Sweep dir:  {sweep_dir}")
     print(f"Output dir: {output_dir}")
     print(f"Targets:    {target_indices}")
+    if args.checkpoint:
+        print(f"Checkpoint: {args.checkpoint} (explicit)")
     print()
 
     summary = []
     for i in target_indices:
         target = targets[i]
-        try:
-            ckpt_path = _resolve_checkpoint(
-                sweep_dir, i, prefer_latest=args.prefer_latest)
-        except FileNotFoundError as e:
-            print(f"  target {i:>2}: SKIP -- {e}")
-            continue
+        if args.checkpoint:
+            ckpt_path = args.checkpoint
+        else:
+            try:
+                ckpt_path = _resolve_checkpoint(
+                    sweep_dir, i, prefer_latest=args.prefer_latest)
+            except FileNotFoundError as e:
+                print(f"  target {i:>2}: SKIP -- {e}")
+                continue
 
         env, base = _build_env(target, args.max_steps, args.device)
         agent, config = _load_agent(ckpt_path, env, args.device)
