@@ -531,6 +531,8 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             "reward_weight_log_mean_dark_hole", 0.0)
         self._rw_log_contrast = cfg.get(
             "reward_weight_log_contrast", 0.0)
+        self._rw_log_contrast_strehl = cfg.get(
+            "reward_weight_log_contrast_strehl", 0.0)
         self._rw_strehl = cfg.get("reward_weight_strehl", 0.0)
         self._rw_centering = cfg.get("reward_weight_centering", 0.0)
         self._rw_flux = cfg.get("reward_weight_flux", 0.0)
@@ -1269,6 +1271,41 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             if self._rw_log_contrast > 0:
                 total += self._rw_log_contrast * lc_val
 
+        # --- log-contrast * Strehl (multiplicatively Strehl-anchored) ---
+        # log_contrast alone is a scale-invariant ratio: a policy can
+        # saturate it (~12 decades) by emptying the focal plane and
+        # leaving any small bright residual, without actually digging
+        # a hole next to a bright peak. Multiplying by Strehl (clamped
+        # to [0, 1]) closes that exploit by construction: degenerate
+        # states have either low log-contrast OR low Strehl, so the
+        # product vanishes. Real digging is the only state with both
+        # factors high.
+        lcs_val = None
+        if self._rw_log_contrast_strehl > 0 or vec:
+            raw_psf_t = getattr(self, "_last_raw_psf_t", None)
+            if raw_psf_t is None or self._hole_mask_t is None:
+                lcs_val = torch.zeros(N, dtype=torch.float32, device=self.dev)
+            else:
+                hole = self._hole_mask_t
+                neg_inf = torch.full_like(raw_psf_t, float("-inf"))
+                zero = torch.zeros_like(raw_psf_t)
+                max_out = torch.where(~hole, raw_psf_t, neg_inf).amax(
+                    dim=(1, 2)).clamp(min=1e-30)
+                n_hole = hole.sum(dim=(1, 2)).clamp(min=1).to(raw_psf_t.dtype)
+                mean_in = torch.where(hole, raw_psf_t, zero).sum(
+                    dim=(1, 2)) / n_hole
+                mean_in = torch.maximum(mean_in, max_out * 1e-12)
+                lc_part = torch.log10(max_out) - torch.log10(mean_in)
+                # Strehl clamped to [0, 1]. Pathological single-pixel
+                # PSFs can drive raw_strehl > 1 via peak/sum > the
+                # diffraction-limited reference, which would let the
+                # product grow unboundedly and re-introduce a darken-
+                # via-concentration exploit.
+                strehl_c = strehl.clamp(min=0.0, max=1.0)
+                lcs_val = lc_part * strehl_c
+            if self._rw_log_contrast_strehl > 0:
+                total += self._rw_log_contrast_strehl * lcs_val
+
         # --- centering ---
         cen_component = None
         if self._rw_centering > 0 or vec:
@@ -1411,6 +1448,8 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
                 self._reward_components_t["psf_rms_radius"] = prr_component
             if lc_val is not None:
                 self._reward_components_t["log_contrast"] = lc_val
+            if lcs_val is not None:
+                self._reward_components_t["log_contrast_strehl"] = lcs_val
 
         # Store raw reward before bonuses/penalties
         self._raw_reward = total.clone()

@@ -1,42 +1,59 @@
-"""PPO training: dark-hole shaping with a Strehl + log-contrast
+"""PPO training: dark-hole shaping with a Strehl + log-contrast-Strehl
 curriculum.
 
-Builds on ``train_ppo_elf_dm_strehl_only.py`` (which established that
-the bilateral-DM policy can do closed-loop wavefront control under a
-centred-Strehl reward) by introducing a log-contrast reward gradually
-once the wavefront-control prior has been learned. The choice of
-log-contrast (instead of the linear in-hole intensity) makes the
-gradient signal scale-invariant across operating regimes and
-multiplicatively couples digging to peak preservation: scrambling
-cannot improve log-contrast, so the "darken everything" attractor
-that defeated the linear dark-hole reward is no longer in the
-optimization landscape.
+Builds on ``train_ppo_elf_dm_strehl_only.py`` by introducing a
+dark-hole-shaping signal gradually once the wavefront-control prior
+has been learned. The reward chosen is
 
-The reward is
+    lcs = (log10(max(I[~hole])) - log10(mean(I[hole]))) * S_clamped
 
-    log_contrast = log10(max(I[~hole])) - log10(mean(I[hole]))
+with I taken from the raw pre-detector PSF and S clamped to [0, 1].
+The multiplicative coupling to Strehl is essential: log-contrast
+alone is a scale-invariant ratio and the policy can saturate it
+(~12 decades) by emptying the frame and leaving any small bright
+residual, without actually digging next to a bright peak. Multiplying
+by S closes the exploit by construction -- degenerate states have
+either low log-contrast OR low Strehl, so the product vanishes.
+This is what the bare log_contrast reward (used in the first
+revision of this script) was missing; the policy converged to a
+"darken everything" attractor exactly because the bare-log-contrast
+formulation rewards flux removal.
 
-with I taken from the raw pre-detector PSF (full intensity precision
-across many decades). At baseline (Strehl ~ 0.93, no dig) the value
-sits around 1.6 decades for the inner-ring hole geometry. Deep
-digging would push it into the 4-6 decade range. The chosen weight
-of 0.2 brings the curriculum-end log-contrast contribution
-(0.2 * 1.6 = 0.32 baseline / 0.2 * 6 = 1.2 deep) into balance with
-the centered-Strehl term in [-1, 0], so neither term dominates at
-any operating point.
+Operating-range smoke test (35x35 DM, inner-ring hole):
+
+  state                     lc      lcs    cs     S
+  perfect (DM=0)           1.57   1.46  -0.08  0.93
+  mild noise (sigma=0.05)  1.44   0.65  -0.55  0.45
+  moderate noise           1.00   0.05  -0.96  0.04
+  severe scattering        0.79   0.00  -1.00  ~0
+  y-tilt exploit (mild)    1.79   1.54  -0.23  0.86
+  y-tilt exploit (heavy)   3.25   2.70  -0.43  0.83
+
+At end-of-curriculum weight 0.2, baseline reward is
+0.2 * 1.46 + (-0.08) = +0.21, the heaviest y-tilt exploit is
+0.2 * 2.7 + (-0.43) = +0.11, severe scattering is -1.00, and a
+real deep dig (lcs ~ 12) is +2.4. Baseline beats every degenerate
+state; deep dig dominates by 2.2 reward units.
 
 Schedule
 --------
-  * 0          -> warmup_timesteps (default 1M)
-        Pure centred-Strehl reward. Same regime as the strehl-only
-        sanity check.
+  * 0          -> warmup_timesteps (default 10M)
+        Pure centred-Strehl reward. The strehl-only sanity check
+        found the wavefront-control prior in ~1M steps, but with
+        the larger HPC training budget we hold longer so the
+        policy stabilises on a low-entropy strehl-only basin
+        before the dark-hole signal is introduced.
 
-  * warmup     -> warmup + anneal (default 10M)
-        Linear ramp of reward_weight_log_contrast from 0 to 0.2.
-        centred-Strehl weight stays at 1.0 throughout.
+  * warmup     -> warmup + anneal (default 100M)
+        Linear ramp of reward_weight_log_contrast_strehl from 0 to
+        0.2. centred-Strehl weight stays at 1.0 throughout. The
+        100M-step ramp is 10x slower than the previous attempt that
+        produced a catastrophic KL explosion at the ramp midpoint;
+        slower ramping gives the value function time to track the
+        moving target.
 
   * warmup + anneal onward
-        Final mix is centred-Strehl 1.0 + log_contrast 0.2.
+        Final mix is centred-Strehl 1.0 + log_contrast_strehl 0.2.
 
 Env / wrapper layout matches the bilateral-DM-fixed track: absolute
 DM control, fixed_vertical bilateral mode, segments frozen at zero,
@@ -70,11 +87,12 @@ ENV_KWARGS["dark_hole_location_radius_fraction"] = 0.16
 ENV_KWARGS["dark_hole_size_radius"] = 0.095
 
 # Reward composition. centered_strehl stays at 1.0 throughout; the
-# log-contrast weight starts at 0 and is ramped to 0.2 by the
-# curriculum. End-state weighted log-contrast is 0.2 * (1.6 .. 6+) =
-# (0.32 .. 1.2+), comparable in magnitude to centered_strehl in
-# [-1, 0], so neither term dominates the joint objective.
+# log-contrast-Strehl weight starts at 0 and is ramped to 0.2 by the
+# curriculum. End-state weighted lcs at baseline is 0.2 * 1.46 = 0.29,
+# at deep dig 0.2 * 12 = 2.4, at any degenerate (low-Strehl) state
+# ~0. centered_strehl in [-1, 0] then provides the collapse penalty.
 ENV_KWARGS["reward_weight_centered_strehl"] = 1.0
+ENV_KWARGS["reward_weight_log_contrast_strehl"] = 0.0
 ENV_KWARGS["reward_weight_log_contrast"] = 0.0
 ENV_KWARGS["reward_weight_dark_hole"] = 0.0
 ENV_KWARGS["reward_weight_log_mean_dark_hole"] = 0.0
@@ -85,17 +103,17 @@ ENV_KWARGS["holding_bonus_weight"] = 0.0
 # ----------------------------------------------------------------------
 # Curriculum
 # ----------------------------------------------------------------------
-# Strehl-only sanity check showed the policy learns wavefront control
-# in roughly 1M env steps. Hold log-contrast weight at zero for that
-# window, then ramp linearly over 10M steps to a final value of 0.2,
-# chosen so the weighted contribution is comparable to centered-Strehl
-# in [-1, 0] across the entire operating regime (baseline through
-# deep dig). Past the ramp the policy trains on the joint reward
-# for the rest of the budget.
+# Hold log-contrast-Strehl weight at zero for 10M env steps (10x the
+# strehl-only-prior learning time, so the policy stabilises on a low-
+# entropy strehl-only basin before the dark-hole signal arrives),
+# then ramp linearly over 100M steps to a final value of 0.2. The
+# 100M-step ramp is 10x slower than the previous attempt that produced
+# a catastrophic KL explosion at the ramp midpoint -- slower ramping
+# gives the value function time to track the moving target.
 LOG_CONTRAST_CURRICULUM = {
-    "attr": "_rw_log_contrast",
-    "warmup_timesteps": 1_000_000,
-    "anneal_timesteps": 10_000_000,
+    "attr": "_rw_log_contrast_strehl",
+    "warmup_timesteps": 10_000_000,
+    "anneal_timesteps": 100_000_000,
     "start_value": 0.0,
     "end_value": 0.2,
 }
