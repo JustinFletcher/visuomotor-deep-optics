@@ -1229,27 +1229,29 @@ def evaluate_random_policy(config: dict, num_episodes: int = 5) -> float:
 
 
 class CheckpointManager:
-    """Manages checkpoint lifecycle: latest, best, and evenly-spaced history.
+    """Manages checkpoint lifecycle: latest, best, and history-by-step.
 
-    Keeps at most three categories of checkpoints on disk:
+    Keeps three categories of checkpoints on disk:
       - ``latest.pt``   — overwritten every save
       - ``best.pt``     — overwritten when a new best metric is achieved
-      - ``history_update_N.pt`` — up to *max_keep* checkpoints spaced
-        approximately evenly across training
-
-    The history spacing works by dividing the total number of updates into
-    *max_keep* equal slots.  A new history checkpoint is saved whenever the
-    current update crosses into a new slot.  Old checkpoints that fall in the
-    same slot are deleted, so the on-disk count never exceeds *max_keep*.
+      - ``history_step_N.pt`` — saved when ``global_step`` crosses a
+        new boundary at the ``save_step_interval`` cadence (default
+        every 10,000,000 env steps). When the on-disk count exceeds
+        ``max_keep``, the oldest history file is evicted so the total
+        never grows unbounded.
     """
 
-    def __init__(self, ckpt_dir: str, num_updates: int, max_keep: int = 10):
+    def __init__(self, ckpt_dir: str, max_keep: int = 10,
+                 save_step_interval: int = 10_000_000):
         self.ckpt_dir = ckpt_dir
-        self.num_updates = max(num_updates, 1)
         self.max_keep = max(max_keep, 1)
-        self.slot_size = self.num_updates / self.max_keep
-        # slot_index → path on disk
-        self._history: dict[int, str] = {}
+        self.save_step_interval = max(int(save_step_interval), 1)
+        # Track the highest step boundary we've already saved at so we
+        # only emit one history file per interval crossing.
+        self._last_saved_bucket: int = -1
+        # Ordered list of (global_step, path) for FIFO eviction when
+        # exceeding max_keep.
+        self._history: list[tuple[int, str]] = []
         self.best_metric = -np.inf
 
     def _make_ckpt_dict(self, agent, optimizer, global_step, update,
@@ -1289,17 +1291,27 @@ class CheckpointManager:
 
     def save_history(self, agent, optimizer, global_step, update,
                      best_eval_return, config):
-        """Save a history checkpoint if *update* falls in a new slot."""
-        slot = min(int(update / self.slot_size), self.max_keep - 1)
-        if slot in self._history:
-            return  # already have a checkpoint in this slot
-        # Save new history checkpoint
-        fname = f"history_update_{update}.pt"
+        """Save a history checkpoint when *global_step* crosses a new
+        boundary of ``save_step_interval``. Files are named by global
+        step. When the on-disk history count exceeds ``max_keep``, the
+        oldest file is evicted FIFO.
+        """
+        bucket = int(global_step) // self.save_step_interval
+        if bucket <= self._last_saved_bucket:
+            return
+        self._last_saved_bucket = bucket
+        fname = f"history_step_{int(global_step)}.pt"
         path = os.path.join(self.ckpt_dir, fname)
         torch.save(self._make_ckpt_dict(
             agent, optimizer, global_step, update, best_eval_return, config
         ), path)
-        self._history[slot] = path
+        self._history.append((int(global_step), path))
+        while len(self._history) > self.max_keep:
+            _, old_path = self._history.pop(0)
+            try:
+                os.remove(old_path)
+            except OSError:
+                pass
 
     def save(self, agent, optimizer, global_step, update,
              best_eval_return, config, metric=None):
@@ -1483,6 +1495,12 @@ def run_ppo_training(config: dict, run_dir: str):
     reward_scale = config.get("reward_scale", 1.0)
     save_interval = config.get("model_save_interval", 0)
     max_keep_checkpoints = config.get("max_keep_checkpoints", 10)
+    # History checkpoints are saved by env-step boundary, not update
+    # count. With default 10M steps and total_timesteps ~ 1B, that
+    # yields ~100 history snapshots over a run, evicted FIFO once the
+    # count exceeds max_keep_checkpoints.
+    save_step_interval = int(
+        config.get("model_save_step_interval", 10_000_000))
     # tb_step_log_interval is retained for backward compatibility but
     # no longer actively used: per-step diagnostic scalars are now
     # emitted as rollout-wide means (one value per rollout) instead of
@@ -1502,7 +1520,9 @@ def run_ppo_training(config: dict, run_dir: str):
     ckpt_dir = os.path.join(this_run_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    ckpt_mgr = CheckpointManager(ckpt_dir, num_updates, max_keep=max_keep_checkpoints)
+    ckpt_mgr = CheckpointManager(
+        ckpt_dir, max_keep=max_keep_checkpoints,
+        save_step_interval=save_step_interval)
 
     print(f"\n{'='*60}")
     print(f"PPO Optomech Training")
@@ -1515,8 +1535,11 @@ def run_ppo_training(config: dict, run_dir: str):
     print(f"  Batch size:       {batch_size} ({num_envs} envs x {num_steps} steps)")
     print(f"  Minibatch size:   {minibatch_size}")
     print(f"  Reward scale:     {reward_scale}")
-    print(f"  Checkpoints:      latest + best + {max_keep_checkpoints} history")
-    print(f"  Save interval:    {save_interval} updates" if save_interval > 0 else "  Save interval:    disabled")
+    print(f"  Checkpoints:      latest + best + up to "
+          f"{max_keep_checkpoints} history_step_*.pt (one per "
+          f"{save_step_interval:,}-step boundary)")
+    print(f"  Save interval:    {save_interval} updates (polling cadence)"
+          if save_interval > 0 else "  Save interval:    disabled")
     print(f"  Parameters:       {sum(p.numel() for p in agent.parameters()):,}")
     print(f"  Run directory:    {this_run_dir}")
     print(f"  TensorBoard:      {log_dir}")

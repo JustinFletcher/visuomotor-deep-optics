@@ -95,30 +95,43 @@ def _resolve_checkpoint(sweep_dir: str, target_idx: int,
     target_dir = os.path.join(sweep_dir, f"target_{target_idx:02d}")
     if not os.path.isdir(target_dir):
         raise FileNotFoundError(f"target dir missing: {target_dir}")
+    # History filename patterns. New runs write history_step_*.pt
+    # (step-based naming, every N env steps). Legacy runs wrote
+    # history_update_*.pt (slot-based on update count). Either matches.
+    history_glob_step = os.path.join(
+        target_dir, "ppo_optomech_*", "checkpoints", "history_step_*.pt")
+    history_glob_update = os.path.join(
+        target_dir, "ppo_optomech_*", "checkpoints", "*update_*.pt")
+
+    def _newest_history():
+        cands = (
+            sorted(glob(history_glob_step), key=os.path.getmtime)
+            + sorted(glob(history_glob_update), key=os.path.getmtime))
+        if cands:
+            cands.sort(key=os.path.getmtime)
+            return cands[-1]
+        return None
+
     if prefer_latest:
         # Prefer an explicit latest.pt (the running pointer the trainer
-        # rewrites every save), fall back to the newest numbered
-        # update_*.pt, then to best.pt.
+        # rewrites every save), fall back to the newest history file,
+        # then to best.pt.
         latest_ptr = sorted(glob(os.path.join(
             target_dir, "ppo_optomech_*", "checkpoints", "latest.pt")),
             key=os.path.getmtime)
         if latest_ptr:
             return latest_ptr[-1]
-        ck = sorted(glob(os.path.join(
-            target_dir, "ppo_optomech_*", "checkpoints", "*update_*.pt")),
-            key=os.path.getmtime)
-        if ck:
-            return ck[-1]
+        nh = _newest_history()
+        if nh:
+            return nh
     best = sorted(glob(os.path.join(
         target_dir, "ppo_optomech_*", "checkpoints", "best.pt")))
     if not best:
-        ck = sorted(glob(os.path.join(
-            target_dir, "ppo_optomech_*", "checkpoints", "*update_*.pt")),
-            key=os.path.getmtime)
-        if not ck:
+        nh = _newest_history()
+        if nh is None:
             raise FileNotFoundError(
                 f"no checkpoints under {target_dir}/ppo_optomech_*/checkpoints/")
-        return ck[-1]
+        return nh
     return sorted(best, key=os.path.getmtime)[-1]
 
 

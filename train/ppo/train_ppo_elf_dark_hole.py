@@ -259,6 +259,12 @@ LOCAL_CONFIG = dict(
     pass_threshold_ratio=1.1,
     seed=1,
     model_save_interval=100,
+    # Checkpoint retention. History snapshots are saved every
+    # model_save_step_interval env steps and named by step. With the
+    # 1B-step default budget and 10M-step interval we'd produce ~100
+    # snapshots; max_keep_checkpoints=100 retains them all.
+    model_save_step_interval=10_000_000,
+    max_keep_checkpoints=100,
     # Downsample per-step diagnostic scalars; with num_steps=128 this
     # emits 4 step-logs per rollout instead of 128.
     tb_step_log_interval=32,
@@ -298,6 +304,8 @@ HPC_CONFIG = dict(
     pass_threshold_ratio=1.1,
     seed=1,
     model_save_interval=100,
+    model_save_step_interval=10_000_000,
+    max_keep_checkpoints=100,
     # Aggressive scalar-downsampling. With num_steps=128 and
     # interval=128 we emit exactly ONE step-log per rollout — the
     # bare minimum for training-curve visibility. DPI can stay at 72
