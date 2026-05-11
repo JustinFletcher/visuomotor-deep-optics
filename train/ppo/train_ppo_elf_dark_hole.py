@@ -306,6 +306,14 @@ HPC_CONFIG = dict(
     model_save_interval=100,
     model_save_step_interval=10_000_000,
     max_keep_checkpoints=100,
+    # Skip the in-training eval rollouts on HPC. They run 3 policies
+    # (zero, random, agent) for num_episodes seeds in a separate
+    # vectorised env construction, write big TB figures, and render
+    # three GIFs per call -- collectively the single largest wall-clock
+    # consumer on long runs. Training-side scalars (mean_recent_return,
+    # step_strehl, step_reward, losses/*) remain available for
+    # progress monitoring. Use --no-eval=false on the CLI to re-enable.
+    no_eval=True,
     # Aggressive scalar-downsampling. With num_steps=128 and
     # interval=128 we emit exactly ONE step-log per rollout — the
     # bare minimum for training-curve visibility. DPI can stay at 72
