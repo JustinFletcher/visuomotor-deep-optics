@@ -250,11 +250,23 @@ def run_episode(agent, env, base, target, seed, device, max_steps):
 
     obs_ref_max = float(getattr(base, "_reference_fpi_max", 1.0))
 
-    obs_blind, _ = env.reset(seed=seed)
+    obs_unmasked, _ = env.reset(seed=seed)
     # Unblinded copy of the initial frame (for the verification panel).
     obs_unblind_t = base._obs_history.detach().cpu().numpy()        # [1, 1, H, W]
 
-    obs_norm = normalize_obs_fixed(obs_blind, obs_ref_max)
+    # CRITICAL: training applies env.mask_obs() between the env's
+    # raw observation and the policy input (the bilateral wrapper's
+    # blind region is zeroed before the obs reaches the encoder).
+    # If we skip that here, the policy sees a different obs
+    # distribution than it was trained on -- non-zero pixels in the
+    # blind region -- and produces wildly off-distribution actions.
+    # Full-DM (unwrapped) envs have no mask_obs and this is a no-op.
+    if hasattr(env, "mask_obs"):
+        obs_for_policy = env.mask_obs(obs_unmasked)
+    else:
+        obs_for_policy = obs_unmasked
+    obs_blind = obs_for_policy  # for filmstrip / capture lists
+    obs_norm = normalize_obs_fixed(obs_for_policy, obs_ref_max)
 
     h = torch.zeros(
         agent.lstm_num_layers, 1, agent.lstm_hidden_dim, device=device)
@@ -292,14 +304,24 @@ def run_episode(agent, env, base, target, seed, device, max_steps):
             action_t, (h, c) = agent.get_deterministic_action(
                 obs_t, prior_action, prior_reward, (h, c), target_vec=tv)
         a_np = action_t.detach().cpu().numpy()                      # [1, n_half]
-        next_obs_blind, reward, term, trunc, info = env.step(a_np)
+        next_obs_unmasked, reward, term, trunc, info = env.step(a_np)
         steps_taken += 1
-        # Capture unblinded view from the env BEFORE the wrapper masks.
+        # Unblinded copy (verification view); same env source either way.
         next_obs_unblind = base._obs_history.detach().cpu().numpy()
         done = bool(term[0] or trunc[0])
         rewards.append(float(reward[0]))
         actions.append(a_np[0].copy())
-        obs_blind_list.append(next_obs_blind.copy())
+        # Apply the blind mask between env emission and policy input,
+        # matching the training-time path (run_ppo_training calls
+        # envs.mask_obs() before normalize_obs_fixed too). Without
+        # this the policy sees a different obs distribution at eval
+        # than it did at training (non-zero pixels in the blind
+        # region) and produces off-distribution actions.
+        if hasattr(env, "mask_obs"):
+            next_obs_for_policy = env.mask_obs(next_obs_unmasked)
+        else:
+            next_obs_for_policy = next_obs_unmasked
+        obs_blind_list.append(next_obs_for_policy.copy())
         obs_unblind_list.append(next_obs_unblind.copy())
         opd_t, psf_t, tct_t, bct_t = _capture_diagnostics(
             base, blind_mask_t)
@@ -312,7 +334,7 @@ def run_episode(agent, env, base, target, seed, device, max_steps):
         prior_action = action_t
         prior_reward = torch.tensor(
             [reward[0]], dtype=torch.float32, device=device)
-        obs_norm = normalize_obs_fixed(next_obs_blind, obs_ref_max)
+        obs_norm = normalize_obs_fixed(next_obs_for_policy, obs_ref_max)
 
     return {
         "rewards": rewards,
