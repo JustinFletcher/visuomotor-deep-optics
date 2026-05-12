@@ -239,9 +239,17 @@ def _capture_diagnostics(base, blind_mask_t):
     return dm_opd, raw_psf, target_ct, blind_ct
 
 
-def run_episode(agent, env, base, target, seed, device, max_steps):
-    """One deterministic rollout, with both blinded and unblinded
-    detector frames captured per step."""
+def run_episode(agent, env, base, target, seed, device, max_steps,
+                stochastic=False):
+    """One rollout. If stochastic=False (default) the policy uses its
+    deterministic mean action; if True it samples from Normal(mean,
+    log_std.exp()), matching the training-time action distribution.
+    """
+    if stochastic:
+        # Seed torch RNG so sampled rollouts are reproducible per
+        # --seed. Without this each invocation produces different
+        # action draws even with the same env reset seed.
+        torch.manual_seed(int(seed))
     angle, r_frac, s_frac = target
     th = np.deg2rad(angle)
     tv_np = np.array(
@@ -301,8 +309,18 @@ def run_episode(agent, env, base, target, seed, device, max_steps):
     while not done and steps_taken < max_steps:
         obs_t = torch.from_numpy(obs_norm).float().to(device)
         with torch.no_grad():
-            action_t, (h, c) = agent.get_deterministic_action(
-                obs_t, prior_action, prior_reward, (h, c), target_vec=tv)
+            if stochastic:
+                # Sample from Normal(mean, std), same path as training.
+                # get_action_and_value returns the raw sample; the
+                # caller is responsible for scale_and_clamp.
+                action_t, _logp, _ent, _v, (h, c) = (
+                    agent.get_action_and_value(
+                        obs_t, prior_action, prior_reward, (h, c),
+                        target_vec=tv))
+                action_t = agent.scale_and_clamp_action(action_t)
+            else:
+                action_t, (h, c) = agent.get_deterministic_action(
+                    obs_t, prior_action, prior_reward, (h, c), target_vec=tv)
         a_np = action_t.detach().cpu().numpy()                      # [1, n_half]
         next_obs_unmasked, reward, term, trunc, info = env.step(a_np)
         steps_taken += 1
@@ -575,6 +593,15 @@ def main():
     parser.add_argument("--dpi", type=int, default=110)
     parser.add_argument("--prefer-latest", action="store_true")
     parser.add_argument(
+        "--stochastic", action="store_true",
+        help="Sample actions from the policy's Normal(mean, std) "
+             "instead of using the deterministic mean. Matches the "
+             "training-time action distribution. Useful for "
+             "disambiguating deterministic-mean failure from "
+             "deeper train-eval mismatches: if stochastic rollout "
+             "achieves training-level Strehl but deterministic does "
+             "not, the policy mean is at a saddle.")
+    parser.add_argument(
         "--checkpoint", type=str, default=None,
         help="Explicit checkpoint path. When set, --sweep-dir / "
              "--target-id selection and --prefer-latest are ignored; "
@@ -681,7 +708,7 @@ def main():
             print(f"  target {i:>2}: WARNING -- target_dim=0 in checkpoint")
         ep = run_episode(
             agent, env, base, target, args.seed, args.device,
-            max_steps=args.max_steps)
+            max_steps=args.max_steps, stochastic=args.stochastic)
         ep["target_id"] = i
 
         gif_path = os.path.join(output_dir, f"target_{i:02d}.gif")
