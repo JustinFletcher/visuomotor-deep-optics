@@ -136,16 +136,27 @@ def _resolve_checkpoint(sweep_dir: str, target_idx: int,
 
 
 def _build_env(target, max_steps, device, bilateral=True,
-               bilateral_mode="fixed_vertical", freeze_segments=True):
+               bilateral_mode="fixed_vertical", freeze_segments=True,
+               base_env_kwargs=None):
     """v5 single-env, optionally wrapped with the bilateral DM wrapper.
 
     bilateral=True matches the bilateral training track (action space
     halved by the symmetric expansion, obs has the blind-region mask).
     bilateral=False matches the full-DM debug track (no wrapper -- the
     policy sees the unmasked obs and outputs the full 1240-dim action).
+
+    base_env_kwargs: the env kwargs to start from. Crucial that this
+    matches what the policy was trained against -- otherwise the env
+    will interpret actions under different rules (e.g., incremental
+    vs absolute DM control, action_scale, init perturbation magnitude)
+    and the policy will produce wildly off-distribution behaviour. The
+    caller should pass the env_kwargs recovered from the checkpoint's
+    stored config, NOT the module-level ENV_KWARGS imported at the
+    top of this file (which references a different training script).
     """
     angle, r_frac, s_frac = target
-    kw = dict(ENV_KWARGS)
+    kw = dict(base_env_kwargs if base_env_kwargs is not None
+              else ENV_KWARGS)
     kw["dark_hole"] = True
     kw["dark_hole_angular_location_degrees"] = float(angle)
     kw["dark_hole_location_radius_fraction"] = float(r_frac)
@@ -161,6 +172,8 @@ def _build_env(target, max_steps, device, bilateral=True,
     kw["max_episode_steps"] = int(max_steps) + 1
     kw["silence"] = True
     kw["observation_window_size"] = 1
+    # Disable reward-vector overhead for rollouts.
+    kw["reward_vector_enabled"] = False
     from optomech.optomech.optomech_v5 import BatchedOptomechEnv
     with contextlib.redirect_stdout(io.StringIO()):
         base = BatchedOptomechEnv(num_envs=1, device=device, **kw)
@@ -608,9 +621,16 @@ def main():
 
         # Peek at the checkpoint's config to decide whether the policy
         # was trained with the bilateral wrapper (action space halved,
-        # obs blind mask) or against the unwrapped full-DM env. Build
-        # the env accordingly so the policy's action and obs shapes
-        # match its training distribution.
+        # obs blind mask) or against the unwrapped full-DM env, AND
+        # to recover the exact env_kwargs the policy was trained
+        # against. Importing the module-level ENV_KWARGS at the top of
+        # this file is a train-eval mismatch trap: the kwargs there
+        # are from a *different* training script and contain different
+        # values for dm_incremental_control, env_action_scale,
+        # init_dm_micron_std, init_dm_symmetric, and reward weights.
+        # Running the policy under those produces wildly off-
+        # distribution behaviour (e.g., Strehl crashes from 0.89
+        # training-time to 0.02 eval-time).
         _ckpt_peek = torch.load(
             ckpt_path, map_location="cpu", weights_only=False)
         _ck_cfg = _ckpt_peek.get("config", {}) if _ckpt_peek else {}
@@ -619,14 +639,20 @@ def main():
             "bilateral_dm_mode", "fixed_vertical"))
         freeze_segments = bool(_ck_cfg.get(
             "bilateral_freeze_segments", True))
+        ckpt_env_kwargs = _ck_cfg.get("env_kwargs", None)
         del _ckpt_peek  # release memory; _load_agent reloads
+        if ckpt_env_kwargs is None:
+            print(f"  target {i:>2}: WARNING -- checkpoint missing "
+                  f"env_kwargs; falling back to module ENV_KWARGS "
+                  f"(likely train/eval mismatch)")
         print(f"  target {i:>2}: mode = "
               f"{'bilateral (' + bilateral_mode + ')' if bilateral else 'full-DM'}")
 
         env, base = _build_env(
             target, args.max_steps, args.device,
             bilateral=bilateral, bilateral_mode=bilateral_mode,
-            freeze_segments=freeze_segments)
+            freeze_segments=freeze_segments,
+            base_env_kwargs=ckpt_env_kwargs)
         agent, config = _load_agent(ckpt_path, env, args.device)
         td = int(config.get("target_dim", 0))
         if td == 0:
