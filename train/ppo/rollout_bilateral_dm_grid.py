@@ -135,8 +135,15 @@ def _resolve_checkpoint(sweep_dir: str, target_idx: int,
     return sorted(best, key=os.path.getmtime)[-1]
 
 
-def _build_env(target, max_steps, device):
-    """v5 single-env + bilateral wrapper, matching training config."""
+def _build_env(target, max_steps, device, bilateral=True,
+               bilateral_mode="fixed_vertical", freeze_segments=True):
+    """v5 single-env, optionally wrapped with the bilateral DM wrapper.
+
+    bilateral=True matches the bilateral training track (action space
+    halved by the symmetric expansion, obs has the blind-region mask).
+    bilateral=False matches the full-DM debug track (no wrapper -- the
+    policy sees the unmasked obs and outputs the full 1240-dim action).
+    """
     angle, r_frac, s_frac = target
     kw = dict(ENV_KWARGS)
     kw["dark_hole"] = True
@@ -157,7 +164,11 @@ def _build_env(target, max_steps, device):
     from optomech.optomech.optomech_v5 import BatchedOptomechEnv
     with contextlib.redirect_stdout(io.StringIO()):
         base = BatchedOptomechEnv(num_envs=1, device=device, **kw)
-        env = BilateralDMVectorEnv(base, freeze_segments=True)
+        if bilateral:
+            env = BilateralDMVectorEnv(
+                base, freeze_segments=freeze_segments, mode=bilateral_mode)
+        else:
+            env = base
     return env, base
 
 
@@ -184,8 +195,11 @@ def _load_agent(ckpt_path, env, device):
 # ---------------------------------------------------------------------------
 
 def _capture_diagnostics(base, blind_mask_t):
-    """Return (DM OPD, raw PSF, target contrast, blind contrast)."""
-    # DM OPD = sum_a (dm_actuators[a] * dm_basis[a, h, w]) (env 0 only).
+    """Return (DM OPD, raw PSF, target contrast, blind contrast).
+
+    blind_mask_t may be None (full-DM, no wrapper); blind contrast is
+    NaN in that case.
+    """
     dm_act = base._dm_actuators_t[0]                              # [A]
     dm_basis_flat = base._dm_basis_t_flat                          # [A, H*W]
     dm_opd = torch.matmul(dm_act, dm_basis_flat).reshape(
@@ -197,13 +211,16 @@ def _capture_diagnostics(base, blind_mask_t):
         return dm_opd, raw_psf, float("nan"), float("nan")
 
     target_mask = base._hole_mask_t[0].detach().cpu().numpy()      # [H, W] bool
-    blind_mask = blind_mask_t[0].detach().cpu().numpy()
     if target_mask.any():
         target_ct = float(np.mean(raw_psf[target_mask]) / psf_max)
     else:
         target_ct = float("nan")
-    if blind_mask.any():
-        blind_ct = float(np.mean(raw_psf[blind_mask]) / psf_max)
+    if blind_mask_t is not None:
+        blind_mask = blind_mask_t[0].detach().cpu().numpy()
+        if blind_mask.any():
+            blind_ct = float(np.mean(raw_psf[blind_mask]) / psf_max)
+        else:
+            blind_ct = float("nan")
     else:
         blind_ct = float("nan")
     return dm_opd, raw_psf, target_ct, blind_ct
@@ -233,7 +250,9 @@ def run_episode(agent, env, base, target, seed, device, max_steps):
     prior_action = torch.zeros(1, agent.action_dim, device=device)
     prior_reward = torch.zeros(1, device=device)
 
-    blind_mask_t = env._blind_mask
+    # Bilateral wrapper exposes _blind_mask; full-DM (unwrapped) env
+    # does not. Diagnostics handle the None case.
+    blind_mask_t = getattr(env, "_blind_mask", None)
     opd0, psf0, tct0, bct0 = _capture_diagnostics(base, blind_mask_t)
 
     rewards = []
@@ -311,7 +330,14 @@ def _prep_obs(o):
 
 
 def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
-    """4-image-panels GIF with target + blind circles and dual contrast traces."""
+    """Animated GIF with target (and optionally blind) overlays and
+    contrast trace(s).
+
+    Detects bilateral vs full-DM mode from the captured episode data:
+    if the blind-contrast trace is all-NaN (full-DM run, no wrapper)
+    the blind circle, the second obs panel, and the magenta trace
+    line are all suppressed.
+    """
     target = ep["target"]
     angle, r_frac, s_frac = target
     target_id = ep.get("target_id", -1)
@@ -322,6 +348,7 @@ def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
     psfs = ep["raw_psf"]
     target_ct = np.array(ep["target_contrast"], dtype=np.float64)
     blind_ct = np.array(ep["blind_contrast"], dtype=np.float64)
+    has_blind = bool(np.isfinite(blind_ct).any())
     rewards = ep["rewards"]
     strehls = ep["strehls"]
     cumulative = np.cumsum(rewards)
@@ -356,7 +383,9 @@ def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
         hi = float(x.max()) * 2.0
         return lo, hi
 
-    ct_lo, ct_hi = _log_bounds(np.concatenate([target_ct, blind_ct]))
+    _ct_for_bounds = (np.concatenate([target_ct, blind_ct])
+                      if has_blind else target_ct)
+    ct_lo, ct_hi = _log_bounds(_ct_for_bounds)
     timesteps = np.arange(T + 1)
 
     frames = []
@@ -391,7 +420,9 @@ def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
             np.maximum(psf, pflo), cmap="inferno",
             norm=mcolors.LogNorm(vmin=pflo, vmax=pmax),
             origin="lower", aspect="equal")
-        _draw_target(ax_psf); _draw_blind(ax_psf)
+        _draw_target(ax_psf)
+        if has_blind:
+            _draw_blind(ax_psf)
         ax_psf.set_xticks([]); ax_psf.set_yticks([])
         ax_psf.set_title("raw PSF (log)", fontsize=10, pad=3)
         cb = fig.colorbar(im_psf, ax=ax_psf, fraction=0.046, pad=0.018)
@@ -405,27 +436,35 @@ def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
             np.maximum(ob, 1.0), cmap="inferno",
             norm=mcolors.LogNorm(vmin=1.0, vmax=omax),
             origin="lower", aspect="equal")
-        _draw_target(ax_b); _draw_blind(ax_b)
+        _draw_target(ax_b)
+        if has_blind:
+            _draw_blind(ax_b)
         ax_b.set_xticks([]); ax_b.set_yticks([])
-        ax_b.set_title("policy obs (blinded, DN log)",
+        ax_b.set_title("policy obs (blinded, DN log)" if has_blind
+                       else "policy obs (DN log)",
                        fontsize=10, pad=3)
         cb = fig.colorbar(im_b, ax=ax_b, fraction=0.046, pad=0.018)
         cb.ax.tick_params(labelsize=7)
 
         # --- unblinded obs (verification view) ---
-        ax_u = fig.add_subplot(gs[0, 6:8])
-        ou = obs_u_imgs[t]
-        umax = max(float(np.max(ou)), 2.0)
-        im_u = ax_u.imshow(
-            np.maximum(ou, 1.0), cmap="inferno",
-            norm=mcolors.LogNorm(vmin=1.0, vmax=umax),
-            origin="lower", aspect="equal")
-        _draw_target(ax_u); _draw_blind(ax_u)
-        ax_u.set_xticks([]); ax_u.set_yticks([])
-        ax_u.set_title("verification view (unblinded)",
-                       fontsize=10, pad=3)
-        cb = fig.colorbar(im_u, ax=ax_u, fraction=0.046, pad=0.018)
-        cb.ax.tick_params(labelsize=7)
+        # Bilateral mode: shows what light leaked into the blind
+        # region during a rollout (the masked-away view). Full-DM
+        # mode: identical to the policy obs above, so the panel
+        # would be redundant; skip it.
+        if has_blind:
+            ax_u = fig.add_subplot(gs[0, 6:8])
+            ou = obs_u_imgs[t]
+            umax = max(float(np.max(ou)), 2.0)
+            im_u = ax_u.imshow(
+                np.maximum(ou, 1.0), cmap="inferno",
+                norm=mcolors.LogNorm(vmin=1.0, vmax=umax),
+                origin="lower", aspect="equal")
+            _draw_target(ax_u); _draw_blind(ax_u)
+            ax_u.set_xticks([]); ax_u.set_yticks([])
+            ax_u.set_title("verification view (unblinded)",
+                           fontsize=10, pad=3)
+            cb = fig.colorbar(im_u, ax=ax_u, fraction=0.046, pad=0.018)
+            cb.ax.tick_params(labelsize=7)
 
         # --- contrast traces (target + blind, log y) ---
         ax_ct = fig.add_subplot(gs[1, 1:7])
@@ -436,10 +475,11 @@ def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
                    color="#cccccc", lw=0.7, alpha=0.4)
         ax_ct.plot(timesteps[:t + 1], target_ct[:t + 1],
                    color="cyan", lw=1.6, label="target")
-        ax_ct.plot(timesteps, blind_ct,
-                   color="#cccccc", lw=0.7, alpha=0.4)
-        ax_ct.plot(timesteps[:t + 1], blind_ct[:t + 1],
-                   color="magenta", lw=1.6, label="blind (verification)")
+        if has_blind:
+            ax_ct.plot(timesteps, blind_ct,
+                       color="#cccccc", lw=0.7, alpha=0.4)
+            ax_ct.plot(timesteps[:t + 1], blind_ct[:t + 1],
+                       color="magenta", lw=1.6, label="blind (verification)")
         if np.isfinite(target_ct[t]):
             ax_ct.plot([t], [target_ct[t]], "o",
                        color="cyan", markersize=5, mec="black", mew=0.4)
@@ -450,21 +490,28 @@ def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
         ax_ct.tick_params(labelsize=8)
         ax_ct.set_xlabel("step", fontsize=9)
         ax_ct.set_title(
-            "Mean contrast in target (cyan) and blind (magenta) regions",
+            "Mean contrast in target (cyan) and blind (magenta) regions"
+            if has_blind else "Mean contrast in target region",
             fontsize=9, pad=2)
         ax_ct.legend(loc="upper right", fontsize=7, frameon=True)
 
         head = (f"target {target_id:02d}  angle={angle:5.1f}°  "
                 f"r={r_frac:.3f}  size={s_frac:.3f}")
+
+        def _sub_metrics(idx):
+            parts = [f"target_C={target_ct[idx]:.2e}"]
+            if has_blind:
+                parts.append(f"blind_C={blind_ct[idx]:.2e}")
+            return "  ".join(parts)
+
         if t == 0:
-            sub = (f"t=0  (initial)  "
-                   f"target_C={target_ct[0]:.2e}  blind_C={blind_ct[0]:.2e}")
+            sub = f"t=0  (initial)  {_sub_metrics(0)}"
         else:
             r = rewards[t - 1]
             cum = cumulative[t - 1]
             s = f"  S={strehls[t-1]:.3f}" if strehls else ""
             sub = (f"t={t:>3d}  r={r:+.3f}  Σ={cum:+.2f}{s}  "
-                   f"target_C={target_ct[t]:.2e}  blind_C={blind_ct[t]:.2e}")
+                   f"{_sub_metrics(t)}")
         fig.suptitle(f"{head}\n{sub}", fontsize=11, y=0.985)
 
         fig.canvas.draw()
@@ -559,7 +606,27 @@ def main():
                 print(f"  target {i:>2}: SKIP -- {e}")
                 continue
 
-        env, base = _build_env(target, args.max_steps, args.device)
+        # Peek at the checkpoint's config to decide whether the policy
+        # was trained with the bilateral wrapper (action space halved,
+        # obs blind mask) or against the unwrapped full-DM env. Build
+        # the env accordingly so the policy's action and obs shapes
+        # match its training distribution.
+        _ckpt_peek = torch.load(
+            ckpt_path, map_location="cpu", weights_only=False)
+        _ck_cfg = _ckpt_peek.get("config", {}) if _ckpt_peek else {}
+        bilateral = bool(_ck_cfg.get("bilateral_dm", True))
+        bilateral_mode = str(_ck_cfg.get(
+            "bilateral_dm_mode", "fixed_vertical"))
+        freeze_segments = bool(_ck_cfg.get(
+            "bilateral_freeze_segments", True))
+        del _ckpt_peek  # release memory; _load_agent reloads
+        print(f"  target {i:>2}: mode = "
+              f"{'bilateral (' + bilateral_mode + ')' if bilateral else 'full-DM'}")
+
+        env, base = _build_env(
+            target, args.max_steps, args.device,
+            bilateral=bilateral, bilateral_mode=bilateral_mode,
+            freeze_segments=freeze_segments)
         agent, config = _load_agent(ckpt_path, env, args.device)
         td = int(config.get("target_dim", 0))
         if td == 0:
