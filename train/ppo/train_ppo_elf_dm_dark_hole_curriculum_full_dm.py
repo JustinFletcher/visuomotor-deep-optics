@@ -68,12 +68,15 @@ def _patch(cfg):
     cfg.pop("bilateral_freeze_segments", None)
     cfg.pop("bilateral_dm_mode", None)
 
-    # Entropy regulation tuned up: previous run converged on a brittle
-    # low-entropy pattern (H=-790 at the KL-explosion step). 10x larger
-    # entropy bonus + a more permissive log_std_max keep the action
-    # distribution wider through the curriculum transition.
-    cfg["ent_coef"] = 1e-5
-    cfg["log_std_max"] = -1.5     # per-dim sigma cap exp(-1.5) ~ 0.223
+    # Entropy regulation matches the bilateral curriculum config, which
+    # succeeded on the same curriculum (train/step_strehl reached 0.89
+    # on target_02 by ~50M steps). The original full-DM variant bumped
+    # ent_coef 10x and loosened log_std_max to -1.5, but with the
+    # action space jumping from 612 to 1240 dims that put the joint
+    # exploration std ~3.4x larger -- enough to swamp the curriculum
+    # signal and prevent learning. Same per-dim envelope as bilateral.
+    cfg["ent_coef"] = 1e-6
+    cfg["log_std_max"] = -2.0     # per-dim sigma cap exp(-2.0) ~ 0.135
     cfg["log_std_min"] = -5.0     # floor unchanged
     cfg["init_log_std"] = -2.5    # init unchanged
 
