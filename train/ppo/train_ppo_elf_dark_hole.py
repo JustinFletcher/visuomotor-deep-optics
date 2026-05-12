@@ -265,6 +265,17 @@ LOCAL_CONFIG = dict(
     # snapshots; max_keep_checkpoints=100 retains them all.
     model_save_step_interval=10_000_000,
     max_keep_checkpoints=100,
+    # PPO early-stop: if a minibatch epoch's mean approx_kl exceeds
+    # target_kl, drop further epochs on this rollout. Bilateral-DM
+    # curriculum runs at 612 action dims sat at median kl 0.64 with
+    # spikes to 1e6 without this, producing checkpoints whose
+    # deterministic rollout strehl was 7x lower than the per-rollout
+    # training metric suggested -- the policy was drifting between
+    # the TB-logged moment and the checkpoint save moment, with kl
+    # well above clip_coef driving the drift. target_kl=0.05 is a
+    # standard 2x-clip threshold; cuts most epochs that would push
+    # the policy off-distribution.
+    target_kl=0.05,
     # Downsample per-step diagnostic scalars; with num_steps=128 this
     # emits 4 step-logs per rollout instead of 128.
     tb_step_log_interval=32,
@@ -306,6 +317,17 @@ HPC_CONFIG = dict(
     model_save_interval=100,
     model_save_step_interval=10_000_000,
     max_keep_checkpoints=100,
+    # PPO early-stop: if a minibatch epoch's mean approx_kl exceeds
+    # target_kl, drop further epochs on this rollout. Bilateral-DM
+    # curriculum runs at 612 action dims sat at median kl 0.64 with
+    # spikes to 1e6 without this, producing checkpoints whose
+    # deterministic rollout strehl was 7x lower than the per-rollout
+    # training metric suggested -- the policy was drifting between
+    # the TB-logged moment and the checkpoint save moment, with kl
+    # well above clip_coef driving the drift. target_kl=0.05 is a
+    # standard 2x-clip threshold; cuts most epochs that would push
+    # the policy off-distribution.
+    target_kl=0.05,
     # Skip the in-training eval rollouts on HPC. They run 3 policies
     # (zero, random, agent) for num_episodes seeds in a separate
     # vectorised env construction, write big TB figures, and render

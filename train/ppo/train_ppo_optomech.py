@@ -1995,7 +1995,15 @@ def run_ppo_training(config: dict, run_dir: str):
         all_entropy = []
         all_approx_kl = []
 
+        # target_kl early-stopping: if the mean approx_kl across the
+        # current epoch's minibatches exceeds target_kl, break the
+        # epoch loop. Standard PPO mitigation against runaway updates
+        # when the policy is in a high-divergence regime. Inactive
+        # (no-op) when target_kl is None or not set.
+        target_kl = config.get("target_kl", None)
+        epochs_run = 0
         for epoch in range(config["update_epochs"]):
+            epoch_kls = []
             generator = recurrent_generator(
                 obs_buf,
                 action_buf,
@@ -2050,7 +2058,9 @@ def run_ppo_training(config: dict, run_dir: str):
 
                 with torch.no_grad():
                     approx_kl = ((ratio - 1) - logratio).mean()
-                    all_approx_kl.append(approx_kl.item())
+                    kl_val = approx_kl.item()
+                    all_approx_kl.append(kl_val)
+                    epoch_kls.append(kl_val)
 
                 mb_adv = mb_advantages
                 if config["norm_adv"]:
@@ -2115,6 +2125,18 @@ def run_ppo_training(config: dict, run_dir: str):
                 all_v_losses.append(v_loss.item())
                 all_entropy.append(entropy_loss.item())
 
+            epochs_run += 1
+            # target_kl early-stop: if this epoch's mean approx_kl
+            # exceeded target_kl, stop further epochs on this rollout.
+            # Standard PPO mitigation. Without it, persistent kl >>
+            # clip_coef regimes silently destroy the policy over many
+            # updates (this run: median kl=0.64 with spikes to 1e6,
+            # checkpoint at 145M produces saturating actions while
+            # TB at 130M still showed step_strehl=0.85).
+            if target_kl is not None and len(epoch_kls) > 0:
+                if float(np.mean(epoch_kls)) > float(target_kl):
+                    break
+
         # ------------------------------------------------------------------
         # Logging
         # ------------------------------------------------------------------
@@ -2127,6 +2149,9 @@ def run_ppo_training(config: dict, run_dir: str):
         writer.add_scalar("losses/entropy", np.mean(all_entropy), global_step)
         writer.add_scalar(
             "losses/approx_kl", np.mean(all_approx_kl), global_step
+        )
+        writer.add_scalar(
+            "losses/epochs_run", epochs_run, global_step
         )
         writer.add_scalar(
             "charts/learning_rate",
