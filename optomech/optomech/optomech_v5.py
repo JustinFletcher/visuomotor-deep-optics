@@ -243,6 +243,13 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Focal grid weight (scalar)
         self._focal_grid_weight = os4._focal_grid_weight
 
+        # Focal-plane angular pixel scale (arcsec/pixel) and total
+        # arcsec extent of the [H, W] focal frame. Exposed so external
+        # visualisation code can label focal-plane axes in physical
+        # units without rebuilding a v4 instance to recover the scale.
+        self._ifov_arcsec = float(os4.ifov)
+        self._focal_extent_arcsec = self._ifov_arcsec * self._H
+
         # Detector model constants
         self._photon_energy = os4._photon_energy
         self._det_qe = os4._det_qe
