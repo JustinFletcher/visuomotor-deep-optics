@@ -50,6 +50,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.patches import Circle
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -137,7 +138,7 @@ def _resolve_checkpoint(sweep_dir: str, target_idx: int,
 
 def _build_env(target, max_steps, device, bilateral=True,
                bilateral_mode="fixed_vertical", freeze_segments=True,
-               base_env_kwargs=None):
+               base_env_kwargs=None, zero_init=False):
     """v5 single-env, optionally wrapped with the bilateral DM wrapper.
 
     bilateral=True matches the bilateral training track (action space
@@ -170,6 +171,23 @@ def _build_env(target, max_steps, device, bilateral=True,
     # stops the rollout one step short of this, so the env never
     # auto-resets within the captured window.
     kw["max_episode_steps"] = int(max_steps) + 1
+    if zero_init:
+        # One-off sanity rollout: kill every randomised initial
+        # disturbance so the rollout starts from a perfectly flat
+        # state. Use this to test whether residual PSF / obs
+        # asymmetry comes from the random init draw or from
+        # downstream symmetry-breaking in the env pipeline (object
+        # convolution, detector model, polychromatic accumulation).
+        for k in (
+            "init_dm_micron_std",
+            "init_piston_micron_std",
+            "init_piston_micron_mean",
+            "init_piston_clip_micron",
+            "init_tip_arcsec_std",
+            "init_tilt_arcsec_std",
+        ):
+            if k in kw:
+                kw[k] = 0.0
     kw["silence"] = True
     kw["observation_window_size"] = 1
     # Disable reward-vector overhead for rollouts.
@@ -223,15 +241,23 @@ def _capture_diagnostics(base, blind_mask_t):
     if psf_max <= 0.0:
         return dm_opd, raw_psf, float("nan"), float("nan")
 
+    # Inverted definition: higher = deeper hole. We report
+    #     C(R, t) = max_p I_raw(p, t) / mean_{p in R} I_raw(p, t)
+    # i.e. the peak-to-in-region brightness ratio. With no light in
+    # the region the value diverges, so floor the mean at psf_max *
+    # 1e-15 so the plotted value caps cleanly at 1e15 instead of inf.
+    mean_floor = psf_max * 1e-15
     target_mask = base._hole_mask_t[0].detach().cpu().numpy()      # [H, W] bool
     if target_mask.any():
-        target_ct = float(np.mean(raw_psf[target_mask]) / psf_max)
+        mean_in = max(float(np.mean(raw_psf[target_mask])), mean_floor)
+        target_ct = psf_max / mean_in
     else:
         target_ct = float("nan")
     if blind_mask_t is not None:
         blind_mask = blind_mask_t[0].detach().cpu().numpy()
         if blind_mask.any():
-            blind_ct = float(np.mean(raw_psf[blind_mask]) / psf_max)
+            mean_in = max(float(np.mean(raw_psf[blind_mask])), mean_floor)
+            blind_ct = psf_max / mean_in
         else:
             blind_ct = float("nan")
     else:
@@ -354,6 +380,18 @@ def run_episode(agent, env, base, target, seed, device, max_steps,
             [reward[0]], dtype=torch.float32, device=device)
         obs_norm = normalize_obs_fixed(next_obs_for_policy, obs_ref_max)
 
+    # Snapshot the actual env masks so render_gif can mark the target
+    # and blind regions from their exact pixel positions rather than
+    # re-deriving from (angle, r_frac, s_frac). The bilateral wrapper's
+    # blind-mask geometry depends on the symmetry mode (fixed_vertical
+    # mirrors only x; per_target_radial flips both x and y) and that
+    # mode isn't carried in `target`, so the only mode-agnostic way to
+    # locate the blind region is the mask itself.
+    target_mask_np = base._hole_mask_t[0].detach().cpu().numpy() \
+        if base._hole_mask_t is not None else None
+    blind_mask_np = (blind_mask_t[0].detach().cpu().numpy()
+                     if blind_mask_t is not None else None)
+
     return {
         "rewards": rewards,
         "actions": np.array(actions),
@@ -368,6 +406,12 @@ def run_episode(agent, env, base, target, seed, device, max_steps,
         "length": len(rewards),
         "seed": int(seed),
         "target": target,
+        "target_mask": target_mask_np,
+        "blind_mask": blind_mask_np,
+        # Focal-plane angular pixel scale (arcsec/pixel) for labelling
+        # axes in physical units. Fallback to 1.0 if v5 was built
+        # without ifov exposed (old envs).
+        "ifov_arcsec": float(getattr(base, "_ifov_arcsec", 1.0)),
     }
 
 
@@ -410,21 +454,53 @@ def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
     obs_b_imgs = [_prep_obs(o) for o in obs_blind]
     obs_u_imgs = [_prep_obs(o) for o in obs_unblind]
     H, W = obs_b_imgs[0].shape[-2:]
-    th = np.deg2rad(angle)
-    cx_t = W / 2.0 + r_frac * (W / 2.0) * np.cos(th)
-    cy_t = H / 2.0 + r_frac * (H / 2.0) * np.sin(th)
-    cx_b = W / 2.0 - r_frac * (W / 2.0) * np.cos(th)
-    cy_b = H / 2.0 - r_frac * (H / 2.0) * np.sin(th)
-    r_px = s_frac * (W / 2.0)
+
+    # Physical scale for the focal-plane panels. The image is
+    # [H, W] pixels with the optical axis at (H/2, W/2); arcsec extent
+    # is ifov * H. We label axes in arcsec and centre at zero.
+    ifov_arcsec = float(ep.get("ifov_arcsec", 1.0))
+    foc_half = 0.5 * H * ifov_arcsec     # half-width in arcsec
+    foc_extent = [-foc_half, foc_half, -foc_half, foc_half]
+
+    # Pupil-plane (DM OPD) is normalised to pupil radius 1.
+    pup_extent = [-1.0, 1.0, -1.0, 1.0]
+
+    def _px_to_arcsec(px_x, px_y):
+        return ((px_x - W / 2.0) * ifov_arcsec,
+                (px_y - H / 2.0) * ifov_arcsec)
+
+    # Marker radius in arcsec (from r_frac * H/2 pixels).
+    marker_r_arcsec = s_frac * (H / 2.0) * ifov_arcsec
+
+    # Derive marker centres from the actual env masks rather than from
+    # (angle, r_frac). The bilateral wrapper's blind-mask placement
+    # depends on the symmetry mode (fixed_vertical mirrors x only;
+    # per_target_radial flips both), and re-deriving the geometry from
+    # angle here mis-placed the blind circle on fixed_vertical runs.
+    target_mask = ep.get("target_mask")
+    blind_mask = ep.get("blind_mask")
+
+    def _centroid_arcsec(mask):
+        if mask is None or not mask.any():
+            return None
+        ys, xs = np.where(mask)
+        return _px_to_arcsec(float(xs.mean()), float(ys.mean()))
+
+    target_centre = _centroid_arcsec(target_mask)
+    blind_centre = _centroid_arcsec(blind_mask)
 
     def _draw_target(ax):
+        if target_centre is None:
+            return
         ax.add_patch(Circle(
-            (cx_t, cy_t), r_px, fill=False, edgecolor="cyan",
+            target_centre, marker_r_arcsec, fill=False, edgecolor="cyan",
             linestyle=(0, (1.5, 1.5)), linewidth=1.2, alpha=0.95))
 
     def _draw_blind(ax):
+        if blind_centre is None:
+            return
         ax.add_patch(Circle(
-            (cx_b, cy_b), r_px, fill=False, edgecolor="magenta",
+            blind_centre, marker_r_arcsec, fill=False, edgecolor="magenta",
             linestyle=(0, (3, 2)), linewidth=1.2, alpha=0.95))
 
     # Trace y-bounds (log).
@@ -441,86 +517,132 @@ def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
     ct_lo, ct_hi = _log_bounds(_ct_for_bounds)
     timesteps = np.arange(T + 1)
 
+    # Static header — same on every frame.
+    head_static = (f"target {target_id:02d}     "
+                   f"angle = {angle:.1f}°     "
+                   f"r = {r_frac:.3f}     "
+                   f"size = {s_frac:.3f}")
+
+    def _metrics_line(t):
+        parts = [f"t = {t:>3d}"]
+        if t > 0:
+            parts.append(f"r = {rewards[t-1]:+.3f}")
+            parts.append(f"Σr = {cumulative[t-1]:+.2f}")
+            if strehls:
+                parts.append(f"S = {strehls[t-1]:.3f}")
+        parts.append(f"$C_\\mathrm{{target}}$ = {target_ct[t]:.2e}")
+        if has_blind:
+            parts.append(f"$C_\\mathrm{{blind}}$ = {blind_ct[t]:.2e}")
+        return "     ".join(parts)
+
+    # Layout: fixed positions, no constrained_layout (which recomputes
+    # per-frame and produces visible jitter in the GIF). All four
+    # imshow panels share the same axes-box width; flush colorbars are
+    # appended via make_axes_locatable so colorbar size never changes
+    # with content.
+    # Figure widened a touch and inner_gap roomier so the in-between
+    # tick labels don't crash into the next panel; panel titles kept
+    # very short and units off-loaded to the colorbar label so they
+    # never overflow the box width.
+    fig_w, fig_h = 10.4, 9.6
+    panel_h = 0.31
+    row0_top, row0_bot = 0.90, 0.90 - panel_h
+    row1_top, row1_bot = 0.55, 0.55 - panel_h
+    trace_top, trace_bot = 0.175, 0.06
+    left_margin, right_margin = 0.065, 0.985
+    inner_gap = 0.095
+    col_w = (right_margin - left_margin - inner_gap) / 2.0
+    box_opd  = (left_margin,                   row0_bot, col_w, panel_h)
+    box_psf  = (left_margin + col_w + inner_gap, row0_bot, col_w, panel_h)
+    box_pol  = (left_margin,                   row1_bot, col_w, panel_h)
+    box_ver  = (left_margin + col_w + inner_gap, row1_bot, col_w, panel_h)
+    box_trace = (left_margin, trace_bot,
+                 right_margin - left_margin, trace_top - trace_bot)
+
+    def _add_flush_colorbar(fig, ax, im, label, fmt_powerlimits=None):
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="4.5%", pad=0.06)
+        cb = fig.colorbar(im, cax=cax)
+        cb.ax.tick_params(labelsize=6.5)
+        cb.set_label(label, fontsize=7.5, labelpad=2)
+        if fmt_powerlimits is not None:
+            cb.formatter.set_powerlimits(fmt_powerlimits)
+            cb.update_ticks()
+        return cb
+
+    def _style_focal(ax, title):
+        ax.set_title(title, fontsize=9.5, pad=3)
+        ax.set_xlabel("x (arcsec)", fontsize=7.5, labelpad=2)
+        ax.set_ylabel("y (arcsec)", fontsize=7.5, labelpad=2)
+        ax.tick_params(labelsize=6.5)
+
+    def _style_pupil(ax, title):
+        ax.set_title(title, fontsize=9.5, pad=3)
+        ax.set_xlabel("pupil x (R)", fontsize=7.5, labelpad=2)
+        ax.set_ylabel("pupil y (R)", fontsize=7.5, labelpad=2)
+        ax.tick_params(labelsize=6.5)
+        ax.set_xticks([-1, -0.5, 0, 0.5, 1])
+        ax.set_yticks([-1, -0.5, 0, 0.5, 1])
+
     frames = []
     for t in range(T + 1):
-        fig = plt.figure(figsize=(11.0, 5.5), dpi=dpi)
-        gs = fig.add_gridspec(
-            2, 8,
-            height_ratios=[3.4, 1.4],
-            hspace=0.35, wspace=0.30,
-            left=0.025, right=0.96, top=0.90, bottom=0.10,
-        )
+        fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
 
-        # --- DM OPD ---
-        ax_opd = fig.add_subplot(gs[0, 0:2])
+        # --- Row 0: DM OPD + raw PSF ---
+        ax_opd = fig.add_axes(box_opd)
         opd = opds[t]
         opd_max = max(float(np.nanmax(np.abs(opd))), 1e-12)
         im_opd = ax_opd.imshow(
-            opd, cmap="RdBu_r", origin="lower",
-            vmin=-opd_max, vmax=opd_max, aspect="equal")
-        ax_opd.set_xticks([]); ax_opd.set_yticks([])
-        ax_opd.set_title("DM OPD (m)", fontsize=10, pad=3)
-        cb = fig.colorbar(im_opd, ax=ax_opd, fraction=0.046, pad=0.018)
-        cb.formatter.set_powerlimits((-2, 2)); cb.update_ticks()
-        cb.ax.tick_params(labelsize=7)
+            opd, cmap="RdBu_r", origin="lower", aspect="equal",
+            vmin=-opd_max, vmax=opd_max, extent=pup_extent)
+        _style_pupil(ax_opd, "DM OPD")
+        _add_flush_colorbar(fig, ax_opd, im_opd,
+                            label="surface (m)",
+                            fmt_powerlimits=(-2, 2))
 
-        # --- raw PSF (with both circles) ---
-        ax_psf = fig.add_subplot(gs[0, 2:4])
+        ax_psf = fig.add_axes(box_psf)
         psf = psfs[t] if psfs[t] is not None else np.zeros((H, W))
         pmax = max(float(np.max(psf)), 1e-30)
         pflo = max(pmax * 1e-8, 1e-30)
         im_psf = ax_psf.imshow(
             np.maximum(psf, pflo), cmap="inferno",
             norm=mcolors.LogNorm(vmin=pflo, vmax=pmax),
-            origin="lower", aspect="equal")
+            origin="lower", aspect="equal", extent=foc_extent)
         _draw_target(ax_psf)
         if has_blind:
             _draw_blind(ax_psf)
-        ax_psf.set_xticks([]); ax_psf.set_yticks([])
-        ax_psf.set_title("raw PSF (log)", fontsize=10, pad=3)
-        cb = fig.colorbar(im_psf, ax=ax_psf, fraction=0.046, pad=0.018)
-        cb.ax.tick_params(labelsize=7)
+        _style_focal(ax_psf, "raw PSF")
+        _add_flush_colorbar(fig, ax_psf, im_psf, label="intensity (log)")
 
-        # --- blinded obs (what the policy saw) ---
-        ax_b = fig.add_subplot(gs[0, 4:6])
+        # --- Row 1: policy obs + verification (when wrapped) ---
+        ax_b = fig.add_axes(box_pol)
         ob = obs_b_imgs[t]
         omax = max(float(np.max(ob)), 2.0)
         im_b = ax_b.imshow(
             np.maximum(ob, 1.0), cmap="inferno",
             norm=mcolors.LogNorm(vmin=1.0, vmax=omax),
-            origin="lower", aspect="equal")
+            origin="lower", aspect="equal", extent=foc_extent)
         _draw_target(ax_b)
         if has_blind:
             _draw_blind(ax_b)
-        ax_b.set_xticks([]); ax_b.set_yticks([])
-        ax_b.set_title("policy obs (blinded, DN log)" if has_blind
-                       else "policy obs (DN log)",
-                       fontsize=10, pad=3)
-        cb = fig.colorbar(im_b, ax=ax_b, fraction=0.046, pad=0.018)
-        cb.ax.tick_params(labelsize=7)
+        _style_focal(ax_b, "policy obs (blinded)" if has_blind
+                           else "policy obs")
+        _add_flush_colorbar(fig, ax_b, im_b, label="detector DN (log)")
 
-        # --- unblinded obs (verification view) ---
-        # Bilateral mode: shows what light leaked into the blind
-        # region during a rollout (the masked-away view). Full-DM
-        # mode: identical to the policy obs above, so the panel
-        # would be redundant; skip it.
         if has_blind:
-            ax_u = fig.add_subplot(gs[0, 6:8])
+            ax_u = fig.add_axes(box_ver)
             ou = obs_u_imgs[t]
             umax = max(float(np.max(ou)), 2.0)
             im_u = ax_u.imshow(
                 np.maximum(ou, 1.0), cmap="inferno",
                 norm=mcolors.LogNorm(vmin=1.0, vmax=umax),
-                origin="lower", aspect="equal")
+                origin="lower", aspect="equal", extent=foc_extent)
             _draw_target(ax_u); _draw_blind(ax_u)
-            ax_u.set_xticks([]); ax_u.set_yticks([])
-            ax_u.set_title("verification view (unblinded)",
-                           fontsize=10, pad=3)
-            cb = fig.colorbar(im_u, ax=ax_u, fraction=0.046, pad=0.018)
-            cb.ax.tick_params(labelsize=7)
+            _style_focal(ax_u, "verification view (unblinded)")
+            _add_flush_colorbar(fig, ax_u, im_u, label="detector DN (log)")
 
-        # --- contrast traces (target + blind, log y) ---
-        ax_ct = fig.add_subplot(gs[1, 1:7])
+        # --- Row 2: contrast trace, axes-box aligned with imshow row ---
+        ax_ct = fig.add_axes(box_trace)
         ax_ct.set_yscale("log")
         ax_ct.set_ylim(ct_lo, ct_hi)
         ax_ct.set_xlim(0, max(T, 1))
@@ -540,32 +662,279 @@ def render_gif(ep, save_path, dpi=110, frame_duration=0.10):
             ax_ct.plot([t], [blind_ct[t]], "o",
                        color="magenta", markersize=5, mec="black", mew=0.4)
         ax_ct.grid(True, which="both", alpha=0.25, lw=0.4)
-        ax_ct.tick_params(labelsize=8)
-        ax_ct.set_xlabel("step", fontsize=9)
+        ax_ct.tick_params(labelsize=7)
+        ax_ct.set_xlabel("step", fontsize=8, labelpad=2)
+        ax_ct.set_ylabel(r"$C(R, t)$", fontsize=8, labelpad=2)
         ax_ct.set_title(
-            "Mean contrast in target (cyan) and blind (magenta) regions"
-            if has_blind else "Mean contrast in target region",
-            fontsize=9, pad=2)
-        ax_ct.legend(loc="upper right", fontsize=7, frameon=True)
+            r"$C(R, t) \;=\; "
+            r"\max_{p}\, I_\mathrm{raw}(p, t) \;/\; "
+            r"\langle I_\mathrm{raw}(p, t)\rangle_{p \in R}$"
+            r"   (dimensionless)",
+            fontsize=9, pad=3)
+        ax_ct.legend(loc="lower right", fontsize=7, frameon=True)
 
-        head = (f"target {target_id:02d}  angle={angle:5.1f}°  "
-                f"r={r_frac:.3f}  size={s_frac:.3f}")
+        # Header strip — two fixed-position lines so neither side wraps
+        # into the other regardless of metric content. Identity on top,
+        # dynamic state directly below.
+        fig.text(left_margin, 0.975, head_static,
+                 ha="left", va="center", fontsize=10.5,
+                 weight="semibold")
+        fig.text(left_margin, 0.945, _metrics_line(t),
+                 ha="left", va="center", fontsize=9.5,
+                 family="monospace")
 
-        def _sub_metrics(idx):
-            parts = [f"target_C={target_ct[idx]:.2e}"]
-            if has_blind:
-                parts.append(f"blind_C={blind_ct[idx]:.2e}")
-            return "  ".join(parts)
+        fig.canvas.draw()
+        rgba = np.asarray(fig.canvas.buffer_rgba())
+        frames.append(rgba[:, :, :3].copy())
+        plt.close(fig)
+    imageio.mimsave(save_path, frames, duration=frame_duration)
 
-        if t == 0:
-            sub = f"t=0  (initial)  {_sub_metrics(0)}"
-        else:
-            r = rewards[t - 1]
-            cum = cumulative[t - 1]
-            s = f"  S={strehls[t-1]:.3f}" if strehls else ""
-            sub = (f"t={t:>3d}  r={r:+.3f}  Σ={cum:+.2f}{s}  "
-                   f"{_sub_metrics(t)}")
-        fig.suptitle(f"{head}\n{sub}", fontsize=11, y=0.985)
+
+# ---------------------------------------------------------------------------
+# Bilateral-symmetry GIF
+# ---------------------------------------------------------------------------
+
+def _fold_diff_lr(img):
+    """Anti-symmetric folded difference across the vertical axis x = W/2.
+
+    For a perfectly bilaterally-symmetric image,
+        img(x, y) == img(W - 1 - x, y)
+    so this returns zeros everywhere. For asymmetric content, the
+    result is anti-symmetric: D(x, y) == -D(W - 1 - x, y).
+    """
+    return img.astype(np.float64) - np.fliplr(img).astype(np.float64)
+
+
+def _relative_l2_asymmetry(img):
+    """Dimensionless asymmetry index in [0, sqrt(2)].
+
+        L2 = ||I - flip_x(I)||_2 / ||I||_2
+
+    0 = perfect bilateral symmetry; sqrt(2) ~ 1.414 = maximally
+    one-sided. Uses the full image so the denominator is the same
+    statistic as the numerator (an asymmetric content scale).
+    """
+    arr = img.astype(np.float64)
+    diff_norm = float(np.sqrt(np.sum((arr - np.fliplr(arr)) ** 2)))
+    img_norm = float(np.sqrt(np.sum(arr ** 2)))
+    if img_norm <= 0:
+        return 0.0
+    return diff_norm / img_norm
+
+
+def render_symmetry_gif(ep, save_path, dpi=110, frame_duration=0.10):
+    """Bilateral-symmetry GIF: folded-difference images and L2 traces.
+
+    For each step, computes the residual after subtracting the left-
+    right mirror of the DM OPD, the raw PSF, and the detector
+    observation, and plots them alongside a running L2 trace of each.
+    The bilateral wrapper enforces an exact (x -> -x) symmetry on the
+    commanded DM, so the OPD asymmetry should sit at the numerical
+    floor; the PSF and obs asymmetries reveal whatever additional
+    symmetry-breaking the env, detector, or noise injects between
+    pupil and detector.
+    """
+    target = ep["target"]
+    angle, r_frac, s_frac = target
+    target_id = ep.get("target_id", -1)
+    opds = ep["opd"]
+    psfs = ep["raw_psf"]
+    obs_unblind = ep["obs_unblind"]
+    obs_b_imgs = [_prep_obs(o) for o in obs_unblind]
+    # Use the unblinded view: the blinded one has the mirror region
+    # zeroed by construction, which would trivially make it
+    # asymmetric in a way that has nothing to do with the optics.
+    H, W = obs_b_imgs[0].shape[-2:]
+    T = len(ep["rewards"])
+    rewards = ep["rewards"]
+    cumulative = np.cumsum(rewards) if T else np.array([])
+    strehls = ep["strehls"]
+
+    ifov_arcsec = float(ep.get("ifov_arcsec", 1.0))
+    foc_half = 0.5 * H * ifov_arcsec
+    foc_extent = [-foc_half, foc_half, -foc_half, foc_half]
+    pup_extent = [-1.0, 1.0, -1.0, 1.0]
+
+    # Pre-compute traces so the y-axis bounds are stable across frames.
+    l2_opd = np.array(
+        [_relative_l2_asymmetry(opds[t]) for t in range(T + 1)],
+        dtype=np.float64)
+    l2_psf = np.array(
+        [_relative_l2_asymmetry(psfs[t]) if psfs[t] is not None else 0.0
+         for t in range(T + 1)], dtype=np.float64)
+    l2_obs = np.array(
+        [_relative_l2_asymmetry(obs_b_imgs[t]) for t in range(T + 1)],
+        dtype=np.float64)
+
+    def _log_bounds(arrs):
+        cat = np.concatenate(arrs)
+        x = cat[np.isfinite(cat) & (cat > 0)]
+        if not x.size:
+            return 1e-6, 1.0
+        return max(float(x.min()) * 0.5, 1e-12), float(x.max()) * 2.0
+
+    l2_lo, l2_hi = _log_bounds([l2_opd, l2_psf, l2_obs])
+    timesteps = np.arange(T + 1)
+
+    head_static = (f"target {target_id:02d}     "
+                   f"angle = {angle:.1f}°     "
+                   f"r = {r_frac:.3f}     "
+                   f"size = {s_frac:.3f}   "
+                   f"|   bilateral symmetry analysis")
+
+    def _metrics_line(t):
+        parts = [f"t = {t:>3d}"]
+        if t > 0:
+            parts.append(f"r = {rewards[t-1]:+.3f}")
+            parts.append(f"Σr = {cumulative[t-1]:+.2f}")
+            if strehls:
+                parts.append(f"S = {strehls[t-1]:.3f}")
+        parts.append(f"$L_2^\\mathrm{{OPD}}$ = {l2_opd[t]:.2e}")
+        parts.append(f"$L_2^\\mathrm{{PSF}}$ = {l2_psf[t]:.2e}")
+        parts.append(f"$L_2^\\mathrm{{obs}}$ = {l2_obs[t]:.2e}")
+        return "     ".join(parts)
+
+    # 3 rows × 2 cols. Left col = original image, right col = folded
+    # difference. Row 0 = DM OPD, row 1 = raw PSF, row 2 = obs.
+    # Fourth row (short) = L2 trace.
+    fig_w, fig_h = 10.4, 12.4
+    panel_h = 0.235
+    row_tops = [0.88, 0.88 - panel_h - 0.02,
+                0.88 - 2 * (panel_h + 0.02)]
+    trace_top, trace_bot = 0.13, 0.045
+    left_margin, right_margin = 0.065, 0.985
+    inner_gap = 0.095
+    col_w = (right_margin - left_margin - inner_gap) / 2.0
+    box_left = lambda top: (left_margin, top - panel_h, col_w, panel_h)
+    box_right = lambda top: (
+        left_margin + col_w + inner_gap, top - panel_h, col_w, panel_h)
+    box_trace = (left_margin, trace_bot,
+                 right_margin - left_margin, trace_top - trace_bot)
+
+    def _add_flush_colorbar(fig, ax, im, label, fmt_powerlimits=None):
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="4.5%", pad=0.06)
+        cb = fig.colorbar(im, cax=cax)
+        cb.ax.tick_params(labelsize=6.5)
+        cb.set_label(label, fontsize=7.5, labelpad=2)
+        if fmt_powerlimits is not None:
+            cb.formatter.set_powerlimits(fmt_powerlimits)
+            cb.update_ticks()
+        return cb
+
+    def _style_focal(ax, title):
+        ax.set_title(title, fontsize=9.5, pad=3)
+        ax.set_xlabel("x (arcsec)", fontsize=7.5, labelpad=2)
+        ax.set_ylabel("y (arcsec)", fontsize=7.5, labelpad=2)
+        ax.tick_params(labelsize=6.5)
+
+    def _style_pupil(ax, title):
+        ax.set_title(title, fontsize=9.5, pad=3)
+        ax.set_xlabel("pupil x (R)", fontsize=7.5, labelpad=2)
+        ax.set_ylabel("pupil y (R)", fontsize=7.5, labelpad=2)
+        ax.tick_params(labelsize=6.5)
+        ax.set_xticks([-1, -0.5, 0, 0.5, 1])
+        ax.set_yticks([-1, -0.5, 0, 0.5, 1])
+
+    def _imshow_signed(ax, img, extent, vlim=None):
+        if vlim is None:
+            vlim = max(float(np.nanmax(np.abs(img))), 1e-30)
+        im = ax.imshow(
+            img, cmap="RdBu_r", origin="lower", aspect="equal",
+            vmin=-vlim, vmax=vlim, extent=extent)
+        ax.axvline(0, color="black", lw=0.4, alpha=0.4)
+        return im
+
+    frames = []
+    for t in range(T + 1):
+        fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
+
+        # --- Row 0: DM OPD + folded diff ---
+        opd = opds[t]
+        ax = fig.add_axes(box_left(row_tops[0]))
+        opd_vmax = max(float(np.nanmax(np.abs(opd))), 1e-12)
+        im = ax.imshow(opd, cmap="RdBu_r", origin="lower", aspect="equal",
+                       vmin=-opd_vmax, vmax=opd_vmax, extent=pup_extent)
+        _style_pupil(ax, "DM OPD")
+        _add_flush_colorbar(fig, ax, im,
+                            label="surface (m)",
+                            fmt_powerlimits=(-2, 2))
+
+        ax = fig.add_axes(box_right(row_tops[0]))
+        d_opd = _fold_diff_lr(opd)
+        im = _imshow_signed(ax, d_opd, pup_extent)
+        _style_pupil(ax, r"DM OPD  $-$  flip$_x$(DM OPD)")
+        _add_flush_colorbar(fig, ax, im,
+                            label="Δ surface (m)",
+                            fmt_powerlimits=(-2, 2))
+
+        # --- Row 1: raw PSF + folded diff ---
+        psf = psfs[t] if psfs[t] is not None else np.zeros((H, W))
+        ax = fig.add_axes(box_left(row_tops[1]))
+        pmax = max(float(np.max(psf)), 1e-30)
+        pflo = max(pmax * 1e-8, 1e-30)
+        im = ax.imshow(np.maximum(psf, pflo), cmap="inferno",
+                       norm=mcolors.LogNorm(vmin=pflo, vmax=pmax),
+                       origin="lower", aspect="equal", extent=foc_extent)
+        _style_focal(ax, "raw PSF")
+        _add_flush_colorbar(fig, ax, im, label="intensity (log)")
+
+        ax = fig.add_axes(box_right(row_tops[1]))
+        d_psf = _fold_diff_lr(psf)
+        im = _imshow_signed(ax, d_psf, foc_extent)
+        _style_focal(ax, r"raw PSF  $-$  flip$_x$(raw PSF)")
+        _add_flush_colorbar(fig, ax, im, label="Δ intensity")
+
+        # --- Row 2: detector obs + folded diff ---
+        obs = obs_b_imgs[t]
+        ax = fig.add_axes(box_left(row_tops[2]))
+        omax = max(float(np.max(obs)), 2.0)
+        im = ax.imshow(np.maximum(obs, 1.0), cmap="inferno",
+                       norm=mcolors.LogNorm(vmin=1.0, vmax=omax),
+                       origin="lower", aspect="equal", extent=foc_extent)
+        _style_focal(ax, "detector obs (unblinded)")
+        _add_flush_colorbar(fig, ax, im, label="DN (log)")
+
+        ax = fig.add_axes(box_right(row_tops[2]))
+        d_obs = _fold_diff_lr(obs)
+        im = _imshow_signed(ax, d_obs, foc_extent)
+        _style_focal(ax, r"obs  $-$  flip$_x$(obs)")
+        _add_flush_colorbar(fig, ax, im, label="Δ DN")
+
+        # --- Bottom row: L2 traces ---
+        ax_l2 = fig.add_axes(box_trace)
+        ax_l2.set_yscale("log")
+        ax_l2.set_ylim(l2_lo, l2_hi)
+        ax_l2.set_xlim(0, max(T, 1))
+        for arr, color, label in (
+                (l2_opd, "#1f77b4", "DM OPD"),
+                (l2_psf, "#d62728", "raw PSF"),
+                (l2_obs, "#2ca02c", "detector obs")):
+            ax_l2.plot(timesteps, arr,
+                       color=color, lw=0.7, alpha=0.35)
+            ax_l2.plot(timesteps[:t + 1], arr[:t + 1],
+                       color=color, lw=1.6, label=label)
+            if np.isfinite(arr[t]):
+                ax_l2.plot([t], [arr[t]], "o",
+                           color=color, markersize=5,
+                           mec="black", mew=0.4)
+        ax_l2.grid(True, which="both", alpha=0.25, lw=0.4)
+        ax_l2.tick_params(labelsize=7)
+        ax_l2.set_xlabel("step", fontsize=8, labelpad=2)
+        ax_l2.set_ylabel(r"$L_2$ asymmetry", fontsize=8, labelpad=2)
+        ax_l2.set_title(
+            r"$L_2(I, t) \;=\; "
+            r"\|\,I(x,y,t) - I(W{-}1{-}x,y,t)\,\|_2 \;/\; "
+            r"\|\,I(\cdot,t)\,\|_2$"
+            r"     (dimensionless,  $0 = $ symmetric)",
+            fontsize=9, pad=3)
+        ax_l2.legend(loc="upper right", fontsize=7, frameon=True, ncol=3)
+
+        fig.text(left_margin, 0.975, head_static,
+                 ha="left", va="center", fontsize=10.5,
+                 weight="semibold")
+        fig.text(left_margin, 0.950, _metrics_line(t),
+                 ha="left", va="center", fontsize=9, family="monospace")
 
         fig.canvas.draw()
         rgba = np.asarray(fig.canvas.buffer_rgba())
@@ -607,6 +976,13 @@ def main():
              "--target-id selection and --prefer-latest are ignored; "
              "the rollout uses this exact file. Useful for rolling a "
              "specific update_NNN.pt step.")
+    parser.add_argument(
+        "--zero-init", action="store_true",
+        help="Zero every randomised initial disturbance (DM "
+             "perturbation, segment piston/tip/tilt). Sanity check "
+             "for the bilateral-symmetry GIF: if PSF asymmetry "
+             "survives zero-init the symmetry break is downstream of "
+             "the random draw (env pipeline), not from the init.")
     args = parser.parse_args()
 
     targets = build_grid()
@@ -644,8 +1020,9 @@ def main():
         if args.sweep_dir is None:
             print(f"--sweep-dir not given; using newest: {sweep_dir}")
 
+    suffix = "_grid" + ("_zeroinit" if args.zero_init else "")
     output_dir = args.output_dir or os.path.join(
-        "test_output", f"{os.path.basename(sweep_dir.rstrip('/'))}_grid")
+        "test_output", f"{os.path.basename(sweep_dir.rstrip('/'))}{suffix}")
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Sweep dir:  {sweep_dir}")
@@ -701,7 +1078,8 @@ def main():
             target, args.max_steps, args.device,
             bilateral=bilateral, bilateral_mode=bilateral_mode,
             freeze_segments=freeze_segments,
-            base_env_kwargs=ckpt_env_kwargs)
+            base_env_kwargs=ckpt_env_kwargs,
+            zero_init=args.zero_init)
         agent, config = _load_agent(ckpt_path, env, args.device)
         td = int(config.get("target_dim", 0))
         if td == 0:
@@ -714,6 +1092,9 @@ def main():
         gif_path = os.path.join(output_dir, f"target_{i:02d}.gif")
         render_gif(ep, gif_path, dpi=args.dpi,
                    frame_duration=args.frame_duration)
+        sym_path = os.path.join(output_dir, f"target_{i:02d}_symmetry.gif")
+        render_symmetry_gif(ep, sym_path, dpi=args.dpi,
+                            frame_duration=args.frame_duration)
         env.close()
 
         final_t = (ep["target_contrast"][-1]
