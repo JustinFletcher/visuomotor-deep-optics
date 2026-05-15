@@ -650,7 +650,14 @@ def evaluate_with_visualization(
     # pre-existing behavior (matplotlib's own default ~100).
     fig_dpi = config.get("eval_figure_dpi", 100)
 
-    if best_episode_data is not None:
+    # Fast-eval mode: scalars only, skip the matplotlib summary figure,
+    # the observation filmstrip, and the per-episode GIFs. Useful on HPC
+    # when the only thing we need is a deterministic, fresh-reset Strehl
+    # number to cross-check against the per-rollout training metric --
+    # the figures and GIFs together dominate eval wall-clock.
+    eval_fast = bool(config.get("eval_fast", False))
+
+    if not eval_fast and best_episode_data is not None:
         _log_rollout_summary_figure(writer, best_episode_data, global_step,
                                     tag_prefix, dpi=fig_dpi)
         _log_observation_filmstrip(writer, best_episode_data, global_step,
@@ -670,7 +677,7 @@ def evaluate_with_visualization(
     # )
 
     # Generate GIFs for best / worst / median episodes
-    if run_dir:
+    if run_dir and not eval_fast:
         gif_dir = os.path.join(run_dir, "gifs", f"step_{global_step}")
         os.makedirs(gif_dir, exist_ok=True)
         for ep, label in [
@@ -1610,6 +1617,18 @@ def run_ppo_training(config: dict, run_dir: str):
     episode_start_strehl = np.zeros(num_envs, dtype=np.float32)
     needs_start_strehl = np.ones(num_envs, dtype=bool)
 
+    # Within-episode step counter for per-position strehl binning. Each
+    # env's value is the number of completed steps in its current episode
+    # (1..max_ep). Used to log train/step_strehl_at_ep_step_NN scalars
+    # that resolve the strehl *trajectory* across the episode rather
+    # than a single rollout-mean. Required to disambiguate "policy
+    # genuinely settles at high strehl" from "policy looks good on
+    # average because a few env-positions hold high strehl" when the
+    # offline rollout disagrees with TB step_strehl. Six bins keep the
+    # logging overhead to one extra per-rollout `np.bincount` call.
+    running_episode_step = np.zeros(num_envs, dtype=np.int64)
+    EP_STEP_BINS = (1, 8, 16, 32, 48, int(config["max_episode_steps"]))
+
     best_eval_return = -np.inf
     global_step = 0
     start_update = 1
@@ -1787,6 +1806,14 @@ def run_ppo_training(config: dict, run_dir: str):
         rollout_step_sps_sum = 0.0
         rollout_n_sps = 0
 
+        # Per-episode-step strehl accumulators. Length max_ep + 1 so
+        # ep_step ∈ [1, max_ep] indexes directly without bounds-handling.
+        # Reset each rollout; emitted as train/step_strehl_at_ep_step_NN.
+        _ep_step_strehl_sum = np.zeros(
+            int(config["max_episode_steps"]) + 1, dtype=np.float64)
+        _ep_step_strehl_n = np.zeros(
+            int(config["max_episode_steps"]) + 1, dtype=np.int64)
+
         for step in range(num_steps):
             step_start_time = time.time()
             global_step += num_envs
@@ -1909,6 +1936,17 @@ def run_ppo_training(config: dict, run_dir: str):
                 rollout_reward_sum += float(np.mean(rewards_np))
                 rollout_reward_raw_sum += float(np.mean(infos["reward_raw"]))
                 rollout_n_strehl += 1
+
+                # Per-episode-step binning. ``running_episode_step`` is
+                # incremented before the bin so values are 1..max_ep
+                # (1 = strehl after the first action of an episode).
+                running_episode_step += 1
+                _eps = running_episode_step
+                _max_ep = _ep_step_strehl_n.shape[0] - 1
+                _eps_clipped = np.minimum(_eps, _max_ep)
+                np.add.at(_ep_step_strehl_sum, _eps_clipped,
+                          step_strehl.astype(np.float64))
+                np.add.at(_ep_step_strehl_n, _eps_clipped, 1)
             if "contrast" in infos:
                 rollout_contrast_sum += float(np.mean(infos["contrast"]))
                 rollout_n_contrast += 1
@@ -1918,9 +1956,11 @@ def run_ppo_training(config: dict, run_dir: str):
 
             # Envs that finished this step need a fresh start_strehl
             # captured on the next step (must run every step — does not
-            # depend on whether we logged).
+            # depend on whether we logged). Same envs also restart their
+            # within-episode step counter so the next bin lands at 1.
             if step_strehl is not None and dones_step.any():
                 needs_start_strehl[dones_step] = True
+                running_episode_step[dones_step] = 0
 
         rollout_end_time = time.time()
         rollout_dt = rollout_end_time - rollout_start_time
@@ -1960,6 +2000,16 @@ def run_ppo_training(config: dict, run_dir: str):
             writer.add_scalar(
                 "train/step_hole_flux_frac",
                 rollout_hole_flux_sum / rollout_n_hole_flux, global_step)
+
+        # Per-episode-step strehl trajectory. Six scalars per rollout
+        # resolve the strehl arc across an episode; bins with no samples
+        # this rollout are skipped rather than emitting NaN.
+        for _b in EP_STEP_BINS:
+            _n = int(_ep_step_strehl_n[_b])
+            if _n > 0:
+                writer.add_scalar(
+                    f"train/step_strehl_at_ep_step_{_b:02d}",
+                    float(_ep_step_strehl_sum[_b] / _n), global_step)
 
         # ==============================================================
         # COMPUTE GAE

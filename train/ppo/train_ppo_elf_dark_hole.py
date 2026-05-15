@@ -310,8 +310,19 @@ HPC_CONFIG = dict(
     max_episode_steps=64,
     env_version="v5",
     eval_interval=100,
-    eval_episodes=8,
+    # Fast-eval: a single deterministic episode (3 envs: zero/random/agent)
+    # produces a fresh-reset eval/mean_final_strehl scalar each call.
+    # Cross-checks the per-rollout train/step_strehl average, which on
+    # bilateral-DM dark-hole runs over-reports steady-state Strehl by
+    # ~8x (we see TB step_strehl=0.85 while a fresh-reset rollout from
+    # the same weights settles at 0.10). Without this scalar the train-
+    # eval mismatch is invisible until checkpoint pull + offline rollout.
+    eval_episodes=1,
     eval_seeds=None,
+    # Skip the matplotlib summary figure, observation filmstrip, and
+    # best/worst/median GIFs -- the scalars alone are the diagnostic we
+    # actually need, and the rendering is the bulk of eval wall-clock.
+    eval_fast=True,
     pass_threshold_ratio=1.1,
     seed=1,
     model_save_interval=100,
@@ -328,14 +339,9 @@ HPC_CONFIG = dict(
     # standard 2x-clip threshold; cuts most epochs that would push
     # the policy off-distribution.
     target_kl=0.05,
-    # Skip the in-training eval rollouts on HPC. They run 3 policies
-    # (zero, random, agent) for num_episodes seeds in a separate
-    # vectorised env construction, write big TB figures, and render
-    # three GIFs per call -- collectively the single largest wall-clock
-    # consumer on long runs. Training-side scalars (mean_recent_return,
-    # step_strehl, step_reward, losses/*) remain available for
-    # progress monitoring. Use --no-eval=false on the CLI to re-enable.
-    no_eval=True,
+    # Eval re-enabled in fast-scalar-only form (see eval_fast above).
+    # Pass --no-eval on the CLI to disable entirely.
+    no_eval=False,
     # Aggressive scalar-downsampling. With num_steps=128 and
     # interval=128 we emit exactly ONE step-log per rollout — the
     # bare minimum for training-curve visibility. DPI can stay at 72
