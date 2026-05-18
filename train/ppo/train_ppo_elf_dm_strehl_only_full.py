@@ -65,17 +65,18 @@ ENV_KWARGS["init_dm_symmetric"] = False
 ENV_KWARGS["command_secondaries"] = False
 ENV_KWARGS["command_tip_tilt"] = False
 
-# Absolute DM control. With incremental control + 1225-dim action the
-# DM drifts off the strehl-good attractor over an episode (each step
-# adds a small bias); absolute control lets every step write the full
-# corrective shape directly so mean bias is a fixed offset, not a
-# growing one. Action space is [-1, 1] per actuator, mapping linearly
-# to ±_dm_stroke_limit_m = ±1.5 µm of surface displacement. With
-# init_dm_micron_std = 0.05 µm, the corrective action for a 1-σ
-# perturbation is ~±0.033 (3.3 % of bound); a 3-σ draw is ~±0.10 — the
-# full action range gives ~30× headroom over what's actually needed.
-ENV_KWARGS["dm_incremental_control"] = False
-ENV_KWARGS["env_action_scale"] = 1.0
+# Incremental DM control, matching the bilateral-DM recipe that does
+# converge. Per-step DM change is bounded to env_action_scale *
+# stroke_limit = 0.1 * 1.5 µm = 0.15 µm, so a single off-direction
+# action only nudges the OPD instead of scrambling it. Absolute control
+# was tried first and diverged in every seed (run dm_strehl_only_full
+# _1778958135): the corrective signal is ~0.03-0.10 per actuator while
+# the action bound is ±1.0, so the policy's exploration noise (sigma
+# 0.082 at init) dominates the optimal mean (~0.033 for 1-σ init draw)
+# and the LSTM-driven mean walks to saturation with no gradient to
+# escape (strehl floors at zero in every direction at full deflection).
+ENV_KWARGS["dm_incremental_control"] = True
+ENV_KWARGS["env_action_scale"] = 0.1
 
 
 # ----------------------------------------------------------------------
