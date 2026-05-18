@@ -49,8 +49,18 @@ ENV_KWARGS["reward_weight_shape"] = 0.0
 ENV_KWARGS["reward_weight_image_quality"] = 0.0
 ENV_KWARGS["reward_weight_strehl"] = 1.0
 ENV_KWARGS["holding_bonus_weight"] = 0.0
-ENV_KWARGS["action_penalty"] = False
-ENV_KWARGS["action_penalty_weight"] = 0.0
+# Small L1 action penalty. Anchors the policy mean toward zero, which
+# is essential under incremental control: without it PPO's gradient on
+# 1225 dims is dominated by per-step reward noise and the mean random-
+# walks away from zero, compounding linearly into the DM over an
+# episode (run dm_strehl_only_full_1779084109: eval/mean_final_strehl
+# crashed from 0.72 -> 0.001 even though the policy starts with
+# mean=0). 0.01 is tiny vs the strehl signal -- at a real correction
+# magnitude of 0.3 per dim the penalty is 0.003, negligible vs a
+# strehl improvement worth ~0.3 reward; at random-walk magnitudes
+# (~0.01) the penalty is ~1e-4, just enough to anchor the mean.
+ENV_KWARGS["action_penalty"] = True
+ENV_KWARGS["action_penalty_weight"] = 0.01
 
 # Small random DM perturbation per reset; NOT forced symmetric.
 ENV_KWARGS["init_dm_micron_std"] = 0.05
@@ -94,6 +104,26 @@ def _patch(cfg):
     cfg.pop("reward_weight_curriculum", None)
     cfg.pop("curriculum", None)
     cfg.pop("holding_bonus_anneal", None)
+    # --- Entropy / log_std envelope -------------------------------------
+    # Walked back toward vanilla relative to the bilateral patch:
+    #   - ent_coef removed (was 1e-6 "floor"; with log_std_min in place
+    #     there's no underflow risk and the floor served no purpose --
+    #     1e-6 * H_total of -1324 contributes 0.0013 to the loss, which
+    #     is rounding noise next to a strehl signal of ~-0.3 per step).
+    #   - init_log_std dropped from -2.5 to -4.0 (sigma 0.082 -> 0.018).
+    #     End-of-episode accumulated DM noise under incremental control
+    #     drops from ~0.10 um RMS to ~0.02 um RMS, comfortably below
+    #     init_dm_micron_std=0.05. Stops the within-episode strehl
+    #     crash observed in run dm_strehl_only_full_1779084109 (strehl
+    #     went 0.70 at step 1 -> 0.001 at step 64).
+    #   - log_std_max tightened from -2.0 to -3.0 (sigma cap 0.135 ->
+    #     0.050). Cap matches the corrective-action range (~0.10) so
+    #     exploration never overwhelms signal.
+    #   - log_std_min kept at -5.0 as a numerical safety floor.
+    cfg["ent_coef"] = 0.0
+    cfg["init_log_std"] = -4.0
+    cfg["log_std_max"] = -3.0
+    cfg["log_std_min"] = -5.0
     return cfg
 
 
