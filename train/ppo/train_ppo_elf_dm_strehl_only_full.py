@@ -49,18 +49,18 @@ ENV_KWARGS["reward_weight_shape"] = 0.0
 ENV_KWARGS["reward_weight_image_quality"] = 0.0
 ENV_KWARGS["reward_weight_strehl"] = 1.0
 ENV_KWARGS["holding_bonus_weight"] = 0.0
-# Small L1 action penalty. Anchors the policy mean toward zero, which
-# is essential under incremental control: without it PPO's gradient on
-# 1225 dims is dominated by per-step reward noise and the mean random-
-# walks away from zero, compounding linearly into the DM over an
-# episode (run dm_strehl_only_full_1779084109: eval/mean_final_strehl
-# crashed from 0.72 -> 0.001 even though the policy starts with
-# mean=0). 0.01 is tiny vs the strehl signal -- at a real correction
-# magnitude of 0.3 per dim the penalty is 0.003, negligible vs a
-# strehl improvement worth ~0.3 reward; at random-walk magnitudes
-# (~0.01) the penalty is ~1e-4, just enough to anchor the mean.
+# Strong L1 action penalty. Anchors the policy mean hard toward zero.
+# At weight 1.0 the per-step penalty equals mean(|a|), so a real
+# corrective action of ~0.05 per dim costs 0.05 reward -- comparable
+# to (and partly trading against) the strehl improvement that
+# correction would buy. Random-walk magnitudes of ~0.01 cost 0.01,
+# enough to push the gradient toward zero whenever the policy isn't
+# extracting clear strehl value. Earlier weight=0.01 was too weak --
+# run dm_strehl_only_full_1779085555 still saw the policy mean drift
+# to within-episode strehl collapse despite the tight sigma and the
+# penalty.
 ENV_KWARGS["action_penalty"] = True
-ENV_KWARGS["action_penalty_weight"] = 0.01
+ENV_KWARGS["action_penalty_weight"] = 1.0
 
 # Small random DM perturbation per reset; NOT forced symmetric.
 ENV_KWARGS["init_dm_micron_std"] = 0.05
@@ -86,7 +86,16 @@ ENV_KWARGS["command_tip_tilt"] = False
 # and the LSTM-driven mean walks to saturation with no gradient to
 # escape (strehl floors at zero in every direction at full deflection).
 ENV_KWARGS["dm_incremental_control"] = True
-ENV_KWARGS["env_action_scale"] = 0.1
+# env_action_scale tightened from 0.1 -> 0.01. Max per-step DM change
+# becomes 0.01 * 1.5 µm = 0.015 µm, comparable to (but below) the
+# 1-sigma init perturbation (0.05 µm). The corrective signal needs
+# 0.05/0.015 ~ 3 steps to fully cancel a 1-sigma init draw, easily
+# inside the 64-step episode. Accumulated noise at sigma=0.018 is
+# 0.018 * 0.01 * 1.5 * sqrt(64) = 0.0022 µm RMS -- effectively zero
+# relative to init. Combined with action_penalty_weight=1.0 this should
+# make 'do nothing' a stable attractor that the policy can incrementally
+# improve from.
+ENV_KWARGS["env_action_scale"] = 0.01
 
 
 # ----------------------------------------------------------------------
