@@ -74,8 +74,16 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # -----------------------------------------------------------------
         assert env_kwargs.get("num_atmosphere_layers", 0) == 0, \
             "V5 requires num_atmosphere_layers=0"
-        assert env_kwargs.get("command_secondaries", True), \
-            "V5 requires command_secondaries=True"
+        # command_secondaries: when False, segment piston (and tip/tilt
+        # if also enabled) is dropped from the action space entirely.
+        # The full-DM strehl-only experiment runs without bilateral
+        # symmetry and so cannot rely on the wrapper to pin segments at
+        # zero -- it needs a true DM-only action vector. Skipping the
+        # seg slice keeps the underlying v5 plumbing intact (segments
+        # still get allocated and initialised) and only suppresses the
+        # action ingestion path.
+        self._command_secondaries = bool(
+            env_kwargs.get("command_secondaries", True))
         assert not env_kwargs.get("command_tensioners", False), \
             "V5 does not support command_tensioners"
         # DM is supported. The DM action slice is appended AFTER the
@@ -631,9 +639,16 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         # Action layout: [seg_actions ..., dm_actions ...]
         #   seg slice: per-segment grouped (p0, t0, tl0, p1, t1, tl1, ...)
         #              dim = num_apertures * n_dof_per_seg
+        #              omitted entirely when command_secondaries=False
+        #              (the seg actuators still exist in env state and
+        #              stay at the post-reset zero/perturbation; the
+        #              policy just doesn't see them in its action vector)
         #   dm slice (optional): one entry per DM actuator, absolute,
         #              in [-1, 1] units of stroke_limit_m
-        self._n_seg_actions = self._num_apertures * self._n_dof_per_seg
+        if self._command_secondaries:
+            self._n_seg_actions = self._num_apertures * self._n_dof_per_seg
+        else:
+            self._n_seg_actions = 0
         action_dim = self._n_seg_actions + self._n_dm_acts
         single_action_space = spaces.Box(
             low=-1.0, high=1.0,
@@ -867,50 +882,63 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             seg_actions_t = actions_t
             dm_actions_t = None
 
-        # Remap action (per-segment: [p0,t0,tl0, p1,t1,tl1, ...]) to
-        # actuator (per-DOF: [p0,p1,..., t0,t1,..., tl0,tl1,...])
-        action_reshaped = seg_actions_t.reshape(N, n_seg, n_dof)  # [N, n_seg, n_dof]
-        # Transpose to [N, n_dof, n_seg] then flatten to [N, n_active]
-        action_reordered = action_reshaped.permute(0, 2, 1).reshape(N, -1)
+        # Segment slice: skipped entirely when command_secondaries=False.
+        # Actuators stay at whatever _init_actuators wrote (zero plus any
+        # init_piston_micron_std perturbation), and the OOB tracking
+        # below reports zero rather than the per-DOF clipping fraction.
+        if self._n_seg_actions > 0:
+            # Remap action (per-segment: [p0,t0,tl0, p1,t1,tl1, ...]) to
+            # actuator (per-DOF: [p0,p1,..., t0,t1,..., tl0,tl1,...])
+            action_reshaped = seg_actions_t.reshape(N, n_seg, n_dof)  # [N, n_seg, n_dof]
+            # Transpose to [N, n_dof, n_seg] then flatten to [N, n_active]
+            action_reordered = action_reshaped.permute(0, 2, 1).reshape(N, -1)
 
-        # Build full-mode delta (zero for inactive DOFs like tip/tilt in piston-only)
-        n_active = n_seg * n_dof
-        if n_active < self._n_modes:
-            delta_full = torch.zeros(N, self._n_modes, dtype=torch.float32, device=self.dev)
-            delta_full[:, :n_active] = action_reordered * self._max_corr_t[:n_active].unsqueeze(0)
+            # Build full-mode delta (zero for inactive DOFs like tip/tilt in piston-only)
+            n_active = n_seg * n_dof
+            if n_active < self._n_modes:
+                delta_full = torch.zeros(N, self._n_modes, dtype=torch.float32, device=self.dev)
+                delta_full[:, :n_active] = action_reordered * self._max_corr_t[:n_active].unsqueeze(0)
+            else:
+                delta_full = action_reordered * self._max_corr_t.unsqueeze(0)
+
+            # Incremental: actuators += delta; Absolute: actuators = baseline + scaled_action
+            if self._incremental_control:
+                pre_clip = self._actuators_t + delta_full
+            else:
+                pre_clip = self._baselines_t + delta_full
+
+            # Clip to [baseline - max, baseline + max]
+            low = self._baselines_t - self._max_corr_t.unsqueeze(0)
+            high = self._baselines_t + self._max_corr_t.unsqueeze(0)
+            post_clip = torch.clamp(pre_clip, low, high)
+
+            # Track OOB fraction (only count active DOFs)
+            clipped_full = (pre_clip != post_clip)  # [N, n_modes]
+            if self._command_tip_tilt:
+                n_active = self._n_modes
+            else:
+                n_active = self._num_apertures  # piston only
+            self._oob_frac = clipped_full[:, :n_active].float().mean(dim=1)  # [N]
+
+            # Rail noise: add noise where clipped (full tensor)
+            noise = torch.randn_like(post_clip) * self._noise_std_t.unsqueeze(0)
+            post_clip = torch.where(clipped_full, post_clip + noise, post_clip)
+
+            # Actuator repeatability noise on non-zero commands
+            if self._actuator_noise:
+                # Build full-size nonzero mask
+                cmd_nonzero = torch.zeros(N, self._n_modes, dtype=torch.bool, device=self.dev)
+                cmd_nonzero[:, :n_active] = (action_reordered != 0.0)
+                rep_noise = torch.randn_like(post_clip) * self._noise_std_t.unsqueeze(0)
+                post_clip = torch.where(cmd_nonzero, post_clip + rep_noise, post_clip)
         else:
-            delta_full = action_reordered * self._max_corr_t.unsqueeze(0)
-
-        # Incremental: actuators += delta; Absolute: actuators = baseline + scaled_action
-        if self._incremental_control:
-            pre_clip = self._actuators_t + delta_full
-        else:
-            pre_clip = self._baselines_t + delta_full
-
-        # Clip to [baseline - max, baseline + max]
-        low = self._baselines_t - self._max_corr_t.unsqueeze(0)
-        high = self._baselines_t + self._max_corr_t.unsqueeze(0)
-        post_clip = torch.clamp(pre_clip, low, high)
-
-        # Track OOB fraction (only count active DOFs)
-        clipped_full = (pre_clip != post_clip)  # [N, n_modes]
-        if self._command_tip_tilt:
-            n_active = self._n_modes
-        else:
-            n_active = self._num_apertures  # piston only
-        self._oob_frac = clipped_full[:, :n_active].float().mean(dim=1)  # [N]
-
-        # Rail noise: add noise where clipped (full tensor)
-        noise = torch.randn_like(post_clip) * self._noise_std_t.unsqueeze(0)
-        post_clip = torch.where(clipped_full, post_clip + noise, post_clip)
-
-        # Actuator repeatability noise on non-zero commands
-        if self._actuator_noise:
-            # Build full-size nonzero mask
-            cmd_nonzero = torch.zeros(N, self._n_modes, dtype=torch.bool, device=self.dev)
-            cmd_nonzero[:, :n_active] = (action_reordered != 0.0)
-            rep_noise = torch.randn_like(post_clip) * self._noise_std_t.unsqueeze(0)
-            post_clip = torch.where(cmd_nonzero, post_clip + rep_noise, post_clip)
+            # No seg actions: segments hold their current state. Skip
+            # the apply path entirely so post_clip stays defined for the
+            # write below (we just write back the existing actuators).
+            post_clip = self._actuators_t
+            # OOB tracking is only meaningful for the DM in this mode;
+            # the DM path tracks its own clipping below.
+            self._oob_frac = torch.zeros(N, dtype=torch.float32, device=self.dev)
 
         self._actuators_t = post_clip
 
