@@ -56,11 +56,24 @@ ENV_KWARGS["action_penalty_weight"] = 0.0
 ENV_KWARGS["init_dm_micron_std"] = 0.05
 ENV_KWARGS["init_dm_symmetric"] = False
 
+# DM only. Segments and tip/tilt are NOT in the action space. The base
+# bilateral config sets command_secondaries=True (the wrapper freezes
+# those seg-piston dims at zero, so they don't matter there); with the
+# wrapper OFF here we'd otherwise inherit 15 incremental seg-piston
+# DOFs that accumulate ~5 µm of drift per episode under any sigma > 0,
+# completely scrambling the on-axis flux even when the DM half works.
+ENV_KWARGS["command_secondaries"] = False
+ENV_KWARGS["command_tip_tilt"] = False
+
 # Absolute DM control. With incremental control + 1225-dim action the
 # DM drifts off the strehl-good attractor over an episode (each step
 # adds a small bias); absolute control lets every step write the full
 # corrective shape directly so mean bias is a fixed offset, not a
-# growing one.
+# growing one. Action space is [-1, 1] per actuator, mapping linearly
+# to ±_dm_stroke_limit_m = ±1.5 µm of surface displacement. With
+# init_dm_micron_std = 0.05 µm, the corrective action for a 1-σ
+# perturbation is ~±0.033 (3.3 % of bound); a 3-σ draw is ~±0.10 — the
+# full action range gives ~30× headroom over what's actually needed.
 ENV_KWARGS["dm_incremental_control"] = False
 ENV_KWARGS["env_action_scale"] = 1.0
 
