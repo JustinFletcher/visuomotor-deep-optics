@@ -113,26 +113,22 @@ def _patch(cfg):
     cfg.pop("reward_weight_curriculum", None)
     cfg.pop("curriculum", None)
     cfg.pop("holding_bonus_anneal", None)
-    # --- Entropy / log_std envelope -------------------------------------
-    # Walked back toward vanilla relative to the bilateral patch:
-    #   - ent_coef removed (was 1e-6 "floor"; with log_std_min in place
-    #     there's no underflow risk and the floor served no purpose --
-    #     1e-6 * H_total of -1324 contributes 0.0013 to the loss, which
-    #     is rounding noise next to a strehl signal of ~-0.3 per step).
-    #   - init_log_std dropped from -2.5 to -4.0 (sigma 0.082 -> 0.018).
-    #     End-of-episode accumulated DM noise under incremental control
-    #     drops from ~0.10 um RMS to ~0.02 um RMS, comfortably below
-    #     init_dm_micron_std=0.05. Stops the within-episode strehl
-    #     crash observed in run dm_strehl_only_full_1779084109 (strehl
-    #     went 0.70 at step 1 -> 0.001 at step 64).
-    #   - log_std_max tightened from -2.0 to -3.0 (sigma cap 0.135 ->
-    #     0.050). Cap matches the corrective-action range (~0.10) so
-    #     exploration never overwhelms signal.
-    #   - log_std_min kept at -5.0 as a numerical safety floor.
+    # --- Entropy / log_std: ABSOLUTE VANILLA ----------------------------
+    # Strip every entropy-related modification accumulated in the
+    # bilateral patch chain. The result is stock PPO defaults:
+    #   - ent_coef = 0.0          (no entropy bonus, CleanRL default)
+    #   - init_log_std = -0.5     (RecurrentActorCritic class default,
+    #                              sigma = exp(-0.5) ~= 0.61)
+    #   - log_std_min = None      (no clamping)
+    #   - log_std_max = None      (no clamping)
+    # The bilateral patch had set ent_coef=1e-6, init_log_std=-2.5,
+    # log_std_max=-2.0, log_std_min=-5.0; all of those are removed here.
+    # If the run still misbehaves at these defaults, the failure is the
+    # task / architecture itself, not an accumulated hack.
     cfg["ent_coef"] = 0.0
-    cfg["init_log_std"] = -4.0
-    cfg["log_std_max"] = -3.0
-    cfg["log_std_min"] = -5.0
+    cfg["init_log_std"] = -0.5
+    cfg.pop("log_std_min", None)
+    cfg.pop("log_std_max", None)
     return cfg
 
 
