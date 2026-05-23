@@ -194,9 +194,33 @@ def test_ssh_connection(remote_host: str | None = None) -> bool:
     return False
 
 
+def _stderr_after_banner(stderr: str) -> str:
+    """Return whatever follows the gov USG banner in an SSH stderr blob.
+
+    The remote sshd prints a multi-line USG warning banner on every
+    connection, which dominates the stderr buffer. The actual SSH /
+    sshd error (if any) appears after the banner -- typically after a
+    blank line, sometimes after a module-load banner. Strip everything
+    up through the last "See User Agreement for details." line so the
+    real error is what the user sees; return "" if there's nothing
+    after the banner (which itself signals "banner exchange was the
+    failure mode -- rate limit, transient connectivity").
+    """
+    if not stderr:
+        return ""
+    # Anchor on a stable trailing line in the USG banner. Anything
+    # after that is post-banner content; anything before is the
+    # banner itself.
+    anchor = "See User Agreement for details."
+    idx = stderr.rfind(anchor)
+    if idx < 0:
+        return stderr.strip()
+    return stderr[idx + len(anchor):].strip()
+
+
 def find_latest_remote_subdir(
     remote_host: str, remote_base: str, pattern: str = "*",
-    retries: int = 3,
+    retries: int = 6,
 ) -> str | None:
     """SSH to remote_host and return the basename of the newest
     directory matching ``<remote_base>/<pattern>``. Returns None when
@@ -221,22 +245,31 @@ def find_latest_remote_subdir(
         f"find {base} -mindepth 1 -maxdepth 1 -type d "
         f"-name '{pattern}' -printf '%T@ %f\\n' "
         f"| sort -nr | head -1 | awk '{{print $2}}'")
-    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30",
            remote_host, remote_cmd]
     last_stderr = ""
     for attempt in range(1, retries + 1):
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30)
+                cmd, capture_output=True, text=True, timeout=60)
         except subprocess.TimeoutExpired:
             print(f"  SSH timeout while resolving --latest under "
                   f"{remote_base} (attempt {attempt}/{retries})")
+            time.sleep(min(2 ** attempt, 30))
             continue
         if result.returncode != 0:
             last_stderr = result.stderr.strip()
+            # Strip the gov banner from the surfaced excerpt so the
+            # actual SSH error (if any) is visible. The banner is
+            # always followed by a blank line then the real stderr;
+            # if no real stderr follows, the failure is the banner
+            # exchange itself (rate-limited sshd, transient
+            # connectivity).
+            tail = _stderr_after_banner(last_stderr)
             print(f"  SSH returned {result.returncode} resolving "
                   f"--latest (attempt {attempt}/{retries}): "
-                  f"{last_stderr[:200]}")
+                  f"{(tail or '<banner-exchange failure>')[:200]}")
+            time.sleep(min(2 ** attempt, 30))
             continue
         line = result.stdout.strip()
         if line:
@@ -246,7 +279,8 @@ def find_latest_remote_subdir(
         return None
     # All retries exhausted with timeouts / errors.
     if last_stderr:
-        print(f"  Last stderr: {last_stderr[:500]}")
+        tail = _stderr_after_banner(last_stderr)
+        print(f"  Last stderr: {(tail or last_stderr)[:500]}")
     return None
 
 
