@@ -173,12 +173,14 @@ class ZernikeDMVectorEnv(vector.VectorEnv):
     ``[-1, 1]^n_dm`` without saturation (modulo numerical roundoff).
     """
 
-    _SUPPORTED_NORMS = ("inf", "rms", "none")
+    _SUPPORTED_NORMS = ("inf", "rms", "wavefront_rms", "none")
 
     def __init__(self, env, n_zernike: int = 36,
                  skip_piston: bool = False,
                  freeze_segments: bool = True,
-                 normalize: Literal["inf", "rms", "none"] = "inf"):
+                 normalize: Literal[
+                     "inf", "rms", "wavefront_rms", "none"] = "wavefront_rms",
+                 regularize_rcond: float = 1e-3):
         if not hasattr(env, "_dm_basis_t_flat") or env._dm_basis_t_flat is None:
             raise ValueError(
                 "ZernikeDMVectorEnv requires a v5 env with command_dm=True; "
@@ -199,6 +201,7 @@ class ZernikeDMVectorEnv(vector.VectorEnv):
         self._skip_piston = bool(skip_piston)
         self._freeze_segments = bool(freeze_segments)
         self._normalize = normalize
+        self._regularize_rcond = float(regularize_rcond)
 
         # Build the projection matrix (numpy first, then to GPU tensor).
         M_np = self._build_projection()
@@ -228,11 +231,41 @@ class ZernikeDMVectorEnv(vector.VectorEnv):
     # ------------------------------------------------------------------
 
     def _build_projection(self) -> np.ndarray:
-        """Solve ``Phi.T @ M = Z`` in least squares and column-normalize.
+        """Solve ``Phi.T @ M = Z`` in *regularized* least squares and
+        normalize the result so unit Zernike action produces a sensible
+        wavefront amplitude.
 
         ``Phi``  : [n_dm, n_pix_in_pupil]   DM influence functions
         ``Z``    : [n_pix_in_pupil, n_z]    Zernike basis on the pupil
         ``M``    : [n_dm, n_z]              actuator coefficients per mode
+
+        Regularization (``regularize_rcond``, default 1e-3) is critical:
+        the gaussian-influence DM has heavily overlapping per-actuator
+        bumps, so ``Phi_in.T`` is highly ill-conditioned. With the
+        numpy default ``rcond`` (machine epsilon) the LS solution finds
+        per-actuator amplitudes of order 1e6-1e7 that almost cancel
+        through Phi, leaving the desired Zernike pattern as a tiny
+        residual. After ``max|M|=1`` normalization the cancellation
+        pattern is preserved but the wavefront amplitude collapses by
+        the same 1e6 factor -- so the policy commanding large Zernike
+        actions sees essentially no wavefront response. Truncating at
+        ``rcond=1e-3`` drops the offending small singular values; the
+        resulting M is smooth, distributed across actuators, and
+        produces actual wavefronts.
+
+        Normalization options:
+          - ``"wavefront_rms"`` (default): scale each column so that
+            unit Zernike action produces a DM-action vector whose
+            wavefront has unit RMS on the pupil (in DM-action units;
+            the env's stroke and action_scale convert this to a
+            physical OPD). Caps any column that would otherwise drive
+            an actuator beyond +/- 1 so the wrapper's downstream clamp
+            never distorts the projection. This is the physically
+            meaningful normalization for an RL policy.
+          - ``"inf"``: legacy, max|M|=1 per column. Preserves pattern
+            but couples wavefront amplitude to the LS regularization.
+          - ``"rms"``: max RMS|M|=1 per column.
+          - ``"none"``: no scaling.
         """
         env = self._env
         H, W = env._H, env._W
@@ -240,6 +273,7 @@ class ZernikeDMVectorEnv(vector.VectorEnv):
         # Binary pupil mask from the env's complex aperture tensor.
         aperture = np.asarray(env._aperture_t.cpu().numpy())
         mask = (np.abs(aperture) > 0).reshape(H, W)
+        n_pupil = int(mask.sum())
 
         Z = zernike_basis_on_grid(H, W, mask, self._n_zernike,
                                   skip_piston=self._skip_piston)  # [H*W, n_z]
@@ -249,23 +283,54 @@ class ZernikeDMVectorEnv(vector.VectorEnv):
         Phi_in = Phi_full[:, flat_mask]                             # [n_dm, n_pix]
         Z_in = Z[flat_mask, :]                                      # [n_pix, n_z]
 
-        # Solve Phi_in.T @ M = Z_in for M.
-        # lstsq returns (solution, residuals, rank, sv).
-        M, *_ = np.linalg.lstsq(Phi_in.T, Z_in, rcond=None)
+        # Regularized LS. rcond truncates singular values smaller than
+        # rcond * sigma_max so the gaussian-DM null space doesn't blow up.
+        M, _resid, rank, svals = np.linalg.lstsq(
+            Phi_in.T, Z_in, rcond=self._regularize_rcond)
         M = M.astype(np.float64)                                    # [n_dm, n_z]
 
+        # Diagnostic so we can tell at-a-glance whether the regularizer
+        # ate too many modes; printed only when we're inside a non-
+        # silent env construction.
+        if not getattr(env, "_silence", False):
+            print(f"[ZernikeDMVectorEnv] LS rank={rank}/{Phi_in.shape[0]} "
+                  f"(rcond={self._regularize_rcond:g}, "
+                  f"sigma_max={svals[0]:.3g}, "
+                  f"sigma_min_kept={svals[min(rank, len(svals)) - 1]:.3g})")
+
+        # Apply column normalization. For "wavefront_rms" we measure
+        # the actual wavefront RMS from the LS solution on the pupil
+        # and rescale so it equals 1 in DM-action units.
         if self._normalize == "inf":
             norms = np.max(np.abs(M), axis=0)
         elif self._normalize == "rms":
             norms = np.sqrt((M * M).mean(axis=0))
+        elif self._normalize == "wavefront_rms":
+            # wavefront_k = Phi_in.T @ M[:, k] on the pupil [n_pupil].
+            wf = Phi_in.T @ M                                       # [n_pix, n_z]
+            norms = np.sqrt((wf * wf).sum(axis=0) / max(n_pupil, 1))
         else:
             norms = np.ones(self._n_zernike, dtype=np.float64)
+
         # Guard against degenerate modes (e.g., m != 0 evaluated on a
         # symmetric pupil that happens to project to zero on every
-        # actuator) -- leave their column at zero rather than blow up.
+        # actuator, or modes outside Phi's representational reach) --
+        # leave their column at zero rather than blow up.
         good = norms > 1e-12
         out = np.zeros_like(M)
         out[:, good] = M[:, good] / norms[good][None, :]
+
+        # Belt-and-suspender clamp: ensure no actuator command exceeds
+        # +/- 1 at unit Zernike action, regardless of normalization
+        # choice. If any column does, rescale that whole column down so
+        # the wrapper's downstream clamp() never silently distorts the
+        # projected pattern (which would manifest as off-Zernike
+        # speckle in the rendered DM OPD).
+        col_peak = np.max(np.abs(out), axis=0)
+        oversize = col_peak > 1.0
+        if oversize.any():
+            out[:, oversize] = out[:, oversize] / col_peak[oversize][None, :]
+
         return out.astype(np.float32)
 
     # ------------------------------------------------------------------
