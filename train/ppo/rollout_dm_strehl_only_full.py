@@ -151,12 +151,30 @@ def _load_agent(ckpt_path, env, device):
 # Rollout
 # ---------------------------------------------------------------------------
 
+def _capture_dm_opd(env):
+    """Compute current DM OPD on the pupil grid as ``[H, W]`` numpy.
+
+    DM state is in meters of surface displacement; reflective optics
+    double the path, but we report surface here to match the env's
+    internal units (the env's reward is computed on the propagated
+    field directly, so the factor-of-2 is implicit in the optics).
+    Returns NaN of shape (1, 1) when the env has no DM basis (defensive).
+    """
+    dm_basis_flat = getattr(env, "_dm_basis_t_flat", None)
+    if dm_basis_flat is None:
+        return np.full((1, 1), np.nan, dtype=np.float32)
+    H, W = int(env._H), int(env._W)
+    dm_state = env._dm_actuators_t[0]                        # [n_dm], m
+    opd = torch.matmul(dm_state, dm_basis_flat).reshape(H, W)
+    return opd.detach().cpu().numpy()
+
+
 def run_episode(agent, env, seed, device, max_steps, stochastic=False):
     """Single deterministic (or stochastic) episode.
 
     Returns dict with strehl trajectory, reward trajectory, action
-    trajectory and pre-aggregated summary scalars. No image arrays
-    are retained when --no-gifs is set on the CLI.
+    trajectory, and per-step focal-plane PSF + pupil-plane DM OPD
+    snapshots used by the rollout GIF renderer.
     """
     if stochastic:
         torch.manual_seed(int(seed))
@@ -173,9 +191,11 @@ def run_episode(agent, env, seed, device, max_steps, stochastic=False):
     strehls = []
     rewards = []
     actions = []
-    obs_frames = []  # kept for --gifs; one [H, W] frame per step
+    obs_frames = []        # focal-plane intensity, one [H, W] per step
+    opd_frames = []        # pupil-plane DM OPD, one [H, W] per step
 
     obs_frames.append(obs_np[0, 0].copy())
+    opd_frames.append(_capture_dm_opd(env))
 
     steps_taken = 0
     done = False
@@ -194,6 +214,7 @@ def run_episode(agent, env, seed, device, max_steps, stochastic=False):
         steps_taken += 1
         done = bool(term[0] or trunc[0])
         obs_frames.append(nxt[0, 0].copy())
+        opd_frames.append(_capture_dm_opd(env))
         rewards.append(float(rew[0]))
         actions.append(a_np[0].copy())
         if "strehl" in info:
@@ -208,6 +229,7 @@ def run_episode(agent, env, seed, device, max_steps, stochastic=False):
         "rewards": rewards,
         "actions": np.array(actions),
         "obs_frames": obs_frames,
+        "opd_frames": opd_frames,
         "return": float(sum(rewards)),
         "length": len(rewards),
         "seed": int(seed),
@@ -264,21 +286,182 @@ def _save_summary_figure(episodes, out_path, stochastic_label):
 
 
 def _save_median_gif(episodes, out_path, frame_duration=80):
-    """Save the median-final-Strehl episode as an animated GIF."""
+    """Render the median-final-Strehl episode as a 4-panel diagnostic GIF.
+
+    Panels:
+        top-left:    focal-plane PSF (log scale, inferno)
+        top-right:   pupil-plane DM OPD (signed, RdBu_r, symmetric vlim
+                     fixed across the whole episode so colour intensity
+                     reads as absolute OPD magnitude over time)
+        bottom-left: current policy action as a bar chart (Zernike
+                     coefficients when the policy is Zernike-wrapped,
+                     raw DM dims otherwise; ylim fixed at ±1 to match
+                     the action bound)
+        bottom-right: traces over time -- strehl on the primary y-axis,
+                     cumulative |a|_1 (per-dim mean) on the secondary
+                     y-axis; vertical marker tracks the current step.
+
+    "Median" = sort episodes by final strehl, take the middle one. With
+    8 episodes that's sort-rank 4, which lands close to the median by
+    construction.
+    """
     import imageio
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
     finals = np.array([ep["strehls"][-1] for ep in episodes])
     median_idx = int(np.argsort(finals)[len(finals) // 2])
     ep = episodes[median_idx]
-    # Normalise frames to [0, 255] uint8 for GIF encoding.
-    frames = []
-    fmax = max(float(np.max(f)) for f in ep["obs_frames"])
-    if fmax <= 0.0:
-        fmax = 1.0
-    for f in ep["obs_frames"]:
-        ff = (np.clip(f / fmax, 0.0, 1.0) * 255.0).astype(np.uint8)
-        frames.append(ff)
-    imageio.mimsave(out_path, frames, duration=frame_duration / 1000.0,
-                    loop=0)
+
+    obs = ep["obs_frames"]                                     # T+1 frames
+    opd = ep["opd_frames"]                                     # T+1 frames
+    actions = np.asarray(ep["actions"])                        # [T, n_act]
+    strehls = np.asarray(ep["strehls"], dtype=np.float64)      # [T]
+    T = actions.shape[0]
+    n_act = actions.shape[1]
+
+    # Fixed scales across the episode so the eye reads absolute changes.
+    obs_max = max(float(np.max(f)) for f in obs)
+    obs_floor = max(obs_max * 1e-5, 1e-20)
+    opd_max = max(
+        max(float(np.max(np.abs(o))) for o in opd if np.isfinite(o).any()),
+        1e-12)
+    opd_um_max = opd_max * 1e6
+
+    # Per-step cumulative |a|_1 trace (averaged over the action dims so
+    # 24-D Zernike and 1225-D DM are on comparable y-axes). Mean(|a|)
+    # is the same quantity the env's action_penalty consumes, which is
+    # the most useful "is the policy doing anything?" diagnostic.
+    abs_means = np.abs(actions).mean(axis=1) if T > 0 else np.zeros(0)
+
+    fig_w, fig_h = 11.0, 8.4
+    dpi = 100
+
+    def _render_frame(t):
+        # t indexes obs/opd as 0..T (T+1 frames). For action / strehl /
+        # cumulative we have T values indexed 0..T-1 corresponding to
+        # "the step that produced obs[t+1]". At t=0 there's no prior
+        # action; the action bars panel shows zeros.
+        fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi,
+                         constrained_layout=False)
+        gs = fig.add_gridspec(
+            2, 2,
+            left=0.06, right=0.96, top=0.92, bottom=0.07,
+            wspace=0.30, hspace=0.30,
+            width_ratios=[1.0, 1.05], height_ratios=[1.0, 0.75])
+
+        # --- Top-left: PSF on log scale -----------------------------------
+        ax_psf = fig.add_subplot(gs[0, 0])
+        psf_show = np.maximum(obs[t], obs_floor)
+        im_psf = ax_psf.imshow(
+            psf_show, cmap="inferno", origin="lower",
+            norm=mcolors.LogNorm(vmin=obs_floor, vmax=max(obs_max, obs_floor*10)),
+            aspect="equal")
+        ax_psf.set_title(f"focal-plane PSF (log)", fontsize=10)
+        ax_psf.set_xticks([]); ax_psf.set_yticks([])
+        divider = make_axes_locatable(ax_psf)
+        cax = divider.append_axes("right", size="4%", pad=0.05)
+        cb = fig.colorbar(im_psf, cax=cax)
+        cb.ax.tick_params(labelsize=7)
+        cb.set_label("intensity (DN)", fontsize=8, labelpad=2)
+
+        # --- Top-right: DM OPD --------------------------------------------
+        ax_opd = fig.add_subplot(gs[0, 1])
+        if np.isfinite(opd[t]).any():
+            opd_um = opd[t] * 1e6
+            im_opd = ax_opd.imshow(
+                opd_um, cmap="RdBu_r", origin="lower",
+                vmin=-opd_um_max, vmax=opd_um_max, aspect="equal")
+        else:
+            im_opd = ax_opd.imshow(
+                np.zeros((2, 2)), cmap="RdBu_r", origin="lower",
+                vmin=-1, vmax=1)
+        ax_opd.set_title("DM surface OPD", fontsize=10)
+        ax_opd.set_xticks([]); ax_opd.set_yticks([])
+        divider = make_axes_locatable(ax_opd)
+        cax = divider.append_axes("right", size="4%", pad=0.05)
+        cb = fig.colorbar(im_opd, cax=cax)
+        cb.ax.tick_params(labelsize=7)
+        cb.set_label("surface (µm)", fontsize=8, labelpad=2)
+
+        # --- Bottom-left: action bars -------------------------------------
+        ax_act = fig.add_subplot(gs[1, 0])
+        if t == 0:
+            bars = np.zeros(n_act, dtype=np.float64)
+            act_title = f"action (step 0; no prior action)"
+        else:
+            bars = actions[t - 1]
+            act_title = f"action (step {t}, dim={n_act})"
+        idx = np.arange(n_act)
+        # For low-dim (e.g. 24 Zernike) draw thick bars; for very high-
+        # dim (1225 DM) draw a thin stem so we don't render a black
+        # rectangle. Threshold at 64 so anything past a few rows of
+        # Noll Zernikes shows the dense rendering.
+        if n_act <= 64:
+            ax_act.bar(idx, bars, color="C0", edgecolor="black",
+                       linewidth=0.4)
+        else:
+            ax_act.vlines(idx, 0, bars, color="C0", linewidth=0.6)
+        ax_act.axhline(0, color="black", linewidth=0.6)
+        ax_act.set_ylim(-1.05, 1.05)
+        ax_act.set_xlim(-0.5, n_act - 0.5)
+        ax_act.set_xlabel("action index", fontsize=8)
+        ax_act.set_ylabel("action value (clamped to ±1)", fontsize=8)
+        ax_act.set_title(act_title, fontsize=10)
+        ax_act.tick_params(labelsize=7)
+        ax_act.grid(True, axis="y", alpha=0.25)
+
+        # --- Bottom-right: strehl + cumulative control work --------------
+        ax_tr = fig.add_subplot(gs[1, 1])
+        steps = np.arange(1, T + 1)
+        ax_tr.plot(steps, strehls, color="C2", linewidth=1.6,
+                   label="strehl")
+        ax_tr.set_ylim(0, max(1.0, float(strehls.max()) * 1.1 if T else 1.0))
+        ax_tr.set_ylabel("strehl", color="C2", fontsize=8)
+        ax_tr.tick_params(axis="y", labelcolor="C2", labelsize=7)
+        ax_tr.tick_params(axis="x", labelsize=7)
+        ax_tr.set_xlabel("step", fontsize=8)
+        ax_tr.set_xlim(0, T)
+        ax_tr.grid(True, alpha=0.25)
+        ax_tr2 = ax_tr.twinx()
+        ax_tr2.plot(steps, abs_means, color="C3", linewidth=1.2,
+                    linestyle="--", label="mean|action|")
+        ax_tr2.set_ylabel("mean |action| (control work)",
+                          color="C3", fontsize=8)
+        ax_tr2.tick_params(axis="y", labelcolor="C3", labelsize=7)
+        ax_tr2.set_ylim(0, max(0.05, float(abs_means.max()) * 1.1
+                               if T else 0.05))
+        # Current-step marker.
+        if 0 < t <= T:
+            ax_tr.axvline(t, color="0.3", linewidth=0.8, linestyle=":")
+        ax_tr.set_title("strehl + control-work trace", fontsize=10)
+
+        # --- Header -------------------------------------------------------
+        if 0 < t <= T:
+            r = float(ep["rewards"][t - 1])
+            cum = float(np.sum(ep["rewards"][:t]))
+            s = float(strehls[t - 1])
+            header = (f"step {t:>3d} / {T}     "
+                      f"strehl = {s:.4f}     "
+                      f"reward = {r:+.4f}     "
+                      f"Σreward = {cum:+.3f}     "
+                      f"mean|a| = {float(abs_means[t-1]):.4f}")
+        else:
+            header = f"step 0 / {T}     (initial state, no action taken)"
+        fig.suptitle(header, fontsize=11)
+
+        # Render to RGBA array, drop alpha for GIF.
+        fig.canvas.draw()
+        frame = np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
+        plt.close(fig)
+        return frame
+
+    frames = [_render_frame(t) for t in range(T + 1)]
+    imageio.mimsave(out_path, frames,
+                    duration=frame_duration / 1000.0, loop=0)
 
 
 # ---------------------------------------------------------------------------
