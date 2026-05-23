@@ -184,27 +184,59 @@ def test_ssh_connection(remote_host: str | None = None) -> bool:
 
 
 def find_latest_remote_subdir(
-    remote_host: str, remote_base: str, pattern: str = "*"
+    remote_host: str, remote_base: str, pattern: str = "*",
+    retries: int = 3,
 ) -> str | None:
     """SSH to remote_host and return the basename of the newest
-    directory matching ``<remote_base>/<pattern>``. Returns None if
-    nothing matches or the SSH call fails."""
-    # ls -1dt prints directories matching the glob, newest first.
-    # 2>/dev/null suppresses "no match" stderr; head -1 gives the newest.
-    glob = f"{remote_base.rstrip('/')}/{pattern}"
+    directory matching ``<remote_base>/<pattern>``. Returns None when
+    nothing actually matches; retries SSH for transient failures.
+
+    Uses ``find`` (which handles the pattern internally, no shell glob
+    expansion) instead of ``ls {base}/{glob}``, because the latter
+    silently returns empty when the remote shell can't expand the glob
+    (stale SSH multiplex, restricted login shell, broken ARG_MAX,
+    pattern with too many matches). With ``find`` the only failure
+    modes are "no match" (returncode 0, empty stdout) or "SSH/host
+    error" (nonzero returncode, surfaced via stderr).
+    """
+    base = remote_base.rstrip("/")
+    # find -mindepth 1 -maxdepth 1: only direct children of base.
+    # -type d: directories only. -name: pattern match (no shell glob).
+    # -printf '%T@ %f\n': mtime epoch + basename. Then sort numerically
+    # descending and take the first basename.
+    # Single-quote the pattern in the remote command so the remote
+    # shell can't expand it before find sees it.
+    remote_cmd = (
+        f"find {base} -mindepth 1 -maxdepth 1 -type d "
+        f"-name '{pattern}' -printf '%T@ %f\\n' "
+        f"| sort -nr | head -1 | awk '{{print $2}}'")
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-           remote_host,
-           f"ls -1dt {glob} 2>/dev/null | head -1"]
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=20)
-    except subprocess.TimeoutExpired:
-        print(f"  SSH timeout while resolving --latest under {remote_base}")
+           remote_host, remote_cmd]
+    last_stderr = ""
+    for attempt in range(1, retries + 1):
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            print(f"  SSH timeout while resolving --latest under "
+                  f"{remote_base} (attempt {attempt}/{retries})")
+            continue
+        if result.returncode != 0:
+            last_stderr = result.stderr.strip()
+            print(f"  SSH returned {result.returncode} resolving "
+                  f"--latest (attempt {attempt}/{retries}): "
+                  f"{last_stderr[:200]}")
+            continue
+        line = result.stdout.strip()
+        if line:
+            return os.path.basename(line.rstrip("/"))
+        # Empty stdout + clean returncode = genuine no-match. Don't
+        # retry; the caller will report it to the user.
         return None
-    line = result.stdout.strip()
-    if not line:
-        return None
-    return os.path.basename(line.rstrip("/"))
+    # All retries exhausted with timeouts / errors.
+    if last_stderr:
+        print(f"  Last stderr: {last_stderr[:500]}")
+    return None
 
 
 def run_rsync(remote_path: str, local_path: Path, dry_run: bool = False,
