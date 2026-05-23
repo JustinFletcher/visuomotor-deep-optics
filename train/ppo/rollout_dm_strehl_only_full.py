@@ -377,7 +377,15 @@ def _pull_ckpt_config(ckpt_path):
 # ---------------------------------------------------------------------------
 
 def _resolve_checkpoints(args):
-    """Either --checkpoint, or every seed_*/checkpoints/latest.pt under --run-dir."""
+    """Either --checkpoint, or every checkpoint under --run-dir.
+
+    Discovers checkpoints at any depth under each seed_* directory --
+    run_main lands them at ``seed_<S>/ppo_optomech_<S>_<ts>/checkpoints/``
+    (an extra timestamped subdir), so a single-glob ``seed_*/checkpoints``
+    misses them. We walk every ``checkpoints/`` directory under each
+    seed dir, prefer ``latest.pt``, and fall back to the highest-numbered
+    ``update_*.pt`` if no ``latest.pt`` exists.
+    """
     if args.checkpoint:
         return [args.checkpoint]
     if not args.run_dir:
@@ -385,17 +393,18 @@ def _resolve_checkpoints(args):
         sys.exit(1)
     found = []
     for seed_dir in sorted(Path(args.run_dir).glob("seed_*")):
-        ckpts_dir = seed_dir / "checkpoints"
-        if not ckpts_dir.exists():
-            continue
-        latest = ckpts_dir / "latest.pt"
-        if latest.exists():
-            found.append(str(latest))
-        else:
-            # Fall back to the highest-numbered checkpoint.
-            cands = sorted(ckpts_dir.glob("update_*.pt"))
-            if cands:
-                found.append(str(cands[-1]))
+        # rglob picks up checkpoints/ at seed_dir/checkpoints (older
+        # layout) and seed_dir/ppo_optomech_*/checkpoints (current).
+        for ckpts_dir in sorted(seed_dir.rglob("checkpoints")):
+            if not ckpts_dir.is_dir():
+                continue
+            latest = ckpts_dir / "latest.pt"
+            if latest.exists():
+                found.append(str(latest))
+            else:
+                cands = sorted(ckpts_dir.glob("update_*.pt"))
+                if cands:
+                    found.append(str(cands[-1]))
     if not found:
         print(f"No checkpoints found under {args.run_dir}")
         sys.exit(1)
