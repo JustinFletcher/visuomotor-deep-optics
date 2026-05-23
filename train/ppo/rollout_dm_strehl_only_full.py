@@ -60,13 +60,21 @@ class _EnvShim:
 # Construction
 # ---------------------------------------------------------------------------
 
-def _build_env(base_env_kwargs, max_steps, device):
+def _build_env(base_env_kwargs, max_steps, device, ckpt_config=None):
     """v5 single-env, no bilateral wrapper, no dark hole.
 
     Mirrors the training-time env: same env_kwargs (pulled from the
     checkpoint's stored config), max_episode_steps overridden to
     max_steps + 1 so the loop can stop one step short of the env's
     auto-reset and never see a reset-transient terminal frame.
+
+    When ``ckpt_config`` is provided and has ``zernike_dm=True``, the
+    base env is wrapped with ``ZernikeDMVectorEnv`` using the same
+    Zernike-basis parameters the training run used (read from the
+    checkpoint config). This keeps the eval-time projection matrix
+    bit-identical to the training-time one, which matters because the
+    projection is built from the env's pupil mask + DM influence basis
+    and any drift would alias into a learned-vs-eval action mismatch.
     """
     kw = dict(base_env_kwargs)
     kw["max_episode_steps"] = int(max_steps) + 1
@@ -80,6 +88,15 @@ def _build_env(base_env_kwargs, max_steps, device):
     from optomech.optomech.optomech_v5 import BatchedOptomechEnv
     with contextlib.redirect_stdout(io.StringIO()):
         env = BatchedOptomechEnv(num_envs=1, device=device, **kw)
+        if ckpt_config is not None and ckpt_config.get("zernike_dm", False):
+            from train.ppo.zernike_dm import ZernikeDMVectorEnv
+            env = ZernikeDMVectorEnv(
+                env,
+                n_zernike=ckpt_config.get("zernike_n_modes", 36),
+                skip_piston=ckpt_config.get("zernike_skip_piston", False),
+                freeze_segments=ckpt_config.get(
+                    "zernike_freeze_segments", True),
+                normalize=ckpt_config.get("zernike_normalize", "inf"))
     return env
 
 
@@ -241,9 +258,11 @@ def _save_median_gif(episodes, out_path, frame_duration=80):
 
 def run_one_checkpoint(ckpt_path, args):
     print(f"\n=== {ckpt_path} ===")
+    ek, ckpt_cfg = _pull_ckpt_config(ckpt_path)
     env = _build_env(
-        base_env_kwargs=_pull_env_kwargs(ckpt_path),
-        max_steps=args.max_steps, device=args.device)
+        base_env_kwargs=ek,
+        max_steps=args.max_steps, device=args.device,
+        ckpt_config=ckpt_cfg)
     agent, config, _ckpt = _load_agent(ckpt_path, env, args.device)
     print(f"  global_step={config.get('global_step', '?')}  "
           f"action_dim={agent.action_dim}  "
@@ -278,8 +297,9 @@ def run_one_checkpoint(ckpt_path, args):
         # reset; safer to discard).
         if (label, stoch) != modes[-1]:
             env = _build_env(
-                base_env_kwargs=_pull_env_kwargs(ckpt_path),
-                max_steps=args.max_steps, device=args.device)
+                base_env_kwargs=ek,
+                max_steps=args.max_steps, device=args.device,
+                ckpt_config=ckpt_cfg)
 
         # Aggregate scalars.
         all_strehls = np.array([ep["strehls"] for ep in episodes])
@@ -329,14 +349,27 @@ def run_one_checkpoint(ckpt_path, args):
 
 
 def _pull_env_kwargs(ckpt_path):
-    """Open the checkpoint just for its env_kwargs (light, no model load)."""
+    """Backward-compat: return just env_kwargs."""
+    return _pull_ckpt_config(ckpt_path)[0]
+
+
+def _pull_ckpt_config(ckpt_path):
+    """Open the checkpoint and return ``(env_kwargs, full_config)``.
+
+    Both are needed by ``_build_env``: env_kwargs go to the v5 env
+    constructor; the full config carries top-level flags like
+    ``zernike_dm`` / ``zernike_n_modes`` that drive the action-space
+    wrapper choice. The checkpoint is loaded once per call (light --
+    no model state is materialised) and may be cached by the caller.
+    """
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    ek = ck["config"].get("env_kwargs", None)
+    cfg = ck["config"]
+    ek = cfg.get("env_kwargs", None)
     if ek is None:
         raise RuntimeError(
             f"{ckpt_path} has no env_kwargs in its config; cannot "
             f"reconstruct the training env.")
-    return ek
+    return ek, cfg
 
 
 # ---------------------------------------------------------------------------

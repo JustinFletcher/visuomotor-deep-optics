@@ -384,6 +384,14 @@ def evaluate_with_visualization(
                 eval_envs,
                 freeze_segments=config.get("bilateral_freeze_segments", True),
                 mode=config.get("bilateral_dm_mode", "per_target_radial"))
+        if config.get("zernike_dm", False):
+            from train.ppo.zernike_dm import ZernikeDMVectorEnv
+            eval_envs = ZernikeDMVectorEnv(
+                eval_envs,
+                n_zernike=config.get("zernike_n_modes", 36),
+                skip_piston=config.get("zernike_skip_piston", False),
+                freeze_segments=config.get("zernike_freeze_segments", True),
+                normalize=config.get("zernike_normalize", "inf"))
     else:
         eval_envs = gym.vector.SyncVectorEnv([
             make_optomech_env(env_kwargs, max_episode_steps=max_steps, idx=i)
@@ -1164,6 +1172,14 @@ def _make_eval_env(config):
                 env,
                 freeze_segments=config.get("bilateral_freeze_segments", True),
                 mode=config.get("bilateral_dm_mode", "per_target_radial"))
+        if config.get("zernike_dm", False):
+            from train.ppo.zernike_dm import ZernikeDMVectorEnv
+            env = ZernikeDMVectorEnv(
+                env,
+                n_zernike=config.get("zernike_n_modes", 36),
+                skip_piston=config.get("zernike_skip_piston", False),
+                freeze_segments=config.get("zernike_freeze_segments", True),
+                normalize=config.get("zernike_normalize", "inf"))
         return env
     else:
         env = gym.make(_ENV_ID, **env_kwargs)
@@ -1384,6 +1400,27 @@ def run_ppo_training(config: dict, run_dir: str):
             print(f"  Wrapped with BilateralDMVectorEnv: "
                   f"action_dim={envs.single_action_space.shape[0]}, "
                   f"n_half={envs._n_half}")
+
+        # Optional: Zernike-coefficient policy wrapper. Replaces the
+        # raw per-actuator DM action with a low-dim Zernike-coefficient
+        # action; a fixed projection (built from the DM influence basis
+        # and pupil mask at construction time) maps coefficients to a
+        # full DM-action vector that the env consumes natively. Lets
+        # PPO operate at the tractable action dim of ~10-40 Zernike
+        # modes instead of 1225 raw actuators. Matches the bench
+        # convention where the agent emits coefficients and the
+        # operator-side hardware applies the projection.
+        if config.get("zernike_dm", False):
+            from train.ppo.zernike_dm import ZernikeDMVectorEnv
+            envs = ZernikeDMVectorEnv(
+                envs,
+                n_zernike=config.get("zernike_n_modes", 36),
+                skip_piston=config.get("zernike_skip_piston", False),
+                freeze_segments=config.get("zernike_freeze_segments", True),
+                normalize=config.get("zernike_normalize", "inf"))
+            print(f"  Wrapped with ZernikeDMVectorEnv: "
+                  f"action_dim={envs.single_action_space.shape[0]} "
+                  f"Zernike modes")
     else:
         # V3/V4: individual envs wrapped in Sync/AsyncVectorEnv.
         env_fns = [
