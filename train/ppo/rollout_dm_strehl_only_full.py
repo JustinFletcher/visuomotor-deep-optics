@@ -264,7 +264,12 @@ def run_one_checkpoint(ckpt_path, args):
         max_steps=args.max_steps, device=args.device,
         ckpt_config=ckpt_cfg)
     agent, config, _ckpt = _load_agent(ckpt_path, env, args.device)
-    print(f"  global_step={config.get('global_step', '?')}  "
+    # global_step / update / best_eval_return are top-level keys on the
+    # checkpoint dict, NOT nested in config -- see CLAUDE.md "Checkpoint
+    # structure". config holds the run's hyperparams.
+    global_step = int(_ckpt.get("global_step", 0))
+    update = int(_ckpt.get("update", 0))
+    print(f"  global_step={global_step:,}  update={update}  "
           f"action_dim={agent.action_dim}  "
           f"target_dim={int(config.get('target_dim', 0))}")
 
@@ -341,7 +346,8 @@ def run_one_checkpoint(ckpt_path, args):
     with open(json_path, "w") as f:
         json.dump({
             "checkpoint": str(ckpt_path),
-            "global_step": int(config.get("global_step", 0)),
+            "global_step": global_step,
+            "update": update,
             "modes": all_summaries,
         }, f, indent=2)
     print(f"  -> {json_path}")
