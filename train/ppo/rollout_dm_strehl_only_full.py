@@ -100,6 +100,35 @@ def _build_env(base_env_kwargs, max_steps, device, ckpt_config=None):
     return env
 
 
+def _default_out_dir(ckpt_path):
+    """Build a test_output/ path for a checkpoint following the repo
+    convention: ``test_output/<run_id>__<seed_dir>/``.
+
+    Example: a checkpoint at
+        dark_hole_runs/dm_strehl_only_zernike_1779499965/seed_1772816303/
+            ppo_optomech_*/checkpoints/latest.pt
+    lands at
+        test_output/dm_strehl_only_zernike_1779499965__seed_1772816303/
+    """
+    p = Path(ckpt_path).resolve()
+    parts = p.parts
+    # Walk up looking for the seed_<n> directory and the parent run id.
+    seed = None
+    run_id = None
+    for i, part in enumerate(parts):
+        if part.startswith("seed_"):
+            seed = part
+            run_id = parts[i - 1] if i > 0 else "unknown_run"
+            break
+    if seed is None:
+        # Fall back: just use the checkpoint basename and immediate
+        # parent dir so we never collide between checkpoints.
+        return os.path.join(
+            "test_output",
+            f"{p.parent.parent.name}__{p.stem}")
+    return os.path.join("test_output", f"{run_id}__{seed}")
+
+
 def _load_agent(ckpt_path, env, device):
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     config = ckpt["config"]
@@ -279,12 +308,14 @@ def run_one_checkpoint(ckpt_path, args):
     if args.stochastic in ("stoch", "both"):
         modes.append(("stoch", True))
 
-    output_dir = os.path.dirname(ckpt_path)
-    out_root = os.path.join(
-        output_dir, "..",
-        f"eval_{os.path.basename(ckpt_path).rsplit('.', 1)[0]}")
-    out_root = os.path.normpath(out_root)
+    # Match the convention used by every other rollout in this repo
+    # (rollout_bilateral_dm_grid, sweep_tiptilt, etc.): output lands
+    # under top-level test_output/, NOT next to the checkpoint. Each
+    # checkpoint gets its own subdir named after the run id + seed so
+    # multi-seed sweeps don't collide. ``--output-dir`` overrides.
+    out_root = args.output_dir or _default_out_dir(ckpt_path)
     os.makedirs(out_root, exist_ok=True)
+    print(f"  -> {out_root}/")
 
     all_summaries = {}
     for label, stoch in modes:
@@ -447,6 +478,12 @@ def main():
                    help="Skip matplotlib summary figures.")
     p.add_argument("--no-gifs", action="store_true",
                    help="Skip per-mode median-episode GIF.")
+    p.add_argument("--output-dir", type=str, default=None,
+                   help="Output directory (default: "
+                        "test_output/<run_id>__<seed_dir>/). When "
+                        "--run-dir is used, every checkpoint reuses "
+                        "this same flag value, so prefer the default "
+                        "for multi-seed sweeps to avoid collisions.")
     p.add_argument("--frame-duration", type=int, default=80,
                    help="GIF frame duration (ms).")
     args = p.parse_args()
