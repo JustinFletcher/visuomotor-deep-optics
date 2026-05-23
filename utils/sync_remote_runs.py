@@ -75,6 +75,17 @@ SSH_CMD = (
     " -o ServerAliveInterval=15"
     " -o ServerAliveCountMax=3"
     " -o ConnectTimeout=15"
+    " -o BatchMode=yes"               # no interactive fallback; fail
+                                      # cleanly on auth issues (matches
+                                      # the bare-ssh test elsewhere)
+    " -o GSSAPIDelegateCredentials=no"  # don't forward Kerberos creds
+                                        # to the remote; remote sshd's
+                                        # delegation pkinit was failing
+                                        # intermittently and tearing the
+                                        # connection down mid-rsync
+                                        # ("Generic preauthentication
+                                        # failure", code 255). Initial
+                                        # GSSAPI auth still works.
 )
 
 RSYNC_BASE_ARGS = [
