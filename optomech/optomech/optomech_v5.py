@@ -463,6 +463,26 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             self._vibration_amp_rad = 0.0
 
         # Action penalty / holding bonus config
+        # Atmospheric turbulence: a separate state element (NOT folded
+        # into the DM or segment baselines, because the agent's job is
+        # to correct it, not to bake it into a fixed-point offset).
+        # See optomech/atmosphere.py for the layered von Karman model.
+        # cfg["atmosphere"] is a dict of overrides on the Teide-typical
+        # default in atmosphere.TEIDE_DEFAULT; absence or None disables
+        # the atmosphere entirely.
+        self._atmosphere = None
+        # Read from env_kwargs (the user-facing config) not cfg (which
+        # is v4's normalised cfg and drops unknown keys).
+        atm_cfg = env_kwargs.get("atmosphere")
+        if atm_cfg:
+            from optomech.optomech.atmosphere import KolmogorovAtmosphere
+            dx_m = float(os4.pupil_grid.delta[0])
+            self._atmosphere = KolmogorovAtmosphere(
+                num_envs=num_envs, H=self._H, W=self._W, dx_m=dx_m,
+                device=self.dev, cfg=atm_cfg,
+                seed=env_kwargs.get("atmosphere_seed"),
+                silence=silence)
+
         self._action_penalty = cfg.get("action_penalty", False)
         self._action_penalty_weight = cfg.get("action_penalty_weight", 0.03)
         self._holding_bonus_weight = cfg.get("holding_bonus_weight", 0.0)
@@ -762,6 +782,14 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
                 self._dm_actuators_t,                # [N, A]
                 self._dm_basis_t_flat)               # [A, H*W]
             surface = surface + dm_surface_flat.reshape(N, self._H, self._W)
+
+        # Atmospheric OPD (transmissive, single-pass: enters the
+        # wavefront as 1x rather than the 2x reflective scaling we
+        # apply below). We pre-divide by 2 so the uniform `2*k*surface`
+        # multiplier in the wavelength loop yields the correct 1x atm
+        # phase. The DM/segment contributions remain reflective.
+        if self._atmosphere is not None:
+            surface = surface + 0.5 * self._atmosphere.opd_meters()
 
         frame = torch.zeros(N, self._H, self._W, dtype=torch.float32, device=dev)
 
@@ -1744,6 +1772,14 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             offsets = torch.cat([p_off, t_off, tl_off], dim=1)
             self._baselines_t[env_mask] += offsets
 
+        # Resample the atmosphere for the envs that just reset.
+        # The atmosphere is its own state element and is regenerated
+        # per-episode in static mode; the agent has to correct a fresh
+        # realization each time. Future evolving mode will still call
+        # reset here at episode start, then advance via step(dt) below.
+        if self._atmosphere is not None:
+            self._atmosphere.reset(env_mask=env_mask)
+
         # Reset step counts and episode tracking
         self._step_counts[env_mask] = 0
         self._prior_actions[env_mask] = 0.0
@@ -1878,6 +1914,14 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
 
         # --- 2. Apply commands (batched on GPU) ---
         self._batched_command(actions_t)
+
+        # --- 2b. Atmosphere evolution. No-op in static mode (cheap).
+        # Future evolving-atmosphere implementation will shift each
+        # layer's pre-sampled screen by wind*dt and re-aggregate
+        # _opd_m here. Called every step regardless of mode so the
+        # surrounding code path doesn't change when we switch.
+        if self._atmosphere is not None:
+            self._atmosphere.step(self._decision_dt_s)
 
         # --- 2a. Non-stationary disturbance: random walk on the
         # secondaries' PTT state. Adds scaled randn to actuators each
