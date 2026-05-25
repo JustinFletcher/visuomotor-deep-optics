@@ -1,26 +1,29 @@
 #!/usr/bin/env python
 """Action-scale sweep on top of the 15-phase bootstrap composite agent.
 
-Scales the segment-piston / tip / tilt correction ranges AND the
-overall env_action_scale together by a multiplier ``s`` across a
-sweep grid. The default grid is ``[1, 10, 100, 1000]``, which (with
-the bootstrap rollout env's default 10 µm baseline piston range)
-produces ``max_piston_correction_micron in [10, 100, 1000, 10000] µm``.
+Default mode (``--scale-mode piston-only``): scales ONLY the segment
+piston correction range across decades. Tip/tilt correction bounds
+and the global ``env_action_scale`` stay at their training-time
+defaults, so the TT effective per-step delta is identical at every
+sweep point and the agent's TT commands behave the same as during
+training. The default sweep grid ``[1, 10, 100, 1000]`` produces
+``max_piston_correction_micron in [10, 100, 1000, 10000] µm``.
 
-Both knobs are scaled together so that the agent's full action range
-(``[-1, 1]``) continues to span "no command" to "full stroke" at each
-scale. Equivalently, the per-step max delta in physical units scales
-as ``s * baseline`` for max_piston and as ``s * env_action_scale_base``
-for the action-scale multiplier the env applies before clipping.
+Alternate mode (``--scale-mode joint``): also multiplies
+``max_tip_correction_arcsec``, ``max_tilt_correction_arcsec``, and
+``env_action_scale`` by the same factor. The TT effective per-step
+delta scales quadratically with ``s`` in this mode (max_tip stays
+proportional and env_action_scale also grows). Useful when you want
+"the whole action space" to scale uniformly.
 
 Reuses the same ``ROLLOUT_ENV_KWARGS`` and spec-rewriting helpers as
-``rollout_elf_bootstrap_ptt.py`` so the only thing that changes
-between sweep points is the four scale-related env_kwargs:
+``rollout_elf_bootstrap_ptt.py``; the only thing that changes between
+sweep points is the four scale-related env_kwargs:
 
-  - max_piston_correction_micron
-  - max_tip_correction_arcsec
-  - max_tilt_correction_arcsec
-  - env_action_scale
+  - max_piston_correction_micron                  (always)
+  - max_tip_correction_arcsec                     (joint mode only)
+  - max_tilt_correction_arcsec                    (joint mode only)
+  - env_action_scale                              (joint mode only)
 
 Outputs per sweep point:
   test_output/<run_id>/scale_<sNN>/
@@ -85,14 +88,39 @@ _BASELINE_MAX_TILT_ARCSEC = 3.0
 _BASELINE_ENV_ACTION_SCALE = 1.0
 
 
-def _scaled_env_kwargs(base_kwargs: dict, scale: float) -> dict:
+_SCALE_MODES = ("piston-only", "joint")
+
+
+def _scaled_env_kwargs(base_kwargs: dict, scale: float,
+                       mode: str = "piston-only") -> dict:
     """Apply the scale multiplier to the action-range knobs in a copy
-    of the base env_kwargs."""
+    of the base env_kwargs.
+
+    Modes:
+      "piston-only" (default): only ``max_piston_correction_micron`` is
+        multiplied by ``scale``. Tip/tilt correction ranges and
+        ``env_action_scale`` are left untouched so the agent's TT
+        commands keep their training-time effective range.
+
+      "joint": ``max_piston_correction_micron``, ``max_tip_correction
+        _arcsec``, ``max_tilt_correction_arcsec``, AND ``env_action_scale``
+        are all multiplied by ``scale``. The TT effective per-step delta
+        scales quadratically with ``scale`` in this mode because the
+        global ``env_action_scale`` also goes up.
+    """
+    if mode not in _SCALE_MODES:
+        raise ValueError(f"mode must be one of {_SCALE_MODES}, got {mode!r}")
     kw = dict(base_kwargs)
     kw["max_piston_correction_micron"] = _BASELINE_MAX_PISTON_UM * scale
-    kw["max_tip_correction_arcsec"] = _BASELINE_MAX_TIP_ARCSEC * scale
-    kw["max_tilt_correction_arcsec"] = _BASELINE_MAX_TILT_ARCSEC * scale
-    kw["env_action_scale"] = _BASELINE_ENV_ACTION_SCALE * scale
+    if mode == "joint":
+        kw["max_tip_correction_arcsec"] = _BASELINE_MAX_TIP_ARCSEC * scale
+        kw["max_tilt_correction_arcsec"] = _BASELINE_MAX_TILT_ARCSEC * scale
+        kw["env_action_scale"] = _BASELINE_ENV_ACTION_SCALE * scale
+    # piston-only: leave TT bounds and env_action_scale alone -- they
+    # take whatever the upstream ROLLOUT_ENV_KWARGS / training defaults
+    # provided. TT errors (init_tip_arcsec_std etc.) are likewise not
+    # touched, so the disturbance distribution the agent faces on TT is
+    # identical across all sweep points.
     return kw
 
 
@@ -115,6 +143,7 @@ def _summarize(ep) -> dict:
 
 def _save_comparison_figure(per_scale: list[dict],
                             out_path: str,
+                            mode: str = "piston-only",
                             ylim_strehl=(0.0, 1.0)) -> None:
     """Combined cross-scale figure: strehl trajectory mean+ribbon,
     final-strehl distribution, action saturation fraction."""
@@ -197,11 +226,18 @@ def _save_comparison_figure(per_scale: list[dict],
     ax.legend(loc="best", fontsize=8)
     ax.grid(True, axis="y", alpha=0.25)
 
+    if mode == "piston-only":
+        mode_desc = (f"piston-only scaling (s × piston only; "
+                     f"tip/tilt fixed at "
+                     f"{_BASELINE_MAX_TIP_ARCSEC:.0f} arcsec, "
+                     f"env_action_scale={_BASELINE_ENV_ACTION_SCALE:.1f})")
+    else:
+        mode_desc = (f"joint scaling (s × piston, tip, tilt, AND "
+                     f"env_action_scale)")
     fig.suptitle(
         f"Action-scale sweep over the 15-phase bootstrap composite agent\n"
-        f"baseline (s=1): piston={_BASELINE_MAX_PISTON_UM:.0f} µm, "
-        f"tip/tilt={_BASELINE_MAX_TIP_ARCSEC:.0f} arcsec, "
-        f"env_action_scale={_BASELINE_ENV_ACTION_SCALE:.1f}",
+        f"baseline (s=1): piston={_BASELINE_MAX_PISTON_UM:.0f} µm    "
+        f"mode: {mode_desc}",
         fontsize=11, y=1.02)
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
@@ -220,6 +256,16 @@ def main():
                         help="Multipliers on the baseline action scales "
                              "(default: 1 10 100 1000, which gives "
                              "piston max = 10/100/1000/10000 µm).")
+    parser.add_argument("--scale-mode", choices=list(_SCALE_MODES),
+                        default="piston-only",
+                        help="Which knobs to multiply by --scale-grid. "
+                             "'piston-only' (default) scales only "
+                             "max_piston_correction_micron and leaves "
+                             "tip/tilt + env_action_scale at their "
+                             "training-time defaults. 'joint' scales "
+                             "max_piston, max_tip, max_tilt AND "
+                             "env_action_scale together (the original "
+                             "behavior of this script).")
     parser.add_argument("--seeds-per-scale", type=int, default=2,
                         help="Episodes per scale (each a different env "
                              "reset seed). Default 2.")
@@ -269,6 +315,7 @@ def main():
     print(f"Phases:       {effective_phases} ({lo}..{hi})  "
           f"steps/phase={per_phase}  max_episode_steps={max_steps}")
     print(f"Grid:         {args.scale_grid}")
+    print(f"Scale mode:   {args.scale_mode}")
     print(f"Seeds/scale:  {args.seeds_per_scale}")
     print()
 
@@ -280,7 +327,8 @@ def main():
         scale_label = f"s{sc:g}".replace(".", "p")
         scale_dir = os.path.join(sweep_dir, scale_label)
         os.makedirs(scale_dir, exist_ok=True)
-        env_kwargs = _scaled_env_kwargs(base_env_kwargs, sc)
+        env_kwargs = _scaled_env_kwargs(base_env_kwargs, sc,
+                                        mode=args.scale_mode)
         max_piston_um = env_kwargs["max_piston_correction_micron"]
         print(f"=== scale {sc:g}  ===  max_piston={max_piston_um:.0f} µm  "
               f"max_tip={env_kwargs['max_tip_correction_arcsec']:.1f} arcsec  "
@@ -337,7 +385,7 @@ def main():
     print(f"Rollup: {rollup_path}")
 
     cmp_path = os.path.join(sweep_dir, "comparison.png")
-    _save_comparison_figure(per_scale, cmp_path)
+    _save_comparison_figure(per_scale, cmp_path, mode=args.scale_mode)
     print(f"Comparison figure: {cmp_path}")
 
     print(f"\nAll outputs in: {sweep_dir}")
