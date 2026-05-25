@@ -291,6 +291,13 @@ def main():
                         default=_DEFAULT_OUTPUT_DIR)
     parser.add_argument("--no-gifs", action="store_true")
     parser.add_argument("--lowres-gifs", action="store_true")
+    parser.add_argument("--gif-frame-stride", type=int, default=1,
+                        help="Keep every Nth frame in the GIFs. "
+                             "First and last frames are always "
+                             "retained. Default 1 (all frames). Use "
+                             "e.g. 4 to render ~4x faster and produce "
+                             "~4x smaller GIFs at the cost of "
+                             "intermediate-frame detail.")
     args = parser.parse_args()
 
     if not os.path.isabs(args.policy_spec):
@@ -377,7 +384,8 @@ def main():
         if not args.no_gifs:
             save_episode_gifs(episodes,
                               os.path.join(scale_dir, "gifs"),
-                              lowres=args.lowres_gifs)
+                              lowres=args.lowres_gifs,
+                              frame_stride=args.gif_frame_stride)
 
         print(f"  mean return    = {metrics['mean_return']:.4f} "
               f"+/- {metrics['std_return']:.4f}")

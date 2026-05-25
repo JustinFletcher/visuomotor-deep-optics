@@ -383,7 +383,8 @@ def run_rollouts(
 
 
 def render_episode_gif(ep_data, save_path, label="", dpi=72,
-                       frame_duration=0.2, lowres=False):
+                       frame_duration=0.2, lowres=False,
+                       frame_stride: int = 1):
     """Render a single episode as an animated GIF.
 
     When ``lowres=True``: drops dpi 72->48, shrinks figsize, tightens
@@ -391,6 +392,13 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72,
     (you said you needed the evolution dynamics). The output GIF is
     roughly 5-10x smaller and ~5-8x faster to render. The action /
     text panels still fit but with smaller labels.
+
+    ``frame_stride`` keeps every Nth frame instead of every frame.
+    The initial frame (t=0) and the final frame (t=T) are ALWAYS
+    included regardless of stride so the GIF still shows the start
+    and end states; intermediate frames are sampled at stride N.
+    stride=1 is the default (all frames). Useful for very long
+    episodes where the per-frame render cost is the bottleneck.
     """
     obs_raw = ep_data["obs_raw"]
     rewards = ep_data["rewards"]
@@ -415,8 +423,14 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72,
     global_max = max(global_max, 1.0)
     norm = mcolors.LogNorm(vmin=1.0, vmax=global_max)
 
+    # Frame indices: every Nth, always include 0 and T.
+    stride = max(1, int(frame_stride))
+    frame_indices = list(range(0, T + 1, stride))
+    if frame_indices[-1] != T:
+        frame_indices.append(T)
+
     frames = []
-    for t in range(T + 1):
+    for t in frame_indices:
         fig = plt.figure(figsize=figsize, dpi=dpi)
         gs = gridspec.GridSpec(2, 2, figure=fig,
                                height_ratios=[3, 1],
@@ -488,8 +502,15 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72,
     imageio.mimsave(save_path, frames, duration=frame_duration)
 
 
-def save_episode_gifs(episodes, output_dir, lowres=False):
-    """Save best, worst, and median episode GIFs."""
+def save_episode_gifs(episodes, output_dir, lowres=False,
+                      frame_stride: int = 1):
+    """Save best, worst, and median episode GIFs.
+
+    ``frame_stride`` is forwarded to ``render_episode_gif``; see that
+    function's docstring for the semantics (stride=1 keeps every
+    frame; stride>1 thins the middle frames while always retaining
+    the first and last).
+    """
     os.makedirs(output_dir, exist_ok=True)
     worst = episodes[0]
     median = episodes[len(episodes) // 2]
@@ -497,7 +518,8 @@ def save_episode_gifs(episodes, output_dir, lowres=False):
 
     for ep, label in [(best, "best"), (worst, "worst"), (median, "median")]:
         path = os.path.join(output_dir, f"{label}.gif")
-        render_episode_gif(ep, path, label=label.upper(), lowres=lowres)
+        render_episode_gif(ep, path, label=label.upper(), lowres=lowres,
+                           frame_stride=frame_stride)
         print(f"  GIF: {path}")
 
 
