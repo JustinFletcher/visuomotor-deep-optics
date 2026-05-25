@@ -7,7 +7,10 @@ and the global ``env_action_scale`` stay at their training-time
 defaults, so the TT effective per-step delta is identical at every
 sweep point and the agent's TT commands behave the same as during
 training. The default sweep grid ``[1, 10, 100, 1000]`` produces
-``max_piston_correction_micron in [10, 100, 1000, 10000] µm``.
+``max_piston_correction_micron in [1, 10, 100, 1000] µm`` -- s=1 is
+exactly the bootstrap training default, so it should reproduce the
+normal ``rollout_elf_bootstrap_ptt.py`` result. To probe 10x larger
+ranges, pass ``--scale-grid 10 100 1000 10000``.
 
 Alternate mode (``--scale-mode joint``): also multiplies
 ``max_tip_correction_arcsec``, ``max_tilt_correction_arcsec``, and
@@ -79,10 +82,16 @@ from train.ppo.rollout_elf_bootstrap_ptt import (
 
 
 # Baselines for the four scale-coupled knobs at multiplier s = 1.
-# Chosen so that s = 1 gives max_piston = 10 µm (one order of
-# magnitude above the bootstrap-training default 1 µm), matching the
-# sweep label "10, 100, 1000, 10000 µm" at the default grid.
-_BASELINE_MAX_PISTON_UM = 10.0
+# These MATCH the bootstrap-training defaults in ELF_BOOTSTRAP_ENV_KWARGS
+# so s=1 exactly reproduces what rollout_elf_bootstrap_ptt.py uses. An
+# earlier version of this script hardcoded 10 µm here, which made s=1
+# run with a 10x larger piston-correction range than training and
+# caused the agent to overshoot every cophasing step (s=1 "just barely
+# misses" symptom). The default --scale-grid [1, 10, 100, 1000] now
+# maps to piston max = [1, 10, 100, 1000] µm. Pass
+# --scale-grid 10 100 1000 10000 for the previously-advertised
+# 10/100/1000/10000 µm sweep.
+_BASELINE_MAX_PISTON_UM = 1.0
 _BASELINE_MAX_TIP_ARCSEC = 3.0
 _BASELINE_MAX_TILT_ARCSEC = 3.0
 _BASELINE_ENV_ACTION_SCALE = 1.0
@@ -253,9 +262,12 @@ def main():
                              f"{DEFAULT_SPEC}).")
     parser.add_argument("--scale-grid", type=float, nargs="+",
                         default=[1.0, 10.0, 100.0, 1000.0],
-                        help="Multipliers on the baseline action scales "
-                             "(default: 1 10 100 1000, which gives "
-                             "piston max = 10/100/1000/10000 µm).")
+                        help="Multipliers on the baseline action scales. "
+                             "Default 1 10 100 1000 gives piston max = "
+                             "1/10/100/1000 µm (s=1 exactly matches the "
+                             "bootstrap training default). For the "
+                             "previously-advertised 10/100/1000/10000 µm "
+                             "sweep pass: --scale-grid 10 100 1000 10000.")
     parser.add_argument("--scale-mode", choices=list(_SCALE_MODES),
                         default="piston-only",
                         help="Which knobs to multiply by --scale-grid. "
