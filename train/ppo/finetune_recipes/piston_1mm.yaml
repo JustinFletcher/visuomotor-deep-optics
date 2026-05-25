@@ -1,0 +1,49 @@
+# Fine-tune recipe: scale the bootstrap PTT agent from its trained
+# ±4 µm piston disturbance / ±1 µm correction regime to a ±0.5 mm
+# disturbance / ±1 mm correction regime. Tip/tilt is untouched.
+#
+# Source training (ELF_BOOTSTRAP_ENV_KWARGS) used:
+#   max_piston_correction_micron  = 1.0  µm
+#   init_wind_piston_micron_std   = 3.0  µm
+#   init_wind_piston_clip_m       = 4e-6 m  (4 µm hard clip)
+#
+# This recipe extends both action range and disturbance range by 250-1000x
+# while keeping every other env_kwarg and every TT parameter untouched.
+
+name: piston_1mm
+description: >
+  Fine-tune to ±0.5 mm piston disturbance, ±1 mm piston correction range.
+  Tip/tilt unchanged. Lower LR + shorter budget vs from-scratch training
+  since the source policies are already close.
+
+env_kwarg_overrides:
+  # Action: agent's ±1 piston action now spans ±1 mm of surface.
+  max_piston_correction_micron: 1000.0
+
+  # Disturbance: 3-sigma ≈ 1 mm peak-to-peak, hard-clipped at ±0.5 mm.
+  # Scaled by 350/3 ≈ 117x and 500/4 = 125x respectively, matching
+  # the ratio of new-to-old operating range.
+  init_wind_piston_micron_std: 350.0
+  init_wind_piston_clip_m: 5.0e-4
+
+  # Tip/tilt: explicitly NOT overridden. Falls through to whatever the
+  # source ELF_BOOTSTRAP_ENV_KWARGS sets (3 arcsec correction range,
+  # 0.05 arcsec disturbance std).
+
+ppo_overrides:
+  # Lower LR for fine-tuning -- the source weights are already close to a
+  # working solution; the goal is to nudge them, not retrain from scratch.
+  # 10x reduction from the bootstrap default 3e-4.
+  learning_rate: 3.0e-5
+
+  # Shorter training budget per phase. Bootstrap from scratch used 100M
+  # steps per phase; fine-tuning should converge in ~10-20% of that.
+  # 10M steps at ~4000 SPS on H100 = ~42 minutes per phase.
+  total_timesteps: 10_000_000
+
+  # Eval images on every interval (filmstrip + summary fig) so we can
+  # inspect each fine-tune as it trains. One eval episode keeps wall-
+  # clock manageable.
+  eval_fast: false
+  eval_episodes: 1
+  no_eval: false
