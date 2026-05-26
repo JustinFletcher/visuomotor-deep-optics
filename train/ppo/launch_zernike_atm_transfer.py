@@ -77,6 +77,7 @@ def _build_sbatch_script(args, run_id: str, output_root: str,
     # the sbatch is one tidy loop.
     n_zernike_str = " ".join(str(n) for n in args.n_zernike)
     seeds_str = " ".join(str(s) for s in per_worker_seeds)
+    r0_flag = f" --r0 {args.r0}" if args.r0 is not None else ""
 
     return textwrap.dedent(f"""\
         #!/bin/bash
@@ -115,7 +116,7 @@ def _build_sbatch_script(args, run_id: str, output_root: str,
                 --hpc \\
                 --source-checkpoint "${{SOURCE_CKPT}}" \\
                 --n-zernike "${{n}}" \\
-                --seed "${{seed}}" \\
+                --seed "${{seed}}"{r0_flag} \\
                 --run-dir "${{out_dir}}" \\
                 > "${{out_dir}}/stdout.log" 2> "${{out_dir}}/stderr.log" &
         done
@@ -140,6 +141,13 @@ def main():
     p.add_argument("--seeds", type=int, nargs="+", default=None,
                    help="One seed per --n-zernike value (lengths must "
                         "match). Default: fresh random seed per worker.")
+    p.add_argument("--r0", type=float, default=None,
+                   help="Override atmosphere r0_total_m (meters at 500 nm) "
+                        "for every worker. Default: use the parent script's "
+                        "default (0.12 m, Teide-typical median). When "
+                        "fine-tuning a source model trained at a different "
+                        "r0 you usually want this set to match the source's "
+                        "training r0.")
     p.add_argument("--node", type=str, default=None,
                    help="Pin the sbatch to a specific node. Default: "
                         "sinfo-pick the biggest idle GPU node with "
@@ -215,6 +223,8 @@ def main():
     print(f"Run id:             {run_id}")
     print(f"Source checkpoint:  {args.source_checkpoint}")
     print(f"Output root:        {output_root}")
+    print(f"Atmosphere r0:      "
+          f"{args.r0 if args.r0 is not None else '(parent default 0.12 m)'}")
     print(f"Node:               {chosen_node or '(SLURM chooses)'}")
     print(f"GPUs requested:     {n_workers} (--gres=gpu:{n_workers})")
     print(f"Workers:")
