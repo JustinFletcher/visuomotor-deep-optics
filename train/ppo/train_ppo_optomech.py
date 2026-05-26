@@ -1515,7 +1515,32 @@ def run_ppo_training(config: dict, run_dir: str):
     elif init_path:
         print(f"  Initialising weights from: {init_path}")
         ckpt = torch.load(init_path, map_location=device, weights_only=False)
-        agent.load_state_dict(ckpt["model_state_dict"])
+        src_state = ckpt["model_state_dict"]
+        # Transfer-learning support: when the new agent has a different
+        # action / head shape than the source (e.g. a different
+        # n_zernike or a different action_dim), the matching keys'
+        # tensors can't be reused. Caller-supplied prefixes are
+        # filtered out and load_state_dict runs with strict=False so
+        # the unmatched keys are re-initialised by the constructor.
+        skip = config.get("init_from_skip_prefixes") or []
+        if skip:
+            src_state = {k: v for k, v in src_state.items()
+                         if not any(k.startswith(p) for p in skip)}
+            print(f"  Skipping state-dict prefixes (re-init'd from "
+                  f"scratch): {sorted(skip)}")
+            missing, unexpected = agent.load_state_dict(
+                src_state, strict=False)
+            if missing:
+                print(f"  Missing in source (re-init'd): "
+                      f"{len(missing)} keys "
+                      f"({missing[:4]}{' ...' if len(missing) > 4 else ''})")
+            if unexpected:
+                print(f"  Unexpected in source (ignored): "
+                      f"{len(unexpected)} keys "
+                      f"({unexpected[:4]}"
+                      f"{' ...' if len(unexpected) > 4 else ''})")
+        else:
+            agent.load_state_dict(src_state)
         src_step = ckpt.get("global_step", "?")
         src_eval = ckpt.get("best_eval_return", "?")
         print(f"  Loaded weights (source: step={src_step}, eval={src_eval}). "
