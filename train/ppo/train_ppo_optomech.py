@@ -1578,9 +1578,28 @@ def run_ppo_training(config: dict, run_dir: str):
     # while episode-level metrics improved.
     _ = config.get("tb_step_log_interval", 1)  # noqa: F841
 
-    run_name = f"ppo_optomech_{seed}_{int(time.time())}"
-    this_run_dir = os.path.join(run_dir, run_name)
-    os.makedirs(this_run_dir, exist_ok=True)
+    # Continue-in-place on resume: when --resume-from points at a
+    # checkpoint living at <X>/checkpoints/<name>.pt, treat <X> as
+    # the run dir and keep writing TB events + new checkpoints
+    # there (so the resumed training appends to the same TB stream
+    # instead of spawning a sibling ppo_optomech_<seed>_<ts>/ dir
+    # per resume). For fresh runs and for resumes from a checkpoint
+    # that doesn't live under a "checkpoints" subdir, fall back to
+    # the original behaviour: mint a new ppo_optomech_<seed>_<ts>/
+    # subdir under --run-dir.
+    this_run_dir = None
+    if resume_path:
+        abs_resume = os.path.abspath(resume_path)
+        ck_parent = os.path.dirname(abs_resume)
+        if os.path.basename(ck_parent) == "checkpoints":
+            this_run_dir = os.path.dirname(ck_parent)
+            run_name = os.path.basename(this_run_dir)
+            print(f"  Resume-in-place: writing into existing run dir "
+                  f"{this_run_dir}")
+    if this_run_dir is None:
+        run_name = f"ppo_optomech_{seed}_{int(time.time())}"
+        this_run_dir = os.path.join(run_dir, run_name)
+        os.makedirs(this_run_dir, exist_ok=True)
 
     log_dir = os.path.join(this_run_dir, "tensorboard")
     writer = SummaryWriter(log_dir)
