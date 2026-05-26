@@ -8,5 +8,5 @@
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
-cd "${VMDO_HPC_WORKDIR:-${WORKDIR:-/p/work/fletch}/visuomotor-deep-optics}"
+cd /p/home/fletch/visuomotor-deep-optics
 poetry run python train/ppo/train_ppo_nanoelf_ptt_curriculum.py --hpc --no-eval

@@ -46,7 +46,8 @@ import time
 from typing import Optional
 
 from train.ppo.launch_static_dark_hole import (
-    HPC_WORKDIR, SLURM_ACCOUNT, SLURM_GRES, SLURM_PARTITION, SLURM_TIME,
+    HPC_CODE_DIR, HPC_WORKDIR, SLURM_ACCOUNT, SLURM_GRES,
+    SLURM_PARTITION, SLURM_TIME,
 )
 from train.ppo.finetune_sinfo import (
     query_sinfo_nodes, select_best_nodes)
@@ -75,7 +76,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str,
         export LD_LIBRARY_PATH=$HOME/local/lib:$HOME/local/lib64:${{LD_LIBRARY_PATH:-}}
 
         mkdir -p {log_root}
-        cd {HPC_WORKDIR}
+        cd {HPC_CODE_DIR}
         poetry run python -u train/ppo/finetune_agent_master.py \\
             --source-agent {args.source_agent} \\
             --recipe {args.recipe} \\
@@ -177,7 +178,7 @@ def main():
             sys.exit(1)
     else:
         # Default output dir name: <source>_<recipe>_<timestamp>.
-        # Anchored at HPC_WORKDIR (work filesystem) so SLURM jobs
+        # Anchored at HPC_CODE_DIR (work filesystem) so SLURM jobs
         # writing into it satisfy the "must live under /p/work"
         # cluster policy regardless of where you launch from.
         if args.output_root is None:
@@ -185,7 +186,7 @@ def main():
             recipe_base = os.path.basename(args.recipe).rsplit(".", 1)[0]
             ts = int(time.time())
             args.output_root = os.path.join(
-                HPC_WORKDIR, "agent_finetuning",
+                HPC_CODE_DIR, "agent_finetuning",
                 f"{src_base}__{recipe_base}__{ts}")
 
     # Read-only invariant: refuse to clobber the source agent.

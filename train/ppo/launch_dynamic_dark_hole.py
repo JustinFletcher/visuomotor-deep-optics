@@ -36,15 +36,12 @@ SLURM_ACCOUNT = "MHPCC38870258"
 SLURM_PARTITION = "standard"
 SLURM_TIME = "72:00:00"
 SLURM_GRES = "gpu"
-# Per cluster policy ("jobs running on filesystems other than /p/work
-# / $WORKDIR will be terminated"), the working tree used by SLURM jobs
-# must live on the work filesystem. Resolved at launcher-import time
-# from $WORKDIR with a conservative fallback. Override with
-# VMDO_HPC_WORKDIR if your clone lives elsewhere on the work fs.
-HPC_WORKDIR = os.environ.get(
-    "VMDO_HPC_WORKDIR",
-    os.path.join(os.environ.get("WORKDIR", "/p/work/fletch"),
-                 "visuomotor-deep-optics"))
+# The code lives on the home filesystem; SLURM jobs `cd` here to
+# execute. Override with VMDO_HPC_CODE_DIR if your clone lives
+# somewhere else.
+HPC_CODE_DIR = os.environ.get(
+    "VMDO_HPC_CODE_DIR",
+    "/p/home/fletch/visuomotor-deep-optics")
 
 
 def make_sbatch_script(run_id, run_dir, seed, wall_time=SLURM_TIME):
@@ -63,7 +60,7 @@ def make_sbatch_script(run_id, run_dir, seed, wall_time=SLURM_TIME):
         export PATH=$HOME/local/bin:$HOME/.local/bin:$PATH
         export LD_LIBRARY_PATH=$HOME/local/lib:$HOME/local/lib64:${{LD_LIBRARY_PATH:-}}
 
-        cd {HPC_WORKDIR}
+        cd {HPC_CODE_DIR}
         poetry run python train/ppo/train_ppo_elf_dark_hole_dynamic.py \\
             --hpc \\
             --seed {seed} \\

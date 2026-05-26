@@ -49,7 +49,7 @@ import time
 from typing import Optional
 
 from train.ppo.launch_static_dark_hole import (
-    HPC_WORKDIR, MAX_SEED, SLURM_ACCOUNT, SLURM_GRES,
+    HPC_CODE_DIR, HPC_WORKDIR, MAX_SEED, SLURM_ACCOUNT, SLURM_GRES,
     SLURM_PARTITION, SLURM_TIME,
 )
 from train.ppo.finetune_sinfo import (
@@ -164,7 +164,7 @@ def _build_sbatch_script(args, run_id: str, output_root: str,
         export LD_LIBRARY_PATH=$HOME/local/lib:$HOME/local/lib64:${{LD_LIBRARY_PATH:-}}
 
         mkdir -p {log_root}
-        cd {HPC_WORKDIR}
+        cd {HPC_CODE_DIR}
 
         N_ZERNIKE=({n_zernike_str})
         SEEDS=({seeds_str})
@@ -323,9 +323,10 @@ def main():
                       or _derive_experiment_tag(args.train_script))
     run_id = args.run_id or (
         f"{_RUN_PREFIX}_{experiment_tag}_{int(time.time())}")
-    # Default output root: absolute path under HPC_WORKDIR (work fs),
-    # so dirs land in the right place regardless of where the launcher
-    # is invoked from. Pass --output-root explicitly to override.
+    # Default output root: absolute path under HPC_WORKDIR (work
+    # fs / $WORKDIR) so SLURM job writes land on the work filesystem
+    # per cluster policy, while the code itself stays in /p/home.
+    # Pass --output-root explicitly to override.
     output_root = args.output_root or os.path.join(
         HPC_WORKDIR, "atmos_finetuning", run_id)
     os.makedirs(output_root, exist_ok=True)

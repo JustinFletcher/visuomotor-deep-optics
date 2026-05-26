@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from train.ppo.launch_static_dark_hole import (
-    HPC_WORKDIR, MAX_SEED, SLURM_ACCOUNT, SLURM_GRES,
+    HPC_CODE_DIR, MAX_SEED, SLURM_ACCOUNT, SLURM_GRES,
     SLURM_PARTITION, SLURM_TIME,
     build_grid, _ids_for_ring,
 )
@@ -54,7 +54,7 @@ def make_sbatch_script(target_idx, run_id, run_dir_base, seed,
         export PATH=$HOME/local/bin:$HOME/.local/bin:$PATH
         export LD_LIBRARY_PATH=$HOME/local/lib:$HOME/local/lib64:${{LD_LIBRARY_PATH:-}}
 
-        cd {HPC_WORKDIR}
+        cd {HPC_CODE_DIR}
         poetry run python -u {_TRAIN_SCRIPT} \\
             --hpc \\
             --dark-hole-angle {angle_deg:.4f} \\

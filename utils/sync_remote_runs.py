@@ -37,20 +37,22 @@ PRINCIPAL = "fletch@HPCMP.HPC.MIL"
 
 REMOTES = {
     "makau": {
-        # As of 2026-05, cluster policy requires SLURM jobs (and
-        # therefore the working tree they read/write) to live on the
-        # /p/work filesystem rather than /p/home. All paths below
-        # follow $WORKDIR = /p/work/fletch by convention. Override at
-        # the env level with VMDO_REMOTE_WORKDIR if your clone is
-        # elsewhere.
+        # Per cluster policy ("jobs running on filesystems other than
+        # /p/work / $WORKDIR will be terminated"), training run dirs
+        # are written under /p/work/fletch. The repo and read-only
+        # input bundles (source agents, source checkpoints) stay in
+        # /p/home/fletch where they were checked out.
         "host": "fletch@makau.mhpcc.hpc.mil",
-        "runs": "/p/work/fletch/visuomotor-deep-optics/runs/",
-        "bootstrap_runs": "/p/work/fletch/visuomotor-deep-optics/bootstrap_runs/",
-        "dark_hole_runs": "/p/work/fletch/visuomotor-deep-optics/dark_hole_runs/",
-        "test_output": "/p/work/fletch/visuomotor-deep-optics/test_output/",
-        "agents": "/p/work/fletch/visuomotor-deep-optics/agents/",
-        "agent_finetuning": "/p/work/fletch/visuomotor-deep-optics/agent_finetuning/",
-        "atmos_finetuning": "/p/work/fletch/visuomotor-deep-optics/atmos_finetuning/",
+        # Outputs -- written by jobs, live on the work filesystem.
+        "runs": "/p/work/fletch/runs/",
+        "bootstrap_runs": "/p/work/fletch/bootstrap_runs/",
+        "dark_hole_runs": "/p/work/fletch/dark_hole_runs/",
+        "test_output": "/p/work/fletch/test_output/",
+        "agent_finetuning": "/p/work/fletch/agent_finetuning/",
+        "atmos_finetuning": "/p/work/fletch/atmos_finetuning/",
+        # Inputs -- read-only source agents, stay in /p/home with the
+        # repo since jobs only read from them.
+        "agents": "/p/home/fletch/visuomotor-deep-optics/agents/",
     },
     "coral": {
         "host": "fletch@coral.mhpcc.hpc.mil",
