@@ -148,7 +148,7 @@ def main():
     p.add_argument("--run-id", type=str, default=None,
                    help=f"Unique run id (default: {_RUN_PREFIX}_<ts>).")
     p.add_argument("--output-root", type=str, default=None,
-                   help="Output dir. Default: agent_finetuning/"
+                   help="Output dir. Default: atmos_finetuning/"
                         "<run_id>/. Each n_zernike worker lands in "
                         "<run_id>/n<NN>_seed<seed>/.")
     p.add_argument("--slurm-time", type=str, default=SLURM_TIME,
@@ -202,7 +202,7 @@ def main():
 
     run_id = args.run_id or f"{_RUN_PREFIX}_{int(time.time())}"
     output_root = args.output_root or os.path.join(
-        "agent_finetuning", run_id)
+        "atmos_finetuning", run_id)
     os.makedirs(output_root, exist_ok=True)
     os.makedirs(os.path.join(output_root, "_logs"), exist_ok=True)
 
