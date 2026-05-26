@@ -36,10 +36,12 @@ ppo_overrides:
   # 10x reduction from the bootstrap default 3e-4.
   learning_rate: 3.0e-5
 
-  # Shorter training budget per phase. Bootstrap from scratch used 100M
-  # steps per phase; fine-tuning should converge in ~10-20% of that.
-  # 10M steps at ~4000 SPS on H100 = ~42 minutes per phase.
-  total_timesteps: 10_000_000
+  # Effectively indefinite: 10B steps at typical fine-tune SPS would
+  # take weeks of wall clock, so the SLURM --time allocation is the
+  # real cap (run is killed by SLURM, not by hitting this number).
+  # Per Fletcher's standing preference, runs default to indefinite
+  # unless a specific budget is needed.
+  total_timesteps: 10_000_000_000
 
   # Eval images on every interval (filmstrip + summary fig) so we can
   # inspect each fine-tune as it trains. One eval episode keeps wall-

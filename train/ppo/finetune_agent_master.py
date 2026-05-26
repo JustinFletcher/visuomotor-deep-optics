@@ -88,6 +88,11 @@ class PhaseJob:
     best_ckpt: Optional[str] = None
     attempts: int = 0
     last_error: Optional[str] = None
+    # Full-resume checkpoint: when set, the worker uses --resume-from
+    # (model + optimizer + global_step) instead of --init-from (weights
+    # only). Populated by --resume mode after scanning the phase dir
+    # for the most recent ppo_optomech_*/checkpoints/latest.pt.
+    resume_ckpt: Optional[str] = None
 
 
 @dataclass
@@ -108,6 +113,14 @@ class MasterState:
     poll_interval_s: float = 30.0
     max_retries: int = 1
     slurm_time: str = SLURM_TIME_DEFAULT
+    # Resume mode: when True, _build_phase_jobs scans each phase dir
+    # for the most recent ppo_optomech_*/checkpoints/latest.pt and
+    # populates phase.resume_ckpt. The worker then runs in full-
+    # resume mode (--resume-from) instead of init-from-source. Stale
+    # status.json files from the prior run are cleared so the master
+    # doesn't immediately mark phases "completed" before the new
+    # worker has had a chance to overwrite the sentinel.
+    resume: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -138,10 +151,49 @@ def _read_source_agent(agent_dir: str) -> dict:
     return manifest
 
 
+def _find_latest_phase_checkpoint(output_dir: str) -> Optional[str]:
+    """Scan <output_dir>/ppo_optomech_*/checkpoints/ for the most
+    recently modified ``latest.pt``. Returns its absolute path or None
+    if no prior run dir exists. Used by --resume mode to pick the
+    checkpoint to hand to the worker."""
+    candidates = []
+    for run_dir in Path(output_dir).glob("ppo_optomech_*"):
+        ck = run_dir / "checkpoints" / "latest.pt"
+        if ck.is_file():
+            candidates.append(ck)
+    if not candidates:
+        return None
+    # Pick the most recently modified -- this is the "freshest" prior
+    # run, which is what we want to continue from. Comparing by mtime
+    # is robust to wall-clock skew in the seed/ts component of the
+    # run dir name.
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return str(candidates[0].resolve())
+
+
+def _clear_phase_status(output_dir: str) -> None:
+    """Rename any pre-existing status.json out of the way before a
+    resume so the master doesn't read a stale 'completed' sentinel
+    before the new worker has had a chance to overwrite it."""
+    path = os.path.join(output_dir, "status.json")
+    if os.path.isfile(path):
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        os.rename(path, os.path.join(output_dir,
+                                     f"status.prev_{stamp}.json"))
+
+
 def _build_phase_jobs(state: MasterState) -> list[PhaseJob]:
     """One PhaseJob per source-agent phase. Source checkpoint comes
     from the manifest's bundle_path (resolved relative to the agent
-    dir). Output dir lives under <output_root>/phases/phase_NN/."""
+    dir). Output dir lives under <output_root>/phases/phase_NN/.
+
+    In --resume mode, additionally:
+      - Scan the phase dir for the most recent latest.pt and attach
+        it as resume_ckpt (worker will full-resume from it).
+      - Clear stale status.json so the master doesn't short-circuit.
+      - Phases without any prior checkpoint fall back to init-from-
+        source as a starting case (e.g. the resume was triggered
+        before phase N ever started)."""
     out = []
     for ph in state.source_agent["phases"]:
         idx = int(ph["phase"])
@@ -152,7 +204,13 @@ def _build_phase_jobs(state: MasterState) -> list[PhaseJob]:
         out_dir = os.path.join(state.output_root,
                                "phases", f"phase_{idx:02d}")
         os.makedirs(out_dir, exist_ok=True)
-        out.append(PhaseJob(phase=idx, source_ckpt=src, output_dir=out_dir))
+        job = PhaseJob(phase=idx, source_ckpt=src, output_dir=out_dir)
+        if state.resume:
+            _clear_phase_status(out_dir)
+            resume_ckpt = _find_latest_phase_checkpoint(out_dir)
+            if resume_ckpt:
+                job.resume_ckpt = resume_ckpt
+        out.append(job)
     return out
 
 
@@ -248,7 +306,11 @@ def _submit_slurm_node_block(state: MasterState, jobs: list[PhaseJob],
     manifest = [
         {"phase": j.phase,
          "source_checkpoint": j.source_ckpt,
-         "output_dir": j.output_dir}
+         "output_dir": j.output_dir,
+         # Optional: when set, the inner per-phase worker runs in
+         # --resume-from mode (full model + optimizer + step resume)
+         # instead of --init-from. None means "fresh init from source".
+         "resume_checkpoint": j.resume_ckpt}
         for j in jobs]
     manifest_path = os.path.join(block_dir, "manifest.json")
     with open(manifest_path, "w") as f:
@@ -321,6 +383,11 @@ def _start_local_phase(state: MasterState, job: PhaseJob,
         "--output-dir", job.output_dir,
         "--hpc",
     ]
+    if job.resume_ckpt:
+        # Full resume: model + optimizer + global_step from the prior
+        # run's latest.pt. Source checkpoint stays in the cmd line for
+        # status.json provenance only.
+        cmd += ["--resume-from", job.resume_ckpt]
     # Pin the subprocess to one GPU so multiple local workers on the
     # same node don't fight for the same device. CUDA_VISIBLE_DEVICES
     # is the standard mechanism; the worker process sees only its
@@ -657,6 +724,7 @@ def run_master(args) -> int:
         poll_interval_s=args.poll_interval_s,
         max_retries=args.max_retries,
         slurm_time=args.slurm_time,
+        resume=bool(args.resume),
     )
 
     # Save the resolved config alongside the runs.
@@ -683,9 +751,22 @@ def run_master(args) -> int:
                 f"(1 master + up to {state.max_nodes - 1} sbatch blocks)")
     _log(state, f"Master GPUs:        {state.gpus_per_node} "
                 f"(one local worker per GPU)")
+    _log(state, f"Resume mode:        {state.resume}")
 
     state.phases = _build_phase_jobs(state)
     _log(state, f"Built {len(state.phases)} phase jobs from source agent")
+    if state.resume:
+        n_resume = sum(1 for j in state.phases if j.resume_ckpt)
+        n_fresh = len(state.phases) - n_resume
+        _log(state, f"  Resuming {n_resume} phase(s) from prior latest.pt; "
+                    f"{n_fresh} starting fresh (no prior checkpoint)")
+        for j in state.phases:
+            if j.resume_ckpt:
+                _log(state, f"    phase {j.phase:02d}: resume_from "
+                            f"{j.resume_ckpt}")
+            else:
+                _log(state, f"    phase {j.phase:02d}: init_from "
+                            f"{j.source_ckpt} (no prior latest.pt)")
 
     run_id = os.path.basename(output_root)
 
@@ -760,6 +841,16 @@ def main():
     parser.add_argument("--slurm-time", type=str, default=SLURM_TIME_DEFAULT,
                         help=f"SLURM --time for worker jobs "
                              f"(default {SLURM_TIME_DEFAULT}).")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume an existing fine-tune job rooted at "
+                             "--output-root. For each phase, scans "
+                             "<output-root>/phases/phase_NN/ppo_optomech_"
+                             "*/checkpoints/latest.pt and continues "
+                             "training from the most recent one (full "
+                             "model + optimizer + global_step resume). "
+                             "Phases with no prior checkpoint fall back "
+                             "to init-from-source. Stale status.json "
+                             "files are moved aside.")
     args = parser.parse_args()
 
     # Read-only invariant: refuse to clobber the source agent.

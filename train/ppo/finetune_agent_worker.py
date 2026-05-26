@@ -9,11 +9,19 @@ agent's ``phase_NN.pt`` checkpoint and writing into the master-owned
 Reads a recipe YAML (env_kwarg + ppo overrides) and overlays it on
 top of ``ELF_BOOTSTRAP_ENV_KWARGS`` / the bootstrap PPO configs, then
 hands off to ``train_ppo_optomech.run_main`` exactly the way
-``train_ppo_elf_bootstrap.py`` does. The source checkpoint is loaded
-via ``--init-from``: weights only, fresh optimizer state (standard
-fine-tune pattern). Writes a ``status.json`` sentinel in the output
-dir on success/failure so the master can poll for completion without
-parsing TB.
+``train_ppo_elf_bootstrap.py`` does.
+
+Two load modes, mutually exclusive:
+  - ``--source-checkpoint <ckpt>`` (default): weights-only init, fresh
+    optimizer + step counter. Standard fine-tune-from-source pattern.
+  - ``--resume-from <ckpt>``: full resume -- model + optimizer +
+    global_step. Used by the master's ``--resume`` mode to continue a
+    fine-tune that hit total_timesteps (or SLURM wall-clock) without
+    re-initialising state. The resume checkpoint usually lives under
+    this same phase's prior ``ppo_optomech_*/checkpoints/latest.pt``.
+
+Writes a ``status.json`` sentinel in the output dir on success/failure
+so the master can poll for completion without parsing TB.
 
 The source agent is NEVER written to; everything lands under the
 master-supplied --output-dir.
@@ -63,10 +71,19 @@ def _write_status(output_dir: str, status: str, **extra) -> None:
 
 
 def _patch_config(base_cfg: dict, env_kwargs: dict,
-                  ppo_overrides: dict, source_checkpoint: str) -> dict:
+                  ppo_overrides: dict, source_checkpoint: str,
+                  resume_checkpoint: str | None = None) -> dict:
     cfg = dict(base_cfg)
     cfg["env_kwargs"] = env_kwargs
-    cfg["init_from"] = source_checkpoint
+    # Resume wins over init-from: full resume restores model +
+    # optimizer + global_step, so we should NOT also re-initialise
+    # weights from the original source. Mutually exclusive.
+    if resume_checkpoint:
+        cfg["resume_from"] = resume_checkpoint
+        cfg.pop("init_from", None)
+    else:
+        cfg["init_from"] = source_checkpoint
+        cfg.pop("resume_from", None)
     # Apply recipe-level PPO overrides (LR, total_timesteps, eval flags...).
     for k, v in (ppo_overrides or {}).items():
         cfg[k] = v
@@ -78,7 +95,19 @@ def main():
         description="Fine-tune one phase of a bootstrap composite agent.",
         add_help=False)
     parser.add_argument("--source-checkpoint", required=True,
-                        help="Path to the source agent's phase_NN.pt.")
+                        help="Path to the source agent's phase_NN.pt. "
+                             "Used as the init-from checkpoint when "
+                             "--resume-from is NOT set. Always kept "
+                             "around for status.json provenance.")
+    parser.add_argument("--resume-from", type=str, default=None,
+                        help="Path to a previous PPO checkpoint to "
+                             "fully resume from (model + optimizer + "
+                             "global_step). Overrides --source-"
+                             "checkpoint as the actual weight source. "
+                             "Used by the master's --resume mode to "
+                             "continue training from this phase's own "
+                             "prior ppo_optomech_*/checkpoints/"
+                             "latest.pt.")
     parser.add_argument("--phase", type=int, required=True,
                         help="0-based phase index (sets bootstrap_phased_count).")
     parser.add_argument("--recipe", required=True,
@@ -91,6 +120,7 @@ def main():
     os.makedirs(cli.output_dir, exist_ok=True)
     _write_status(cli.output_dir, "starting",
                   source_checkpoint=cli.source_checkpoint,
+                  resume_from=cli.resume_from,
                   phase=cli.phase,
                   recipe=cli.recipe)
 
@@ -106,24 +136,29 @@ def main():
 
     ppo_overrides = recipe.get("ppo_overrides", {})
     local_cfg = _patch_config(BASE_LOCAL_CONFIG, env_kwargs,
-                              ppo_overrides, cli.source_checkpoint)
+                              ppo_overrides, cli.source_checkpoint,
+                              resume_checkpoint=cli.resume_from)
     hpc_cfg = _patch_config(BASE_HPC_CONFIG, env_kwargs,
-                            ppo_overrides, cli.source_checkpoint)
+                            ppo_overrides, cli.source_checkpoint,
+                            resume_checkpoint=cli.resume_from)
 
     # ----------------------------------------------------------------
     # Hand off to run_main. We forward all remaining CLI flags (notably
-    # --hpc, --seed, --no-eval) and inject --run-dir + --init-from so
-    # the train loop writes into our master-owned output dir.
-    # run_main does its own CLI parse, so we have to expose
-    # --init-from on its arg list too.
+    # --hpc, --seed, --no-eval) and inject --run-dir plus EITHER
+    # --resume-from (full resume) OR --init-from (weights-only).
+    # run_main does its own CLI parse, so we have to expose the chosen
+    # flag on its arg list too.
     # ----------------------------------------------------------------
-    sys.argv = [sys.argv[0]] + remaining + [
-        "--run-dir", cli.output_dir,
-        "--init-from", cli.source_checkpoint,
-    ]
+    extra_args = ["--run-dir", cli.output_dir]
+    if cli.resume_from:
+        extra_args += ["--resume-from", cli.resume_from]
+    else:
+        extra_args += ["--init-from", cli.source_checkpoint]
+    sys.argv = [sys.argv[0]] + remaining + extra_args
 
     _write_status(cli.output_dir, "running",
                   source_checkpoint=cli.source_checkpoint,
+                  resume_from=cli.resume_from,
                   phase=cli.phase)
 
     try:

@@ -16,8 +16,12 @@ config.
 
 Manifest schema (JSON file passed via --manifest):
   [
-    {"phase": 0, "source_checkpoint": "...", "output_dir": "..."},
-    {"phase": 1, "source_checkpoint": "...", "output_dir": "..."},
+    {"phase": 0,
+     "source_checkpoint": "...",
+     "output_dir": "...",
+     "resume_checkpoint": "..." (optional; if present the inner worker
+                                  is run in full-resume mode instead of
+                                  init-from-source)},
     ...
   ]
 
@@ -85,6 +89,7 @@ def main():
         phase = int(entry["phase"])
         src = entry["source_checkpoint"]
         outdir = entry["output_dir"]
+        resume_ckpt = entry.get("resume_checkpoint") or None
         os.makedirs(outdir, exist_ok=True)
 
         out_log = open(os.path.join(outdir, "slurm_inner.out"), "w")
@@ -99,6 +104,11 @@ def main():
             "--output-dir", outdir,
             "--hpc",
         ]
+        if resume_ckpt:
+            # Full resume mode: model + optimizer + global_step from
+            # the prior run's latest.pt. Source checkpoint stays in
+            # the command line for provenance only.
+            cmd += ["--resume-from", resume_ckpt]
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
         try:

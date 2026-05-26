@@ -25,6 +25,15 @@ Usage (from a login node):
     poetry run python train/ppo/launch_finetune_agent.py \\
         --source-agent agents/... --recipe train/ppo/finetune_recipes/... \\
         --dry-run
+
+    # Resume an existing fine-tune job (after SLURM timeout, OOM, or
+    # after raising total_timesteps in the recipe). All 15 phases pick
+    # up from their own latest.pt -- model + optimizer + global_step.
+    poetry run python train/ppo/launch_finetune_agent.py \\
+        --resume \\
+        --source-agent agents/agent_20260419T211137Z_e3b7 \\
+        --recipe train/ppo/finetune_recipes/piston_1mm.yaml \\
+        --output-root agent_finetuning/agent_..._piston_1mm__1779755759
 """
 from __future__ import annotations
 
@@ -50,6 +59,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str,
     log_root = os.path.join(output_root, "master")
     gres_str = f"gpu:{gpus_per_node}" if gpus_per_node > 1 else SLURM_GRES
     nodelist_line = f"#SBATCH --nodelist={node_name}\n        " if node_name else ""
+    resume_flag = " --resume" if args.resume else ""
     return textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={job_name}
@@ -74,7 +84,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str,
             --gpus-per-node {gpus_per_node} \\
             --poll-interval-s {args.poll_interval_s} \\
             --max-retries {args.max_retries} \\
-            --slurm-time {args.slurm_time}
+            --slurm-time {args.slurm_time}{resume_flag}
     """)
 
 
@@ -125,6 +135,19 @@ def main():
     parser.add_argument("--slurm-time", type=str, default="24:00:00",
                         help="SLURM --time for worker jobs (default "
                              "24:00:00).")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume an existing fine-tune job. --output-"
+                             "root must point at an existing dir created "
+                             "by a prior submission of this launcher. The "
+                             "master scans each phase's prior latest.pt "
+                             "and continues training (full model + "
+                             "optimizer + global_step resume). New "
+                             "ppo_optomech_* sub-run dirs are created for "
+                             "the resumed runs; prior TB events are left "
+                             "in place. Use after a SLURM timeout, OOM, "
+                             "or manual cancellation, or to continue past "
+                             "an earlier total_timesteps cap once it has "
+                             "been raised in the recipe.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print sbatch script without submitting.")
     args = parser.parse_args()
@@ -136,13 +159,30 @@ def main():
         print(f"ERROR: --recipe not a file: {args.recipe}")
         sys.exit(1)
 
-    # Default output dir name: <source>_<recipe>_<timestamp>.
-    if args.output_root is None:
-        src_base = os.path.basename(os.path.normpath(args.source_agent))
-        recipe_base = os.path.basename(args.recipe).rsplit(".", 1)[0]
-        ts = int(time.time())
-        args.output_root = os.path.join(
-            "agent_finetuning", f"{src_base}__{recipe_base}__{ts}")
+    # --resume requires an explicit --output-root pointing at an
+    # existing job; we do NOT auto-name on resume.
+    if args.resume:
+        if args.output_root is None:
+            print("ERROR: --resume requires --output-root pointing at an "
+                  "existing fine-tune job dir.")
+            sys.exit(1)
+        if not os.path.isdir(args.output_root):
+            print(f"ERROR: --resume --output-root ({args.output_root}) "
+                  f"does not exist or is not a directory.")
+            sys.exit(1)
+        phases_dir = os.path.join(args.output_root, "phases")
+        if not os.path.isdir(phases_dir):
+            print(f"ERROR: --resume target has no phases/ subdir: "
+                  f"{phases_dir}. Is this a finetune_agent run root?")
+            sys.exit(1)
+    else:
+        # Default output dir name: <source>_<recipe>_<timestamp>.
+        if args.output_root is None:
+            src_base = os.path.basename(os.path.normpath(args.source_agent))
+            recipe_base = os.path.basename(args.recipe).rsplit(".", 1)[0]
+            ts = int(time.time())
+            args.output_root = os.path.join(
+                "agent_finetuning", f"{src_base}__{recipe_base}__{ts}")
 
     # Read-only invariant: refuse to clobber the source agent.
     if os.path.abspath(args.output_root).startswith(
@@ -196,6 +236,7 @@ def main():
     print(f"Source agent:    {args.source_agent}")
     print(f"Recipe:          {args.recipe}")
     print(f"Output root:     {args.output_root}")
+    print(f"Resume mode:     {args.resume}")
     print(f"Node budget:     {args.max_nodes} total "
           f"(1 master + up to {args.max_nodes - 1} sbatch blocks)")
     print(f"Master node:     {chosen_node or '(SLURM chooses)'}")
