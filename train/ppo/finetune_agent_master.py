@@ -80,6 +80,7 @@ class PhaseJob:
     runner: Optional[str] = None      # "local" | "slurm"
     slurm_job_id: Optional[str] = None
     proc: Optional[subprocess.Popen] = None
+    local_gpu_idx: Optional[int] = None   # which CUDA_VISIBLE_DEVICES slot
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     best_ckpt: Optional[str] = None
@@ -96,6 +97,7 @@ class MasterState:
     recipe: dict
     phases: list[PhaseJob] = field(default_factory=list)
     max_concurrent_slurm: int = 5
+    gpus_per_node: int = 1            # local GPU slots on the master's node
     poll_interval_s: float = 30.0
     max_retries: int = 1
     slurm_time: str = SLURM_TIME_DEFAULT
@@ -227,11 +229,14 @@ def _submit_slurm_phase(state: MasterState, job: PhaseJob,
     _log(state, f"  phase {job.phase:02d}: sbatch job {job.slurm_job_id} submitted")
 
 
-def _start_local_phase(state: MasterState, job: PhaseJob) -> None:
-    """Spawn the worker as a subprocess on the master's own node.
+def _start_local_phase(state: MasterState, job: PhaseJob,
+                       gpu_idx: int) -> None:
+    """Spawn the worker as a subprocess on the master's own node,
+    pinned to a specific local GPU via CUDA_VISIBLE_DEVICES.
 
-    We let it inherit the master's environment (CUDA visible devices,
-    etc.). stdout/stderr go to local.out / local.err in the phase dir.
+    stdout/stderr go to local.out / local.err in the phase dir;
+    when running multiple local workers (one per GPU) the per-phase
+    log files keep each worker's output separated.
     """
     out_log = open(os.path.join(job.output_dir, "local.out"), "w")
     err_log = open(os.path.join(job.output_dir, "local.err"), "w")
@@ -245,16 +250,24 @@ def _start_local_phase(state: MasterState, job: PhaseJob) -> None:
         "--output-dir", job.output_dir,
         "--hpc",
     ]
+    # Pin the subprocess to one GPU so multiple local workers on the
+    # same node don't fight for the same device. CUDA_VISIBLE_DEVICES
+    # is the standard mechanism; the worker process sees only its
+    # assigned GPU and indexes it as 0 internally.
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
     proc = subprocess.Popen(
         cmd, cwd=_REPO_ROOT,
         stdout=out_log, stderr=err_log,
-        env=os.environ.copy())
+        env=env)
     job.proc = proc
     job.runner = "local"
+    job.local_gpu_idx = gpu_idx
     job.status = "running"
     job.started_at = time.time()
     job.attempts += 1
-    _log(state, f"  phase {job.phase:02d}: local subprocess pid={proc.pid} started")
+    _log(state, f"  phase {job.phase:02d}: local subprocess pid={proc.pid} "
+                f"on GPU {gpu_idx} started")
 
 
 def _check_running(state: MasterState) -> None:
@@ -315,19 +328,40 @@ def _check_running(state: MasterState) -> None:
 
 
 def _schedule_pending(state: MasterState, run_id: str) -> None:
-    """Fill open slots. One local slot + max_concurrent_slurm sbatch slots."""
-    local_in_use = any(j.status == "running" and j.runner == "local"
-                       for j in state.phases)
+    """Fill open slots:
+      - up to gpus_per_node local-subprocess slots on the master's node,
+        each pinned to one GPU via CUDA_VISIBLE_DEVICES;
+      - up to max_concurrent_slurm sbatch worker slots.
+
+    Slots are picked greedily in pending-job order. Local slots are
+    preferred over sbatch slots because the local node already has
+    the GPUs allocated (no queue wait), but the pool isn't restricted
+    -- if the master only has 1 GPU, the rest of the pool falls back
+    to sbatch immediately.
+    """
+    # Local GPU index -> bool (False = free, True = in use).
+    local_busy = [False] * max(state.gpus_per_node, 1)
+    for j in state.phases:
+        if (j.status == "running" and j.runner == "local"
+                and j.local_gpu_idx is not None
+                and 0 <= j.local_gpu_idx < len(local_busy)):
+            local_busy[j.local_gpu_idx] = True
+
     slurm_in_use = sum(1 for j in state.phases
                        if j.status == "running" and j.runner == "slurm")
 
     for job in state.phases:
         if job.status != "pending":
             continue
-        if not local_in_use:
-            _start_local_phase(state, job)
-            local_in_use = True
-        elif slurm_in_use < state.max_concurrent_slurm:
+        # Try a local slot first.
+        free_local = next(
+            (i for i, busy in enumerate(local_busy) if not busy), None)
+        if free_local is not None:
+            _start_local_phase(state, job, gpu_idx=free_local)
+            local_busy[free_local] = True
+            continue
+        # Fall back to sbatch.
+        if slurm_in_use < state.max_concurrent_slurm:
             _submit_slurm_phase(state, job, run_id)
             slurm_in_use += 1
 
@@ -461,6 +495,16 @@ def run_master(args) -> int:
     with open(args.recipe) as f:
         recipe = yaml.safe_load(f)
 
+    # Resolve local GPU count: explicit --gpus-per-node wins, otherwise
+    # auto-detect on the compute node we're running on.
+    gpus_per_node = args.gpus_per_node
+    if gpus_per_node is None or gpus_per_node < 0:
+        try:
+            import torch
+            gpus_per_node = max(1, torch.cuda.device_count())
+        except Exception:
+            gpus_per_node = 1
+
     state = MasterState(
         output_root=output_root,
         source_agent=source_agent,
@@ -468,6 +512,7 @@ def run_master(args) -> int:
         recipe_path=os.path.abspath(args.recipe),
         recipe=recipe,
         max_concurrent_slurm=args.max_concurrent_slurm,
+        gpus_per_node=gpus_per_node,
         poll_interval_s=args.poll_interval_s,
         max_retries=args.max_retries,
         slurm_time=args.slurm_time,
@@ -482,6 +527,7 @@ def run_master(args) -> int:
             "recipe_path": state.recipe_path,
             "recipe_name": recipe.get("name"),
             "max_concurrent_slurm": state.max_concurrent_slurm,
+            "gpus_per_node": state.gpus_per_node,
             "max_retries": state.max_retries,
             "slurm_time": state.slurm_time,
             "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
@@ -492,8 +538,9 @@ def run_master(args) -> int:
     _log(state, f"Source agent:       {state.source_agent_dir}")
     _log(state, f"Recipe:             {state.recipe_path} "
                 f"({recipe.get('name', '?')})")
-    _log(state, f"Concurrency:        1 local + {state.max_concurrent_slurm}"
-                f" sbatch = {1 + state.max_concurrent_slurm} max")
+    _log(state, f"Concurrency:        {state.gpus_per_node} local "
+                f"(one per local GPU) + {state.max_concurrent_slurm}"
+                f" sbatch = {state.gpus_per_node + state.max_concurrent_slurm} max")
 
     state.phases = _build_phase_jobs(state)
     _log(state, f"Built {len(state.phases)} phase jobs from source agent")
@@ -551,7 +598,14 @@ def main():
                              "must NOT be inside --source-agent.")
     parser.add_argument("--max-concurrent-slurm", type=int, default=5,
                         help="Max simultaneously-queued sbatch worker jobs "
-                             "(default 5; plus 1 local = 6 total).")
+                             "(default 5).")
+    parser.add_argument("--gpus-per-node", type=int, default=None,
+                        help="Number of local GPU slots on the master's "
+                             "compute node; one local worker is pinned to "
+                             "each via CUDA_VISIBLE_DEVICES. Default: "
+                             "auto-detect via torch.cuda.device_count(). "
+                             "Master sbatch must have requested at least "
+                             "this many GPUs (--gres=gpu:N via launcher).")
     parser.add_argument("--poll-interval-s", type=float, default=30.0)
     parser.add_argument("--max-retries", type=int, default=1,
                         help="Per-phase retry budget on worker failure "

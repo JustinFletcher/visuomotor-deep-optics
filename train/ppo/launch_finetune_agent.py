@@ -43,6 +43,10 @@ from train.ppo.launch_static_dark_hole import (
 def _build_master_sbatch(args, run_id: str, output_root: str) -> str:
     job_name = f"ftm-{run_id[-8:]}"
     log_root = os.path.join(output_root, "master")
+    # Request as many GPUs as the master will fan out to via
+    # CUDA_VISIBLE_DEVICES on its local node. With --gpus-per-node 1
+    # this comes out to the same --gres=gpu as before.
+    gres_str = f"gpu:{args.gpus_per_node}" if args.gpus_per_node > 1 else SLURM_GRES
     return textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={job_name}
@@ -50,7 +54,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str) -> str:
         #SBATCH --account={SLURM_ACCOUNT}
         #SBATCH --partition={SLURM_PARTITION}
         #SBATCH --nodes=1
-        #SBATCH --gres={SLURM_GRES}
+        #SBATCH --gres={gres_str}
         #SBATCH --output={log_root}/master-%j.out
         #SBATCH --error={log_root}/master-%j.err
 
@@ -64,6 +68,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str) -> str:
             --recipe {args.recipe} \\
             --output-root {output_root} \\
             --max-concurrent-slurm {args.max_concurrent_slurm} \\
+            --gpus-per-node {args.gpus_per_node} \\
             --poll-interval-s {args.poll_interval_s} \\
             --max-retries {args.max_retries} \\
             --slurm-time {args.slurm_time}
@@ -86,7 +91,18 @@ def main():
                              "<src_basename>_<recipe>_<ts>/.")
     parser.add_argument("--max-concurrent-slurm", type=int, default=5,
                         help="Max sbatch worker jobs the master will "
-                             "have in flight (default 5; +1 local = 6).")
+                             "have in flight (default 5).")
+    parser.add_argument("--gpus-per-node", type=int, default=1,
+                        help="GPUs to request for the master sbatch (passed "
+                             "to --gres=gpu:N) AND to fan local workers "
+                             "across via CUDA_VISIBLE_DEVICES on the "
+                             "master's node. Default 1. With N>1 the "
+                             "master runs N local workers concurrently in "
+                             "addition to the sbatch pool, so peak "
+                             "concurrency = N local + max_concurrent_slurm. "
+                             "Each sbatch worker still requests gpu:1 and "
+                             "SLURM packs them onto multi-GPU nodes if the "
+                             "partition allows shared allocation.")
     parser.add_argument("--poll-interval-s", type=float, default=30.0,
                         help="Master poll interval (seconds).")
     parser.add_argument("--max-retries", type=int, default=1,
@@ -133,8 +149,11 @@ def main():
     print(f"Source agent:    {args.source_agent}")
     print(f"Recipe:          {args.recipe}")
     print(f"Output root:     {args.output_root}")
-    print(f"Concurrency:     1 local + {args.max_concurrent_slurm} sbatch "
-          f"= {1 + args.max_concurrent_slurm} max")
+    print(f"Concurrency:     {args.gpus_per_node} local "
+          f"(one per local GPU) + {args.max_concurrent_slurm} sbatch "
+          f"= {args.gpus_per_node + args.max_concurrent_slurm} max")
+    print(f"Master GPUs:     {args.gpus_per_node} "
+          f"(--gres=gpu:{args.gpus_per_node})")
     print(f"Master time:     {args.master_time}")
     print(f"Worker time:     {args.slurm_time}")
     print()
