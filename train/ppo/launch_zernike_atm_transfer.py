@@ -96,10 +96,19 @@ def _derive_experiment_tag(train_script: str) -> str:
 def _build_sbatch_script(args, run_id: str, output_root: str,
                          node_name: Optional[str], n_workers: int,
                          per_worker_seeds: list[int],
-                         train_script: str) -> str:
+                         train_script: str,
+                         resume: bool = False) -> str:
     """One sbatch job: spawn one Python worker per --n-zernike via
     CUDA_VISIBLE_DEVICES, then wait. bash fork+wait keeps the launcher
-    simple and avoids needing a separate node-block runner module."""
+    simple and avoids needing a separate node-block runner module.
+
+    When ``resume`` is True, the per-worker invocation looks up its
+    most-recent ``ppo_optomech_*/checkpoints/latest.pt`` inside the
+    worker's existing ``out_dir`` and passes it via ``--resume-from``
+    instead of ``--source-checkpoint`` so training continues from the
+    prior model + optimizer + global_step. Workers without any prior
+    checkpoint fall back to init-from-source (same as a fresh run).
+    """
     job_name = f"ztrn-{run_id[-8:]}"
     log_root = os.path.join(output_root, "_logs")
     gres = f"gpu:{n_workers}"
@@ -119,6 +128,26 @@ def _build_sbatch_script(args, run_id: str, output_root: str,
     pass_n_zernike = train_script not in _TRAIN_SCRIPTS_WITHOUT_N_ZERNIKE
     n_zernike_flag_template = (
         ' --n-zernike "${n}"' if pass_n_zernike else "")
+
+    # Resume-mode shell snippet: per worker, look up the most-recent
+    # latest.pt under the worker's out_dir; if found, use --resume-from
+    # to continue training. Otherwise fall back to the source ckpt.
+    if resume:
+        ckpt_block = (
+            '    resume_ckpt=$(ls -t "${out_dir}"/ppo_optomech_*'
+            '/checkpoints/latest.pt 2>/dev/null | head -1)\n'
+            '    if [ -n "$resume_ckpt" ]; then\n'
+            '        echo "[launcher]   resume from: $resume_ckpt"\n'
+            '        ckpt_flag="--resume-from $resume_ckpt"\n'
+            '    else\n'
+            '        echo "[launcher]   no prior latest.pt; '
+            'init from source"\n'
+            '        ckpt_flag="--source-checkpoint $SOURCE_CKPT"\n'
+            '    fi')
+        ckpt_invocation = '${ckpt_flag}'
+    else:
+        ckpt_block = ''
+        ckpt_invocation = '--source-checkpoint "${SOURCE_CKPT}"'
 
     return textwrap.dedent(f"""\
         #!/bin/bash
@@ -153,9 +182,10 @@ def _build_sbatch_script(args, run_id: str, output_root: str,
             mkdir -p "${{out_dir}}"
             echo "[launcher] starting worker $i: n_zernike=$n  "\\
                  "GPU=$i  seed=$seed  -> $out_dir"
+        {ckpt_block}
             CUDA_VISIBLE_DEVICES=$i poetry run python -u {train_script} \\
                 --hpc \\
-                --source-checkpoint "${{SOURCE_CKPT}}"{n_zernike_flag_template} \\
+                {ckpt_invocation}{n_zernike_flag_template} \\
                 --seed "${{seed}}"{r0_flag} \\
                 --run-dir "${{out_dir}}" \\
                 > "${{out_dir}}/stdout.log" 2> "${{out_dir}}/stderr.log" &
@@ -219,6 +249,19 @@ def main():
                         "<run_id>/n<NN>_seed<seed>/.")
     p.add_argument("--slurm-time", type=str, default=SLURM_TIME,
                    help=f"SLURM --time for the sbatch (default {SLURM_TIME}).")
+    p.add_argument("--resume", action="store_true",
+                   help="Resume an existing atmos-transfer job rooted "
+                        "at --output-root. For each worker subdir "
+                        "<output-root>/n<N>_seed<seed>/, the sbatch "
+                        "body looks up the most recent "
+                        "ppo_optomech_*/checkpoints/latest.pt and "
+                        "passes it via --resume-from (full model + "
+                        "optimizer + global_step resume) instead of "
+                        "--source-checkpoint. Workers with no prior "
+                        "checkpoint fall back to init-from-source. "
+                        "Pass the same --n-zernike and --seeds as the "
+                        "original submission so the worker subdirs "
+                        "line up.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print the sbatch script without submitting.")
     args = p.parse_args()
@@ -266,6 +309,16 @@ def main():
             print(f"[sinfo] no idle nodes with >= {n_workers} GPUs; "
                   f"letting SLURM choose without --nodelist")
 
+    if args.resume:
+        if not args.output_root:
+            print("ERROR: --resume requires --output-root pointing at "
+                  "an existing atmos-transfer job dir.")
+            sys.exit(1)
+        if not os.path.isdir(args.output_root):
+            print(f"ERROR: --resume --output-root ({args.output_root}) "
+                  f"does not exist or is not a directory.")
+            sys.exit(1)
+
     experiment_tag = (args.experiment_tag
                       or _derive_experiment_tag(args.train_script))
     run_id = args.run_id or (
@@ -283,10 +336,12 @@ def main():
         node_name=chosen_node,
         n_workers=n_workers,
         per_worker_seeds=per_worker_seeds,
-        train_script=args.train_script)
+        train_script=args.train_script,
+        resume=args.resume)
 
     print(f"Run id:             {run_id}")
     print(f"Experiment tag:     {experiment_tag}")
+    print(f"Resume mode:        {args.resume}")
     print(f"Source checkpoint:  {args.source_checkpoint}")
     print(f"Training script:    {args.train_script}")
     print(f"Output root:        {output_root}")
