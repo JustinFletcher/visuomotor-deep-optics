@@ -230,6 +230,21 @@ def main():
         "--env-version", type=str, default="v4",
         choices=["v1", "v2", "v3", "v4"])
     parser.add_argument(
+        "--env-recipe", type=str, default=None,
+        help="Optional path to a fine-tune recipe YAML "
+             "(train/ppo/finetune_recipes/*.yaml). When set, the "
+             "recipe's env_kwarg_overrides block is applied on top "
+             "of ROLLOUT_ENV_KWARGS so the eval env matches the "
+             "regime the agent was fine-tuned for. Without this flag "
+             "fine-tuned agents run against the ORIGINAL training "
+             "env, which usually makes them look better than they are.")
+    parser.add_argument(
+        "--env-kwarg", action="append", default=[], metavar="KEY=VALUE",
+        help="Override a single env_kwarg by hand. Repeatable. Useful "
+             "for ad-hoc probes without writing a recipe. Values are "
+             "parsed as YAML scalars (so '1e-4', '1000.0', 'true' all "
+             "work). Applied AFTER --env-recipe so manual overrides win.")
+    parser.add_argument(
         "--output-dir", type=str, default=_DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--no-gifs", action="store_true")
@@ -288,6 +303,27 @@ def main():
     # 15-aligned so Strehl still reads against the ultimate goal.
     env_kwargs = dict(ROLLOUT_ENV_KWARGS)
     env_kwargs["bootstrap_phased_count"] = lo
+
+    # --- Recipe env_kwarg overrides (e.g., fine-tune target regime) ---
+    if args.env_recipe:
+        with open(args.env_recipe) as f:
+            recipe = yaml.safe_load(f) or {}
+        rec_overrides = recipe.get("env_kwarg_overrides", {}) or {}
+        if rec_overrides:
+            env_kwargs.update(rec_overrides)
+            print(f"  env_recipe {args.env_recipe}: applied "
+                  f"{len(rec_overrides)} env_kwarg overrides")
+            for k, v in rec_overrides.items():
+                print(f"    {k} = {v}")
+
+    # --- Per-key manual overrides (--env-kwarg KEY=VALUE) ---
+    for entry in args.env_kwarg:
+        if "=" not in entry:
+            parser.error(f"--env-kwarg expects KEY=VALUE, got {entry!r}")
+        k, raw = entry.split("=", 1)
+        v = yaml.safe_load(raw)
+        env_kwargs[k] = v
+        print(f"  env_kwarg override: {k} = {v!r}")
 
     print(f"Spec:              {args.policy_spec}")
     print(f"Phases (spec):     {num_phases}")
