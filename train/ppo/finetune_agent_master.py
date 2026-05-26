@@ -98,7 +98,12 @@ class MasterState:
     recipe_path: str
     recipe: dict
     phases: list[PhaseJob] = field(default_factory=list)
-    max_concurrent_slurm: int = 5
+    # Total nodes the run is allowed to use, INCLUDING the master's
+    # own node. Default 4 = 1 master + 3 sbatch node-blocks. With
+    # 4-GPU nodes, that's 16 concurrent fine-tunes -- enough to run
+    # every phase of a 15-phase agent in parallel and still leave
+    # nodes for other work.
+    max_nodes: int = 4
     gpus_per_node: int = 1            # local GPU slots on the master's node
     poll_interval_s: float = 30.0
     max_retries: int = 1
@@ -438,17 +443,21 @@ def _schedule_pending(state: MasterState, run_id: str) -> None:
         local_busy[free_local] = True
 
     # --- SLURM node-block slots ---
-    # Count concurrent blocks (not phases): one sbatch job per node-block.
+    # Budget is on TOTAL NODES, not jobs. The master's own node counts
+    # for 1; each in-flight node-block counts for 1 (it pins exactly
+    # one node via --nodelist). Unpinned fallback jobs (no slurm_node)
+    # also count for 1 each conservatively.
     nodes_in_use = {j.slurm_node for j in state.phases
                     if j.status == "running" and j.runner == "slurm"
                     and j.slurm_node}
-    # If status is "running" but slurm_node is None, the block is in
-    # the legacy "default --gres=gpu" lane -- still counts toward the
-    # concurrency budget.
-    blocks_in_use = len({(j.slurm_job_id or id(j)) for j in state.phases
-                         if j.status == "running" and j.runner == "slurm"})
+    unpinned_jobs = len({j.slurm_job_id for j in state.phases
+                         if j.status == "running" and j.runner == "slurm"
+                         and not j.slurm_node and j.slurm_job_id})
+    # +1 for the master's own node.
+    nodes_used_count = 1 + len(nodes_in_use) + unpinned_jobs
+    nodes_budget_remaining = max(0, state.max_nodes - nodes_used_count)
 
-    if not pending or blocks_in_use >= state.max_concurrent_slurm:
+    if not pending or nodes_budget_remaining <= 0:
         return
 
     # Query sinfo ONCE per scheduling tick.
@@ -467,9 +476,9 @@ def _schedule_pending(state: MasterState, run_id: str) -> None:
     )
 
     # Walk best-to-worst nodes, packing up to min(node_gpu_count,
-    # pending) phases per node.
+    # pending) phases per node. Stop when the node budget is full.
     for node in candidates:
-        if not pending or blocks_in_use >= state.max_concurrent_slurm:
+        if not pending or nodes_budget_remaining <= 0:
             break
         take = min(node.gpu_count, len(pending))
         if take <= 0:
@@ -479,20 +488,19 @@ def _schedule_pending(state: MasterState, run_id: str) -> None:
         _submit_slurm_node_block(
             state, batch, run_id,
             node_name=node.name, gpu_count=take)
-        blocks_in_use += 1
+        nodes_budget_remaining -= 1
 
     # Fallback: if sinfo gave nothing usable and there's pending work
-    # plus slack, submit single-phase 1-GPU sbatch jobs and let SLURM
-    # pick the node. Slower than node-blocking but keeps the run
-    # progressing.
-    if pending and blocks_in_use < state.max_concurrent_slurm and not candidates:
+    # plus node budget, submit single-phase 1-GPU sbatch jobs and let
+    # SLURM pick the node. Each counts for 1 node against the budget.
+    if pending and nodes_budget_remaining > 0 and not candidates:
         _log(state, f"  no sinfo candidates; falling back to "
                     f"unpinned single-phase sbatch")
         for job in list(pending):
-            if blocks_in_use >= state.max_concurrent_slurm:
+            if nodes_budget_remaining <= 0:
                 break
             _submit_slurm_phase(state, job, run_id)
-            blocks_in_use += 1
+            nodes_budget_remaining -= 1
             pending.remove(job)
 
 
@@ -644,7 +652,7 @@ def run_master(args) -> int:
         source_agent_dir=os.path.abspath(args.source_agent),
         recipe_path=os.path.abspath(args.recipe),
         recipe=recipe,
-        max_concurrent_slurm=args.max_concurrent_slurm,
+        max_nodes=args.max_nodes,
         gpus_per_node=gpus_per_node,
         poll_interval_s=args.poll_interval_s,
         max_retries=args.max_retries,
@@ -659,7 +667,7 @@ def run_master(args) -> int:
             "source_agent_name": source_agent.get("agent_name"),
             "recipe_path": state.recipe_path,
             "recipe_name": recipe.get("name"),
-            "max_concurrent_slurm": state.max_concurrent_slurm,
+            "max_nodes": state.max_nodes,
             "gpus_per_node": state.gpus_per_node,
             "max_retries": state.max_retries,
             "slurm_time": state.slurm_time,
@@ -671,9 +679,10 @@ def run_master(args) -> int:
     _log(state, f"Source agent:       {state.source_agent_dir}")
     _log(state, f"Recipe:             {state.recipe_path} "
                 f"({recipe.get('name', '?')})")
-    _log(state, f"Concurrency:        {state.gpus_per_node} local "
-                f"(one per local GPU) + {state.max_concurrent_slurm}"
-                f" sbatch = {state.gpus_per_node + state.max_concurrent_slurm} max")
+    _log(state, f"Node budget:        {state.max_nodes} total "
+                f"(1 master + up to {state.max_nodes - 1} sbatch blocks)")
+    _log(state, f"Master GPUs:        {state.gpus_per_node} "
+                f"(one local worker per GPU)")
 
     state.phases = _build_phase_jobs(state)
     _log(state, f"Built {len(state.phases)} phase jobs from source agent")
@@ -729,9 +738,14 @@ def main():
     parser.add_argument("--output-root", required=True,
                         help="New dir under agent_finetuning/...; "
                              "must NOT be inside --source-agent.")
-    parser.add_argument("--max-concurrent-slurm", type=int, default=5,
-                        help="Max simultaneously-queued sbatch worker jobs "
-                             "(default 5).")
+    parser.add_argument("--max-nodes", type=int, default=4,
+                        help="Total number of nodes the run is allowed "
+                             "to use, INCLUDING the master's own node. "
+                             "Default 4 (1 master + up to 3 sbatch node-"
+                             "block workers). With 4-GPU nodes that's "
+                             "16 concurrent fine-tunes -- enough to run "
+                             "all 15 phases of a bootstrap agent in "
+                             "parallel and still keep nodes free.")
     parser.add_argument("--gpus-per-node", type=int, default=None,
                         help="Number of local GPU slots on the master's "
                              "compute node; one local worker is pinned to "

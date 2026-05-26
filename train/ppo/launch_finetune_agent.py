@@ -70,7 +70,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str,
             --source-agent {args.source_agent} \\
             --recipe {args.recipe} \\
             --output-root {output_root} \\
-            --max-concurrent-slurm {args.max_concurrent_slurm} \\
+            --max-nodes {args.max_nodes} \\
             --gpus-per-node {gpus_per_node} \\
             --poll-interval-s {args.poll_interval_s} \\
             --max-retries {args.max_retries} \\
@@ -92,9 +92,15 @@ def main():
                         help="Output dir for the master + per-phase runs. "
                              "Default: agent_finetuning/"
                              "<src_basename>_<recipe>_<ts>/.")
-    parser.add_argument("--max-concurrent-slurm", type=int, default=5,
-                        help="Max sbatch worker jobs the master will "
-                             "have in flight (default 5).")
+    parser.add_argument("--max-nodes", type=int, default=4,
+                        help="Total number of nodes used by the run, "
+                             "INCLUDING the master's own node. Default "
+                             "4 (1 master + up to 3 sbatch node-block "
+                             "workers, each saturated with all its GPUs). "
+                             "On a 4-GPU-per-node cluster, --max-nodes 4 "
+                             "= 16 concurrent fine-tunes -- enough to "
+                             "run all 15 phases of a bootstrap agent in "
+                             "parallel.")
     parser.add_argument("--gpus-per-node", type=int, default=None,
                         help="GPUs to request for the master sbatch. "
                              "Default: pick the largest free node via "
@@ -190,9 +196,8 @@ def main():
     print(f"Source agent:    {args.source_agent}")
     print(f"Recipe:          {args.recipe}")
     print(f"Output root:     {args.output_root}")
-    print(f"Concurrency:     {gpus_per_node} local "
-          f"(one per local GPU) + {args.max_concurrent_slurm} sbatch blocks "
-          f"= {gpus_per_node + args.max_concurrent_slurm} max")
+    print(f"Node budget:     {args.max_nodes} total "
+          f"(1 master + up to {args.max_nodes - 1} sbatch blocks)")
     print(f"Master node:     {chosen_node or '(SLURM chooses)'}")
     print(f"Master GPUs:     {gpus_per_node} (--gres=gpu:{gpus_per_node})")
     print(f"Master time:     {args.master_time}")
