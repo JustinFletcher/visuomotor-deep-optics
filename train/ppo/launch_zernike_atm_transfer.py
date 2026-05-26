@@ -56,14 +56,22 @@ from train.ppo.finetune_sinfo import (
     query_sinfo_nodes, select_best_nodes)
 
 
-_TRAIN_SCRIPT = "train/ppo/train_ppo_elf_dm_strehl_only_zernike_atm_transfer.py"
+_DEFAULT_TRAIN_SCRIPT = "train/ppo/train_ppo_elf_dm_strehl_only_zernike_atm_transfer.py"
 _RUN_PREFIX = "zernike_atm_transfer"
 _DEFAULT_N_ZERNIKE = [32, 64, 128, 256]
+# --n-zernike is only forwarded to the worker when the chosen train
+# script accepts it. The basis-change transfer script does; the
+# absolute-control transfer script does not (same n_zernike as the
+# source by design). We detect by name -- crude but explicit.
+_TRAIN_SCRIPTS_WITHOUT_N_ZERNIKE = {
+    "train/ppo/train_ppo_elf_dm_strehl_only_zernike_atm_absolute.py",
+}
 
 
 def _build_sbatch_script(args, run_id: str, output_root: str,
                          node_name: Optional[str], n_workers: int,
-                         per_worker_seeds: list[int]) -> str:
+                         per_worker_seeds: list[int],
+                         train_script: str) -> str:
     """One sbatch job: spawn one Python worker per --n-zernike via
     CUDA_VISIBLE_DEVICES, then wait. bash fork+wait keeps the launcher
     simple and avoids needing a separate node-block runner module."""
@@ -78,6 +86,14 @@ def _build_sbatch_script(args, run_id: str, output_root: str,
     n_zernike_str = " ".join(str(n) for n in args.n_zernike)
     seeds_str = " ".join(str(s) for s in per_worker_seeds)
     r0_flag = f" --r0 {args.r0}" if args.r0 is not None else ""
+    # The basis-change transfer script accepts --n-zernike per worker
+    # (each worker trains a different basis size). The absolute-control
+    # transfer script does NOT (same n_zernike as the source by
+    # design), so we drop the flag when targeting that script and let
+    # the source's basis size flow through.
+    pass_n_zernike = train_script not in _TRAIN_SCRIPTS_WITHOUT_N_ZERNIKE
+    n_zernike_flag_template = (
+        ' --n-zernike "${n}"' if pass_n_zernike else "")
 
     return textwrap.dedent(f"""\
         #!/bin/bash
@@ -112,10 +128,9 @@ def _build_sbatch_script(args, run_id: str, output_root: str,
             mkdir -p "${{out_dir}}"
             echo "[launcher] starting worker $i: n_zernike=$n  "\\
                  "GPU=$i  seed=$seed  -> $out_dir"
-            CUDA_VISIBLE_DEVICES=$i poetry run python -u {_TRAIN_SCRIPT} \\
+            CUDA_VISIBLE_DEVICES=$i poetry run python -u {train_script} \\
                 --hpc \\
-                --source-checkpoint "${{SOURCE_CKPT}}" \\
-                --n-zernike "${{n}}" \\
+                --source-checkpoint "${{SOURCE_CKPT}}"{n_zernike_flag_template} \\
                 --seed "${{seed}}"{r0_flag} \\
                 --run-dir "${{out_dir}}" \\
                 > "${{out_dir}}/stdout.log" 2> "${{out_dir}}/stderr.log" &
@@ -133,11 +148,21 @@ def main():
                    help="Path to the source atmospheric DM model "
                         "checkpoint (e.g. atmos_models/r0_25cm_seed.../"
                         "checkpoints/latest.pt).")
+    p.add_argument("--train-script", type=str, default=_DEFAULT_TRAIN_SCRIPT,
+                   help=f"Path to the training script to launch per "
+                        f"worker (default: {_DEFAULT_TRAIN_SCRIPT}). "
+                        "Use train/ppo/train_ppo_elf_dm_strehl_only_"
+                        "zernike_atm_absolute.py for the same-arch "
+                        "incremental->absolute transfer.")
     p.add_argument("--n-zernike", type=int, nargs="+",
                    default=_DEFAULT_N_ZERNIKE,
                    help="Target Zernike basis sizes (default: "
                         f"{_DEFAULT_N_ZERNIKE}). Each is a separate "
-                        "worker pinned to its own GPU.")
+                        "worker pinned to its own GPU. For training "
+                        "scripts that don't accept --n-zernike "
+                        "(e.g. the absolute-control transfer), the "
+                        "list is still used to size the worker count "
+                        "but the flag itself is dropped.")
     p.add_argument("--seeds", type=int, nargs="+", default=None,
                    help="One seed per --n-zernike value (lengths must "
                         "match). Default: fresh random seed per worker.")
@@ -218,10 +243,12 @@ def main():
         args, run_id, output_root,
         node_name=chosen_node,
         n_workers=n_workers,
-        per_worker_seeds=per_worker_seeds)
+        per_worker_seeds=per_worker_seeds,
+        train_script=args.train_script)
 
     print(f"Run id:             {run_id}")
     print(f"Source checkpoint:  {args.source_checkpoint}")
+    print(f"Training script:    {args.train_script}")
     print(f"Output root:        {output_root}")
     print(f"Atmosphere r0:      "
           f"{args.r0 if args.r0 is not None else '(parent default 0.12 m)'}")
