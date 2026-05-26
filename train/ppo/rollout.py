@@ -122,6 +122,53 @@ def _wrap_as_agent(agent_or_base, device="cpu"):
     return SingleModelAgent(wrapper, device)
 
 
+def _capture_pupil_opd(env):
+    """Return the current pupil-plane OPD in meters as a [H, W] numpy
+    array, or None if the env doesn't expose the necessary state.
+
+    Sums (a) the segmented-mirror surface (always present) computed
+    as ``sum_i actuator_i * influence_i`` and (b) the DM surface (if
+    command_dm) computed the same way. Works for both:
+      - v4: state lives on ``env.unwrapped.optical_system._actuators_t``
+            and ``._influence_t`` (single-env tensors)
+      - v5: state lives directly on the env as ``env._actuators_t``
+            and ``env._influence_t`` (batched: [N, n_modes]; we take
+            env index 0)
+    """
+    base = env.unwrapped if hasattr(env, "unwrapped") else env
+
+    actuators = getattr(base, "_actuators_t", None)
+    influence = getattr(base, "_influence_t", None)
+    if actuators is None or influence is None:
+        opt = getattr(base, "optical_system", None)
+        if opt is not None:
+            actuators = getattr(opt, "_actuators_t", None)
+            influence = getattr(opt, "_influence_t", None)
+    if actuators is None or influence is None:
+        return None
+
+    a = actuators[0] if actuators.dim() == 2 else actuators
+    # Segment surface in meters of OPD on the pupil.
+    surface = torch.einsum("i,ihw->hw", a, influence)
+
+    # DM contribution (additive surface) when present. v5 keeps the
+    # influence basis flat as [n_dm, H*W]; v4 doesn't expose a flat
+    # tensor but the contribution is the same shape.
+    dm_act = getattr(base, "_dm_actuators_t", None)
+    dm_inf_flat = getattr(base, "_dm_basis_t_flat", None)
+    if dm_act is None or dm_inf_flat is None:
+        opt = getattr(base, "optical_system", None)
+        if opt is not None:
+            dm_act = getattr(opt, "_dm_actuators_t", None)
+            dm_inf_flat = getattr(opt, "_dm_basis_t_flat", None)
+    if dm_act is not None and dm_inf_flat is not None:
+        d = dm_act[0] if dm_act.dim() == 2 else dm_act
+        H, W = surface.shape
+        surface = surface + torch.matmul(d, dm_inf_flat).reshape(H, W)
+
+    return surface.detach().cpu().numpy()
+
+
 def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
     """Run a single deterministic episode and return structured data.
 
@@ -177,6 +224,10 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
     ep_rewards = []
     ep_actions = []
     ep_obs_raw = [obs_raw.copy()]
+    # Pupil-plane OPD captured per step; None per-frame if the env
+    # doesn't expose actuator state (legacy envs, mocks, ...). The
+    # GIF renderer treats an all-None list as "skip the OPD panel".
+    ep_opd_raw = [_capture_pupil_opd(env)]
     ep_strehls = []
     ep_mses = []
     ep_oob_fracs = []
@@ -202,6 +253,7 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
         ep_rewards.append(float(reward))
         ep_actions.append(env_action.copy())
         ep_obs_raw.append(next_obs_raw.copy())
+        ep_opd_raw.append(_capture_pupil_opd(env))
         ep_strehls.append(float(info.get("strehl", 0.0)))
         ep_mses.append(float(info.get("mse", 0.0)))
         ep_oob_fracs.append(float(info.get("oob_frac", 0.0)))
@@ -255,6 +307,7 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
         "rewards": ep_rewards,
         "actions": ep_actions,
         "obs_raw": ep_obs_raw,
+        "opd_raw": ep_opd_raw,
         "strehls": ep_strehls,
         "mses": ep_mses,
         "oob_fracs": ep_oob_fracs,
@@ -408,14 +461,33 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72,
     T = len(rewards)
     action_dim = actions.shape[1] if len(actions) > 0 else 0
 
+    # OPD panel: opt in iff the episode dict carries usable opd_raw
+    # frames. Pre-2026 episodes / mock envs don't, in which case we
+    # silently fall back to the obs-only layout.
+    opd_raw = ep_data.get("opd_raw") or []
+    has_opd = any(o is not None for o in opd_raw)
+    if has_opd and len(opd_raw) >= T + 1:
+        # Convert to µm for display, mask invalid frames to NaN.
+        opd_um = [
+            (np.asarray(o) * 1e6 if o is not None else None)
+            for o in opd_raw]
+        # Episode-wide colour scale so the eye reads absolute changes.
+        valid = [np.abs(o) for o in opd_um if o is not None]
+        opd_vmax = max(float(np.max(np.concatenate([v.ravel() for v in valid]))),
+                       1e-6) if valid else 1e-6
+    else:
+        has_opd = False
+        opd_um = None
+        opd_vmax = None
+
     if lowres:
         dpi = 48
-        figsize = (3.2, 3.6)
-        hspace, wspace = 0.20, 0.20
+        figsize = ((5.2, 3.6) if has_opd else (3.2, 3.6))
+        hspace, wspace = 0.20, 0.30 if has_opd else 0.20
         title_fs, tick_fs, txt_fs = 6, 5, 6
     else:
-        figsize = (5, 5.5)
-        hspace, wspace = 0.35, 0.40
+        figsize = ((8.0, 5.5) if has_opd else (5, 5.5))
+        hspace, wspace = 0.35, 0.45 if has_opd else 0.40
         title_fs, tick_fs, txt_fs = 7, 6, 7
 
     all_raw = [_prepare_obs_raw(obs_raw[t]) for t in range(T + 1)]
@@ -439,7 +511,11 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72,
                                top=0.92 if lowres else 0.93,
                                bottom=0.06)
 
-        ax_obs = fig.add_subplot(gs[0, :])
+        # Top row: obs (focal plane); OPD (pupil plane) iff captured.
+        if has_opd:
+            ax_obs = fig.add_subplot(gs[0, 0])
+        else:
+            ax_obs = fig.add_subplot(gs[0, :])
         img_dn = all_raw[t]
         im = ax_obs.imshow(np.maximum(img_dn, 1.0), cmap="inferno", norm=norm)
         ax_obs.axis("off")
@@ -450,6 +526,26 @@ def render_episode_gif(ep_data, save_path, label="", dpi=72,
             f"\nmax={dn_max:.0f}  sum={dn_sum:.0f}",
             fontsize=title_fs)
         fig.colorbar(im, ax=ax_obs, fraction=0.046, pad=0.02, label="DN")
+
+        if has_opd:
+            ax_opd = fig.add_subplot(gs[0, 1])
+            opd_frame = opd_um[t] if t < len(opd_um) else None
+            if opd_frame is not None:
+                im_opd = ax_opd.imshow(
+                    opd_frame, cmap="RdBu_r",
+                    vmin=-opd_vmax, vmax=opd_vmax, aspect="equal")
+                ax_opd.axis("off")
+                opd_peak = float(np.max(np.abs(opd_frame)))
+                ax_opd.set_title(f"Pupil OPD\npeak |OPD|={opd_peak:.3g} µm",
+                                 fontsize=title_fs)
+                fig.colorbar(im_opd, ax=ax_opd, fraction=0.046, pad=0.02,
+                             label="µm")
+            else:
+                # Defensive: a single missing frame shouldn't break the GIF.
+                ax_opd.axis("off")
+                ax_opd.text(0.5, 0.5, "(OPD unavailable)",
+                            ha="center", va="center",
+                            fontsize=txt_fs, transform=ax_opd.transAxes)
 
         ax_act = fig.add_subplot(gs[1, 0])
         if t > 0 and action_dim > 0:
