@@ -34,19 +34,22 @@ import subprocess
 import sys
 import textwrap
 import time
+from typing import Optional
 
 from train.ppo.launch_static_dark_hole import (
     HPC_WORKDIR, SLURM_ACCOUNT, SLURM_GRES, SLURM_PARTITION, SLURM_TIME,
 )
+from train.ppo.finetune_sinfo import (
+    query_sinfo_nodes, select_best_nodes)
 
 
-def _build_master_sbatch(args, run_id: str, output_root: str) -> str:
+def _build_master_sbatch(args, run_id: str, output_root: str,
+                         node_name: Optional[str],
+                         gpus_per_node: int) -> str:
     job_name = f"ftm-{run_id[-8:]}"
     log_root = os.path.join(output_root, "master")
-    # Request as many GPUs as the master will fan out to via
-    # CUDA_VISIBLE_DEVICES on its local node. With --gpus-per-node 1
-    # this comes out to the same --gres=gpu as before.
-    gres_str = f"gpu:{args.gpus_per_node}" if args.gpus_per_node > 1 else SLURM_GRES
+    gres_str = f"gpu:{gpus_per_node}" if gpus_per_node > 1 else SLURM_GRES
+    nodelist_line = f"#SBATCH --nodelist={node_name}\n        " if node_name else ""
     return textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={job_name}
@@ -54,7 +57,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str) -> str:
         #SBATCH --account={SLURM_ACCOUNT}
         #SBATCH --partition={SLURM_PARTITION}
         #SBATCH --nodes=1
-        #SBATCH --gres={gres_str}
+        {nodelist_line}#SBATCH --gres={gres_str}
         #SBATCH --output={log_root}/master-%j.out
         #SBATCH --error={log_root}/master-%j.err
 
@@ -68,7 +71,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str) -> str:
             --recipe {args.recipe} \\
             --output-root {output_root} \\
             --max-concurrent-slurm {args.max_concurrent_slurm} \\
-            --gpus-per-node {args.gpus_per_node} \\
+            --gpus-per-node {gpus_per_node} \\
             --poll-interval-s {args.poll_interval_s} \\
             --max-retries {args.max_retries} \\
             --slurm-time {args.slurm_time}
@@ -92,17 +95,18 @@ def main():
     parser.add_argument("--max-concurrent-slurm", type=int, default=5,
                         help="Max sbatch worker jobs the master will "
                              "have in flight (default 5).")
-    parser.add_argument("--gpus-per-node", type=int, default=1,
-                        help="GPUs to request for the master sbatch (passed "
-                             "to --gres=gpu:N) AND to fan local workers "
-                             "across via CUDA_VISIBLE_DEVICES on the "
-                             "master's node. Default 1. With N>1 the "
-                             "master runs N local workers concurrently in "
-                             "addition to the sbatch pool, so peak "
-                             "concurrency = N local + max_concurrent_slurm. "
-                             "Each sbatch worker still requests gpu:1 and "
-                             "SLURM packs them onto multi-GPU nodes if the "
-                             "partition allows shared allocation.")
+    parser.add_argument("--gpus-per-node", type=int, default=None,
+                        help="GPUs to request for the master sbatch. "
+                             "Default: pick the largest free node via "
+                             "sinfo and use its full GPU count (so the "
+                             "master saturates one node). Pass an explicit "
+                             "value to override that auto-selection.")
+    parser.add_argument("--master-node", type=str, default=None,
+                        help="Explicit --nodelist for the master sbatch. "
+                             "Default: pick the best idle node via sinfo. "
+                             "Pass 'auto' (or omit) for auto-pick, "
+                             "'any' to let SLURM choose without "
+                             "--nodelist, or a node name to pin.")
     parser.add_argument("--poll-interval-s", type=float, default=30.0,
                         help="Master poll interval (seconds).")
     parser.add_argument("--max-retries", type=int, default=1,
@@ -144,16 +148,53 @@ def main():
     run_id = os.path.basename(args.output_root.rstrip("/"))
     os.makedirs(os.path.join(args.output_root, "master"), exist_ok=True)
 
-    script = _build_master_sbatch(args, run_id, args.output_root)
+    # ----------------------------------------------------------------
+    # sinfo-driven master-node selection.
+    #
+    # We want the master to land on the biggest idle GPU node so it
+    # can saturate that node with local workers. Three modes:
+    #   --master-node any        -> no --nodelist, no auto-detect
+    #   --master-node <name>     -> pin to that node
+    #   --master-node auto / unset -> sinfo, pick best
+    # When auto-picking and --gpus-per-node is also unset, the chosen
+    # node's GPU count drives --gres=gpu:N.
+    # ----------------------------------------------------------------
+    chosen_node: Optional[str] = None
+    gpus_per_node: int = args.gpus_per_node or 0
+    if args.master_node == "any":
+        pass
+    elif args.master_node and args.master_node != "auto":
+        chosen_node = args.master_node
+    else:
+        nodes = query_sinfo_nodes(partition=SLURM_PARTITION)
+        best = select_best_nodes(
+            nodes, min_gpus=1, allow_mix=False, exclude_self=False)
+        if best:
+            top = best[0]
+            chosen_node = top.name
+            if gpus_per_node <= 0:
+                gpus_per_node = top.gpu_count
+            print(f"[sinfo] picked master node {top.name} "
+                  f"(state={top.state}, gpu_count={top.gpu_count})")
+        else:
+            print("[sinfo] no idle GPU nodes found; letting SLURM "
+                  "choose without --nodelist")
+
+    if gpus_per_node <= 0:
+        gpus_per_node = 1
+
+    script = _build_master_sbatch(args, run_id, args.output_root,
+                                  node_name=chosen_node,
+                                  gpus_per_node=gpus_per_node)
 
     print(f"Source agent:    {args.source_agent}")
     print(f"Recipe:          {args.recipe}")
     print(f"Output root:     {args.output_root}")
-    print(f"Concurrency:     {args.gpus_per_node} local "
-          f"(one per local GPU) + {args.max_concurrent_slurm} sbatch "
-          f"= {args.gpus_per_node + args.max_concurrent_slurm} max")
-    print(f"Master GPUs:     {args.gpus_per_node} "
-          f"(--gres=gpu:{args.gpus_per_node})")
+    print(f"Concurrency:     {gpus_per_node} local "
+          f"(one per local GPU) + {args.max_concurrent_slurm} sbatch blocks "
+          f"= {gpus_per_node + args.max_concurrent_slurm} max")
+    print(f"Master node:     {chosen_node or '(SLURM chooses)'}")
+    print(f"Master GPUs:     {gpus_per_node} (--gres=gpu:{gpus_per_node})")
     print(f"Master time:     {args.master_time}")
     print(f"Worker time:     {args.slurm_time}")
     print()

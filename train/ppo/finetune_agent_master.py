@@ -79,6 +79,8 @@ class PhaseJob:
     status: str = "pending"           # pending, running, completed, failed
     runner: Optional[str] = None      # "local" | "slurm"
     slurm_job_id: Optional[str] = None
+    slurm_node: Optional[str] = None  # node-block target, if known
+    block_dir: Optional[str] = None   # per-block log + manifest dir
     proc: Optional[subprocess.Popen] = None
     local_gpu_idx: Optional[int] = None   # which CUDA_VISIBLE_DEVICES slot
     started_at: Optional[float] = None
@@ -183,9 +185,17 @@ def _is_slurm_job_alive(job_id: str) -> bool:
                                      "FAILED", "TIMEOUT", "OUT_OF_MEMORY"}
 
 
-def _slurm_script_for_phase(state: MasterState, job: PhaseJob,
-                            run_id: str) -> str:
-    name = f"ft-{run_id[-8:]}-p{job.phase:02d}"
+def _slurm_node_block_script(state: MasterState, jobs: list[PhaseJob],
+                             run_id: str, node_name: str,
+                             gpu_count: int, block_dir: str,
+                             manifest_path: str) -> str:
+    """Build an sbatch script for one *node-block* worker: a single
+    SLURM job pinned to one node, requesting --gres=gpu:<gpu_count>,
+    that internally fans out one finetune_agent_worker.py subprocess
+    per assigned phase (each on its own local GPU).
+    """
+    phases_label = "-".join(f"p{j.phase:02d}" for j in jobs)
+    name = f"ft-{run_id[-8:]}-{node_name[-6:]}-{phases_label}"
     return textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={name}
@@ -193,21 +203,77 @@ def _slurm_script_for_phase(state: MasterState, job: PhaseJob,
         #SBATCH --account={SLURM_ACCOUNT}
         #SBATCH --partition={SLURM_PARTITION}
         #SBATCH --nodes=1
-        #SBATCH --gres={SLURM_GRES}
-        #SBATCH --output={job.output_dir}/slurm-%j.out
-        #SBATCH --error={job.output_dir}/slurm-%j.err
+        #SBATCH --nodelist={node_name}
+        #SBATCH --gres=gpu:{gpu_count}
+        #SBATCH --output={block_dir}/slurm-%j.out
+        #SBATCH --error={block_dir}/slurm-%j.err
 
         export PATH=$HOME/local/bin:$HOME/.local/bin:$PATH
         export LD_LIBRARY_PATH=$HOME/local/lib:$HOME/local/lib64:${{LD_LIBRARY_PATH:-}}
 
         cd {HPC_WORKDIR}
-        poetry run python -u train/ppo/finetune_agent_worker.py \\
-            --source-checkpoint {job.source_ckpt} \\
-            --phase {job.phase} \\
+        poetry run python -u train/ppo/finetune_node_block_worker.py \\
+            --manifest {manifest_path} \\
             --recipe {state.recipe_path} \\
-            --output-dir {job.output_dir} \\
-            --hpc
+            --block-dir {block_dir}
     """)
+
+
+def _submit_slurm_node_block(state: MasterState, jobs: list[PhaseJob],
+                             run_id: str, node_name: str,
+                             gpu_count: int) -> None:
+    """Submit one node-block sbatch job covering ``jobs``. Writes the
+    per-phase manifest and assigns the same slurm_job_id to every
+    PhaseJob in the block so we can track them as a unit."""
+    if not jobs:
+        return
+    # Block dir under blocks/<run_id>/<idx>; idx based on submission
+    # order. Cheap to construct; we just need it unique per block.
+    blocks_root = os.path.join(state.output_root, "blocks")
+    os.makedirs(blocks_root, exist_ok=True)
+    existing = sorted(p.name for p in Path(blocks_root).iterdir()
+                      if p.is_dir())
+    next_idx = len(existing)
+    block_label = (
+        f"block_{next_idx:04d}_{node_name}_"
+        + "-".join(f"p{j.phase:02d}" for j in jobs))
+    block_dir = os.path.join(blocks_root, block_label)
+    os.makedirs(block_dir, exist_ok=True)
+
+    manifest = [
+        {"phase": j.phase,
+         "source_checkpoint": j.source_ckpt,
+         "output_dir": j.output_dir}
+        for j in jobs]
+    manifest_path = os.path.join(block_dir, "manifest.json")
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    script = _slurm_node_block_script(
+        state, jobs, run_id,
+        node_name=node_name, gpu_count=gpu_count,
+        block_dir=block_dir, manifest_path=manifest_path)
+    result = subprocess.run(
+        ["sbatch", "--parsable"],
+        input=script, capture_output=True, text=True)
+    if result.returncode != 0:
+        err = result.stderr.strip()
+        for j in jobs:
+            j.status = "failed"
+            j.last_error = f"sbatch failed (block): {err}"
+        _log(state, f"  block {block_label}: sbatch FAILED -- {err}")
+        return
+    job_id = result.stdout.strip()
+    for j in jobs:
+        j.runner = "slurm"
+        j.status = "running"
+        j.slurm_job_id = job_id
+        j.slurm_node = node_name
+        j.block_dir = block_dir
+        j.started_at = time.time()
+        j.attempts += 1
+    _log(state, f"  block {block_label}: sbatch job {job_id} submitted "
+                f"on {node_name} (--gres=gpu:{gpu_count})")
 
 
 def _submit_slurm_phase(state: MasterState, job: PhaseJob,
@@ -331,15 +397,25 @@ def _schedule_pending(state: MasterState, run_id: str) -> None:
     """Fill open slots:
       - up to gpus_per_node local-subprocess slots on the master's node,
         each pinned to one GPU via CUDA_VISIBLE_DEVICES;
-      - up to max_concurrent_slurm sbatch worker slots.
+      - up to max_concurrent_slurm sbatch *node-block* jobs, each
+        targeting one explicit node via --nodelist and packing as many
+        pending phases as that node has GPUs.
 
     Slots are picked greedily in pending-job order. Local slots are
-    preferred over sbatch slots because the local node already has
-    the GPUs allocated (no queue wait), but the pool isn't restricted
-    -- if the master only has 1 GPU, the rest of the pool falls back
-    to sbatch immediately.
+    preferred over sbatch slots because the local node already has the
+    GPUs allocated (no queue wait).
+
+    The sbatch path picks "best" nodes via finetune_sinfo: idle, most
+    GPUs first. Nodes already in use by an in-flight block are
+    skipped so we don't pile two blocks onto the same node. If sinfo
+    yields nothing usable we fall back to submitting a 1-GPU
+    single-phase sbatch (lets SLURM choose) so the run still makes
+    progress, just without node-pinning.
     """
-    # Local GPU index -> bool (False = free, True = in use).
+    from train.ppo.finetune_sinfo import (
+        query_sinfo_nodes, select_best_nodes)
+
+    # --- Local slots ---
     local_busy = [False] * max(state.gpus_per_node, 1)
     for j in state.phases:
         if (j.status == "running" and j.runner == "local"
@@ -347,23 +423,77 @@ def _schedule_pending(state: MasterState, run_id: str) -> None:
                 and 0 <= j.local_gpu_idx < len(local_busy)):
             local_busy[j.local_gpu_idx] = True
 
-    slurm_in_use = sum(1 for j in state.phases
-                       if j.status == "running" and j.runner == "slurm")
+    # Pull pending in phase order so the natural sweep through phases
+    # 0..14 happens in order, regardless of how we pack them.
+    pending = [j for j in state.phases if j.status == "pending"]
 
-    for job in state.phases:
-        if job.status != "pending":
-            continue
-        # Try a local slot first.
+    # Fill local slots first.
+    while pending:
         free_local = next(
             (i for i, busy in enumerate(local_busy) if not busy), None)
-        if free_local is not None:
-            _start_local_phase(state, job, gpu_idx=free_local)
-            local_busy[free_local] = True
+        if free_local is None:
+            break
+        job = pending.pop(0)
+        _start_local_phase(state, job, gpu_idx=free_local)
+        local_busy[free_local] = True
+
+    # --- SLURM node-block slots ---
+    # Count concurrent blocks (not phases): one sbatch job per node-block.
+    nodes_in_use = {j.slurm_node for j in state.phases
+                    if j.status == "running" and j.runner == "slurm"
+                    and j.slurm_node}
+    # If status is "running" but slurm_node is None, the block is in
+    # the legacy "default --gres=gpu" lane -- still counts toward the
+    # concurrency budget.
+    blocks_in_use = len({(j.slurm_job_id or id(j)) for j in state.phases
+                         if j.status == "running" and j.runner == "slurm"})
+
+    if not pending or blocks_in_use >= state.max_concurrent_slurm:
+        return
+
+    # Query sinfo ONCE per scheduling tick.
+    try:
+        all_nodes = query_sinfo_nodes(partition=SLURM_PARTITION)
+    except Exception as e:
+        _log(state, f"  sinfo query failed: {e}")
+        all_nodes = []
+
+    candidates = select_best_nodes(
+        all_nodes,
+        in_use=nodes_in_use,
+        min_gpus=1,
+        allow_mix=False,
+        exclude_self=True,
+    )
+
+    # Walk best-to-worst nodes, packing up to min(node_gpu_count,
+    # pending) phases per node.
+    for node in candidates:
+        if not pending or blocks_in_use >= state.max_concurrent_slurm:
+            break
+        take = min(node.gpu_count, len(pending))
+        if take <= 0:
             continue
-        # Fall back to sbatch.
-        if slurm_in_use < state.max_concurrent_slurm:
+        batch = pending[:take]
+        pending = pending[take:]
+        _submit_slurm_node_block(
+            state, batch, run_id,
+            node_name=node.name, gpu_count=take)
+        blocks_in_use += 1
+
+    # Fallback: if sinfo gave nothing usable and there's pending work
+    # plus slack, submit single-phase 1-GPU sbatch jobs and let SLURM
+    # pick the node. Slower than node-blocking but keeps the run
+    # progressing.
+    if pending and blocks_in_use < state.max_concurrent_slurm and not candidates:
+        _log(state, f"  no sinfo candidates; falling back to "
+                    f"unpinned single-phase sbatch")
+        for job in list(pending):
+            if blocks_in_use >= state.max_concurrent_slurm:
+                break
             _submit_slurm_phase(state, job, run_id)
-            slurm_in_use += 1
+            blocks_in_use += 1
+            pending.remove(job)
 
 
 def _retry_failed_if_eligible(state: MasterState) -> None:
@@ -378,6 +508,9 @@ def _retry_failed_if_eligible(state: MasterState) -> None:
             job.status = "pending"
             job.runner = None
             job.slurm_job_id = None
+            job.slurm_node = None
+            job.block_dir = None
+            job.local_gpu_idx = None
             job.proc = None
             job.last_error = None
 
