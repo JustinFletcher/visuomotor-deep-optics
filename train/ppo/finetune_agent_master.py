@@ -61,7 +61,15 @@ SLURM_ACCOUNT = "MHPCC38870258"
 SLURM_PARTITION = "standard"
 SLURM_GRES = "gpu"
 SLURM_TIME_DEFAULT = "72:00:00"
-HPC_WORKDIR = "/p/home/fletch/visuomotor-deep-optics"
+# Per cluster policy ("jobs running on filesystems other than /p/work
+# / $WORKDIR will be terminated"), the working tree used by SLURM jobs
+# must live on the work filesystem. Resolved at launcher-import time
+# from $WORKDIR with a conservative fallback. Override with
+# VMDO_HPC_WORKDIR if your clone lives elsewhere on the work fs.
+HPC_WORKDIR = os.environ.get(
+    "VMDO_HPC_WORKDIR",
+    os.path.join(os.environ.get("WORKDIR", "/p/work/fletch"),
+                 "visuomotor-deep-optics"))
 
 
 _PHASE_LABEL_RE = re.compile(r"phase[-_]?(\d{2})")

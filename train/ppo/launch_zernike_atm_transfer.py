@@ -270,8 +270,11 @@ def main():
                       or _derive_experiment_tag(args.train_script))
     run_id = args.run_id or (
         f"{_RUN_PREFIX}_{experiment_tag}_{int(time.time())}")
+    # Default output root: absolute path under HPC_WORKDIR (work fs),
+    # so dirs land in the right place regardless of where the launcher
+    # is invoked from. Pass --output-root explicitly to override.
     output_root = args.output_root or os.path.join(
-        "atmos_finetuning", run_id)
+        HPC_WORKDIR, "atmos_finetuning", run_id)
     os.makedirs(output_root, exist_ok=True)
     os.makedirs(os.path.join(output_root, "_logs"), exist_ok=True)
 

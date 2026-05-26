@@ -177,12 +177,16 @@ def main():
             sys.exit(1)
     else:
         # Default output dir name: <source>_<recipe>_<timestamp>.
+        # Anchored at HPC_WORKDIR (work filesystem) so SLURM jobs
+        # writing into it satisfy the "must live under /p/work"
+        # cluster policy regardless of where you launch from.
         if args.output_root is None:
             src_base = os.path.basename(os.path.normpath(args.source_agent))
             recipe_base = os.path.basename(args.recipe).rsplit(".", 1)[0]
             ts = int(time.time())
             args.output_root = os.path.join(
-                "agent_finetuning", f"{src_base}__{recipe_base}__{ts}")
+                HPC_WORKDIR, "agent_finetuning",
+                f"{src_base}__{recipe_base}__{ts}")
 
     # Read-only invariant: refuse to clobber the source agent.
     if os.path.abspath(args.output_root).startswith(

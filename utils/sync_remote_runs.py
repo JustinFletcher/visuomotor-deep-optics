@@ -37,14 +37,20 @@ PRINCIPAL = "fletch@HPCMP.HPC.MIL"
 
 REMOTES = {
     "makau": {
+        # As of 2026-05, cluster policy requires SLURM jobs (and
+        # therefore the working tree they read/write) to live on the
+        # /p/work filesystem rather than /p/home. All paths below
+        # follow $WORKDIR = /p/work/fletch by convention. Override at
+        # the env level with VMDO_REMOTE_WORKDIR if your clone is
+        # elsewhere.
         "host": "fletch@makau.mhpcc.hpc.mil",
-        "runs": "/p/home/fletch/visuomotor-deep-optics/runs/",
-        "bootstrap_runs": "/p/home/fletch/visuomotor-deep-optics/bootstrap_runs/",
-        "dark_hole_runs": "/p/home/fletch/visuomotor-deep-optics/dark_hole_runs/",
-        "test_output": "/p/home/fletch/visuomotor-deep-optics/test_output/",
-        "agents": "/p/home/fletch/visuomotor-deep-optics/agents/",
-        "agent_finetuning": "/p/home/fletch/visuomotor-deep-optics/agent_finetuning/",
-        "atmos_finetuning": "/p/home/fletch/visuomotor-deep-optics/atmos_finetuning/",
+        "runs": "/p/work/fletch/visuomotor-deep-optics/runs/",
+        "bootstrap_runs": "/p/work/fletch/visuomotor-deep-optics/bootstrap_runs/",
+        "dark_hole_runs": "/p/work/fletch/visuomotor-deep-optics/dark_hole_runs/",
+        "test_output": "/p/work/fletch/visuomotor-deep-optics/test_output/",
+        "agents": "/p/work/fletch/visuomotor-deep-optics/agents/",
+        "agent_finetuning": "/p/work/fletch/visuomotor-deep-optics/agent_finetuning/",
+        "atmos_finetuning": "/p/work/fletch/visuomotor-deep-optics/atmos_finetuning/",
     },
     "coral": {
         "host": "fletch@coral.mhpcc.hpc.mil",

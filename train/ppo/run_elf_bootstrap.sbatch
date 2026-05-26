@@ -12,5 +12,5 @@
 #SBATCH --output=slurm-%A_%a.out
 #SBATCH --error=slurm-%A_%a.err
 
-cd /p/home/fletch/visuomotor-deep-optics
+cd "${VMDO_HPC_WORKDIR:-${WORKDIR:-/p/work/fletch}/visuomotor-deep-optics}"
 poetry run python train/ppo/train_ppo_elf_bootstrap.py --hpc --no-eval --phased-count $SLURM_ARRAY_TASK_ID
