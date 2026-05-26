@@ -66,6 +66,31 @@ _DEFAULT_N_ZERNIKE = [32, 64, 128, 256]
 _TRAIN_SCRIPTS_WITHOUT_N_ZERNIKE = {
     "train/ppo/train_ppo_elf_dm_strehl_only_zernike_atm_absolute.py",
 }
+# Per-experiment short tag that goes into the run id so two different
+# transfer experiments (e.g. basis-size change vs incremental->
+# absolute) land in distinguishable dirs under atmos_finetuning/.
+# Override per-invocation with --experiment-tag. Falls back to a
+# best-effort derivation from the script filename.
+_SCRIPT_TAG_MAP = {
+    "train/ppo/train_ppo_elf_dm_strehl_only_zernike_atm_transfer.py": "basis",
+    "train/ppo/train_ppo_elf_dm_strehl_only_zernike_atm_absolute.py": "absolute",
+}
+
+
+def _derive_experiment_tag(train_script: str) -> str:
+    """Map a training script path to a short identifying tag for the
+    run id. Known scripts are looked up in _SCRIPT_TAG_MAP; unknown
+    ones fall back to stripping the long shared prefix and the .py
+    suffix from the basename."""
+    if train_script in _SCRIPT_TAG_MAP:
+        return _SCRIPT_TAG_MAP[train_script]
+    basename = os.path.basename(train_script)
+    for prefix in ("train_ppo_elf_dm_strehl_only_zernike_atm_",
+                   "train_ppo_"):
+        if basename.startswith(prefix):
+            basename = basename[len(prefix):]
+            break
+    return basename.removesuffix(".py") or "unknown"
 
 
 def _build_sbatch_script(args, run_id: str, output_root: str,
@@ -179,7 +204,15 @@ def main():
                         ">= len(--n-zernike) GPUs. Pass 'any' to let "
                         "SLURM choose without --nodelist.")
     p.add_argument("--run-id", type=str, default=None,
-                   help=f"Unique run id (default: {_RUN_PREFIX}_<ts>).")
+                   help=f"Unique run id (default: {_RUN_PREFIX}_"
+                        "<experiment-tag>_<ts>).")
+    p.add_argument("--experiment-tag", type=str, default=None,
+                   help="Short tag baked into the run id to keep "
+                        "different transfer experiments (basis-size vs "
+                        "absolute-control vs ...) in distinguishable "
+                        "dirs under atmos_finetuning/. Default: "
+                        "auto-derived from --train-script "
+                        "(basis | absolute | <script basename>).")
     p.add_argument("--output-root", type=str, default=None,
                    help="Output dir. Default: atmos_finetuning/"
                         "<run_id>/. Each n_zernike worker lands in "
@@ -233,7 +266,10 @@ def main():
             print(f"[sinfo] no idle nodes with >= {n_workers} GPUs; "
                   f"letting SLURM choose without --nodelist")
 
-    run_id = args.run_id or f"{_RUN_PREFIX}_{int(time.time())}"
+    experiment_tag = (args.experiment_tag
+                      or _derive_experiment_tag(args.train_script))
+    run_id = args.run_id or (
+        f"{_RUN_PREFIX}_{experiment_tag}_{int(time.time())}")
     output_root = args.output_root or os.path.join(
         "atmos_finetuning", run_id)
     os.makedirs(output_root, exist_ok=True)
@@ -247,6 +283,7 @@ def main():
         train_script=args.train_script)
 
     print(f"Run id:             {run_id}")
+    print(f"Experiment tag:     {experiment_tag}")
     print(f"Source checkpoint:  {args.source_checkpoint}")
     print(f"Training script:    {args.train_script}")
     print(f"Output root:        {output_root}")
