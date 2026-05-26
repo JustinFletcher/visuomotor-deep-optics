@@ -132,18 +132,32 @@ def _build_sbatch_script(args, run_id: str, output_root: str,
     # Resume-mode shell snippet: per worker, look up the most-recent
     # latest.pt under the worker's out_dir; if found, use --resume-from
     # to continue training. Otherwise fall back to the source ckpt.
+    #
+    # Subtle: this block is interpolated into a textwrap.dedent()'d
+    # f-string whose other lines have 8 spaces of common literal
+    # leading whitespace. textwrap.dedent strips THE MINIMUM common
+    # leading whitespace across all lines, so every line of ckpt_block
+    # must also have >= 8 spaces of leading whitespace -- otherwise
+    # dedent strips fewer than 8 and the "#!/bin/bash" line ends up
+    # indented, breaking sbatch ("first line must start with #!").
+    # We give every line 12 spaces of literal indent so it sits at
+    # column 4 (inside the for-loop body) after dedent.
     if resume:
         ckpt_block = (
-            '    resume_ckpt=$(ls -t "${out_dir}"/ppo_optomech_*'
-            '/checkpoints/latest.pt 2>/dev/null | head -1)\n'
-            '    if [ -n "$resume_ckpt" ]; then\n'
-            '        echo "[launcher]   resume from: $resume_ckpt"\n'
-            '        ckpt_flag="--resume-from $resume_ckpt"\n'
-            '    else\n'
-            '        echo "[launcher]   no prior latest.pt; '
-            'init from source"\n'
-            '        ckpt_flag="--source-checkpoint $SOURCE_CKPT"\n'
-            '    fi')
+            '            resume_ckpt=$(ls -t "${out_dir}"'
+            '/ppo_optomech_*/checkpoints/latest.pt 2>/dev/null'
+            ' | head -1)\n'
+            '            if [ -n "$resume_ckpt" ]; then\n'
+            '                echo "[launcher]   resume from:'
+            ' $resume_ckpt"\n'
+            '                ckpt_flag="--resume-from $resume_ckpt"\n'
+            '            else\n'
+            '                echo "[launcher]   no prior latest.pt;'
+            ' init from source"\n'
+            '                ckpt_flag="--source-checkpoint'
+            ' $SOURCE_CKPT"\n'
+            '            fi'
+        )
         ckpt_invocation = '${ckpt_flag}'
     else:
         ckpt_block = ''
@@ -182,7 +196,7 @@ def _build_sbatch_script(args, run_id: str, output_root: str,
             mkdir -p "${{out_dir}}"
             echo "[launcher] starting worker $i: n_zernike=$n  "\\
                  "GPU=$i  seed=$seed  -> $out_dir"
-        {ckpt_block}
+{ckpt_block}
             CUDA_VISIBLE_DEVICES=$i poetry run python -u {train_script} \\
                 --hpc \\
                 {ckpt_invocation}{n_zernike_flag_template} \\
