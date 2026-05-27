@@ -536,9 +536,15 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
             # Without this padding the mask is 45-wide but actions are
             # 1270-wide and the multiply broadcasts incorrectly /
             # errors.
+            #
+            # NOTE: self._n_seg_actions is set later in __init__ (around
+            # line 690) when the action space is built, so we can't
+            # rely on it here. Compute the same width inline from the
+            # already-set command_secondaries flag + n_seg_dof.
+            local_n_seg_actions = n_seg_dof if self._command_secondaries else 0
             mask_parts = []
-            if self._n_seg_actions > 0:
-                mask_parts.append(seg_mask[:self._n_seg_actions])
+            if local_n_seg_actions > 0:
+                mask_parts.append(seg_mask[:local_n_seg_actions])
             if self._n_dm_acts > 0:
                 mask_parts.append(np.ones(self._n_dm_acts, dtype=np.float32))
             full_mask = (np.concatenate(mask_parts)
