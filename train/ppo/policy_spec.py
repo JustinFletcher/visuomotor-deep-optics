@@ -86,17 +86,88 @@ def _resolve_path(path: str, spec_dir: str) -> str:
     return path  # return as-is; load_agent will give a clear error
 
 
-def _load_single_model(checkpoint_path: str, env, device: str):
+def _load_single_model(checkpoint_path: str, env, device: str,
+                       action_dim_override: int | None = None):
     """Load a single checkpoint into a SingleModelAgent.
 
     Returns (SingleModelAgent, obs_ref_max, config). The config dict is
     the one stored in the checkpoint — callers can inspect it to build
     per-phase action masks for bootstrap composite rollouts.
+
+    ``action_dim_override``: when set, the model is built at this
+    explicit action width instead of the live env's action_dim. Used
+    by composite loading so each phase's head shape comes from its
+    own checkpoint, not the (potentially-wider, combined) env action
+    space.
     """
     from train.ppo.rollout import load_agent
-    agent, config, obs_ref_max = load_agent(checkpoint_path, env, device)
+    agent, config, obs_ref_max = load_agent(
+        checkpoint_path, env, device,
+        action_dim_override=action_dim_override)
     wrapper = PPOActorWrapper(agent)
     return SingleModelAgent(wrapper, device), obs_ref_max, config
+
+
+# ---------------------------------------------------------------------------
+# Output-adapter construction from spec
+# ---------------------------------------------------------------------------
+
+def _build_output_adapter(adapter_spec: Optional[dict], env, device):
+    """Translate a per-phase ``adapter:`` spec block into an
+    OutputAdapter instance. Returns None when adapter_spec is None
+    (legacy homogeneous-composite path)."""
+    if adapter_spec is None:
+        return None
+    from train.ppo.output_adapters import (
+        SliceAdapter, ZernikeToDMAdapter)
+
+    a_type = adapter_spec.get("type")
+    env_action_dim = int(env.action_space.shape[0])
+
+    if a_type == "slice":
+        ts = adapter_spec["target_slice"]
+        if not (isinstance(ts, (list, tuple)) and len(ts) == 2):
+            raise ValueError(
+                "slice adapter requires target_slice: [start, stop|null]")
+        start = int(ts[0])
+        stop = (None if ts[1] is None else int(ts[1]))
+        return SliceAdapter(start, stop, env_action_dim)
+
+    if a_type == "zernike_to_dm":
+        n_modes = int(adapter_spec["n_modes"])
+        dm_slice = adapter_spec.get("dm_slice")
+        if dm_slice is not None:
+            if not (isinstance(dm_slice, (list, tuple)) and len(dm_slice) == 2):
+                raise ValueError(
+                    "zernike_to_dm adapter dm_slice must be "
+                    "[start, stop]")
+            dm_slice = (int(dm_slice[0]), int(dm_slice[1]))
+        return ZernikeToDMAdapter.from_env(
+            env, n_zernike=n_modes,
+            dm_slice=dm_slice,
+            env_action_dim=env_action_dim,
+            skip_piston=bool(adapter_spec.get("skip_piston", False)),
+            normalize=str(adapter_spec.get("normalize", "wavefront_rms")),
+            regularize_rcond=float(
+                adapter_spec.get("regularize_rcond", 1e-3)),
+            device=device,
+            silence=False)
+
+    raise ValueError(f"Unknown adapter type: {a_type!r}")
+
+
+def read_env_kwarg_overrides(spec_path: str) -> dict:
+    """Read the ``env_kwarg_overrides:`` block from a policy spec
+    without loading the agent. The rollout driver merges this on top
+    of its ROLLOUT_ENV_KWARGS BEFORE building the env, so a composite
+    bundle can declare the combined action space (and any other env
+    requirements) it needs to run. Returns an empty dict if missing.
+    """
+    if not spec_path or not os.path.exists(spec_path):
+        return {}
+    with open(spec_path) as f:
+        spec = yaml.safe_load(f) or {}
+    return dict(spec.get("env_kwarg_overrides") or {})
 
 
 def _build_bootstrap_action_mask(config: dict, action_dim: int,
@@ -208,7 +279,20 @@ def load_policy_spec(
         obs_ref_max = None
         for idx, ps in enumerate(phase_specs):
             ckpt = _resolve_path(ps["checkpoint"], spec_dir)
-            model, orm, ckpt_cfg = _load_single_model(ckpt, env, device)
+
+            # Peek at the checkpoint's policy_head shape to know what
+            # action_dim THIS phase needs (which may differ from the
+            # env's action_dim when adapters are in play). Falls back
+            # to env action_dim when the checkpoint doesn't follow the
+            # standard key layout.
+            from train.ppo.rollout import _action_dim_from_checkpoint
+            _peek = torch.load(ckpt, map_location="cpu", weights_only=False)
+            native_dim = _action_dim_from_checkpoint(_peek)
+            del _peek
+
+            model, orm, ckpt_cfg = _load_single_model(
+                ckpt, env, device,
+                action_dim_override=native_dim)
             if obs_ref_max is None:
                 obs_ref_max = orm
 
@@ -218,9 +302,26 @@ def load_policy_spec(
             # Build a hard DOF mask from this checkpoint's training env
             # config so the composite rollout enforces the same
             # structural constraint that training did (only the target
-            # segment's 3 DOFs can actuate for this phase).
+            # segment's 3 DOFs can actuate for this phase). Sized to
+            # the phase's NATIVE action dim -- the adapter is what
+            # places the masked native vector into the wider env
+            # action space.
             action_mask = _build_bootstrap_action_mask(
                 ckpt_cfg, model.action_dim)
+
+            # Per-phase output adapter (slice or zernike_to_dm). None
+            # in the legacy homogeneous-composite case; required when
+            # phases have heterogeneous heads.
+            adapter = _build_output_adapter(ps.get("adapter"), env, device)
+
+            if adapter is not None and adapter.env_action_dim != int(
+                    env.action_space.shape[0]):
+                raise ValueError(
+                    f"Adapter {adapter} env_action_dim doesn't match "
+                    f"live env action_dim "
+                    f"{env.action_space.shape[0]}. The composite spec "
+                    f"likely declares env_kwarg_overrides that weren't "
+                    f"applied before env construction.")
 
             # Pull the original training-time phased_count off the
             # checkpoint so the rollout driver can reconfigure the env
@@ -232,7 +333,8 @@ def load_policy_spec(
 
             phases.append(Phase(model, trigger, name=name,
                                 action_mask=action_mask,
-                                bootstrap_phased_count=bp_count))
+                                bootstrap_phased_count=bp_count,
+                                output_adapter=adapter))
 
         agent = CompositeAgent(phases, device=device)
         return agent, obs_ref_max

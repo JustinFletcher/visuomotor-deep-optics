@@ -304,6 +304,21 @@ def main():
     env_kwargs = dict(ROLLOUT_ENV_KWARGS)
     env_kwargs["bootstrap_phased_count"] = lo
 
+    # --- Composite-spec env_kwarg overrides ---
+    # A composite agent bundle can declare env_kwarg_overrides at the
+    # top of its spec to describe the env it needs (e.g. command_dm:
+    # true to enable DM commanding so a Zernike-DM phase has somewhere
+    # for its output to go). Applied BEFORE --env-recipe and
+    # --env-kwarg so user overrides still win at the CLI.
+    from train.ppo.policy_spec import read_env_kwarg_overrides
+    spec_env_overrides = read_env_kwarg_overrides(args.policy_spec)
+    if spec_env_overrides:
+        env_kwargs.update(spec_env_overrides)
+        print(f"  spec env_kwarg overrides ({args.policy_spec}): "
+              f"applied {len(spec_env_overrides)}")
+        for k, v in spec_env_overrides.items():
+            print(f"    {k} = {v}")
+
     # --- Recipe env_kwarg overrides (e.g., fine-tune target regime) ---
     if args.env_recipe:
         with open(args.env_recipe) as f:

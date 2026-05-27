@@ -1,0 +1,154 @@
+type: composite
+
+# Bundle-level env requirements. The rollout driver merges these on
+# top of ROLLOUT_ENV_KWARGS BEFORE building the env, so the env's
+# action space is the UNION of every phase's needs:
+#   command_secondaries=True  -> 45 segment-PTT DOFs (15 segs x P,T,T)
+#   command_dm=True           -> ~1225 DM actuator DOFs
+# Per-phase adapters slot each phase's native output into the
+# corresponding contiguous block; everything else is zero on that step.
+env_kwarg_overrides:
+  command_secondaries: true
+  command_dm: true
+
+phases:
+- name: segment-phase-00
+  checkpoint: checkpoints/phase_00.pt
+  until: &id_seg {step: 16}
+  adapter:
+    type: slice
+    target_slice: [0, 45]    # segment PTT block (15 segs x 3 DOF)
+- name: dm-atmos-after-00
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: &id_atm {step: 32}
+  adapter:
+    type: zernike_to_dm
+    n_modes: 64              # matches the dm_atmos checkpoint head
+    # dm_slice / env_action_dim auto-derived from the env (DM block
+    # sits at the tail of the action vector).
+
+- name: segment-phase-01
+  checkpoint: checkpoints/phase_01.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-01
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-02
+  checkpoint: checkpoints/phase_02.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-02
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-03
+  checkpoint: checkpoints/phase_03.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-03
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-04
+  checkpoint: checkpoints/phase_04.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-04
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-05
+  checkpoint: checkpoints/phase_05.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-05
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-06
+  checkpoint: checkpoints/phase_06.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-06
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-07
+  checkpoint: checkpoints/phase_07.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-07
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-08
+  checkpoint: checkpoints/phase_08.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-08
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-09
+  checkpoint: checkpoints/phase_09.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-09
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-10
+  checkpoint: checkpoints/phase_10.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-10
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-11
+  checkpoint: checkpoints/phase_11.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-11
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-12
+  checkpoint: checkpoints/phase_12.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-12
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-13
+  checkpoint: checkpoints/phase_13.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-13
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  until: *id_atm
+  adapter: {type: zernike_to_dm, n_modes: 64}
+
+- name: segment-phase-14
+  checkpoint: checkpoints/phase_14.pt
+  until: *id_seg
+  adapter: {type: slice, target_slice: [0, 45]}
+- name: dm-atmos-after-14
+  checkpoint: checkpoints/dm_atmos_phase.pt
+  # Final phase has no `until` -- runs to end of episode.
+  adapter: {type: zernike_to_dm, n_modes: 64}

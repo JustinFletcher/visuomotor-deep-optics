@@ -218,12 +218,23 @@ class Phase:
     Attributes
     ----------
     action_mask : torch.Tensor or None
-        Optional per-DOF mask (shape [action_dim]) multiplied into the
-        agent's action before it's returned to the caller. Used by the
-        bootstrap composite rollout to mirror the hard DOF mask the
-        training env applies: only the target segment's 3 DOFs are
-        non-zero, everything else is forced to zero. None means no
-        masking.
+        Optional per-DOF mask (shape [native_action_dim]) multiplied
+        into the agent's *native* action before any output adapter
+        runs. Used by bootstrap-trained phases to mirror the hard DOF
+        mask their training env applied: only the target segment's 3
+        DOFs are non-zero, everything else is forced to zero. None
+        means no masking. The mask operates in the phase's native
+        action space, not the env's combined action space -- the
+        adapter handles placement into the wider env vector.
+    output_adapter : OutputAdapter or None
+        Optional adapter that maps the phase's native action
+        ([B, native_dim]) into the env's combined action vector
+        ([B, env_action_dim]). When None the (masked) native action
+        is returned as-is and is expected to already match the env's
+        action_dim. Used to support composite policies whose phases
+        have heterogeneous action heads (e.g. segment-PTT mixed with
+        ZernikeDM): each phase's head shape stays its own; the
+        adapter does the placement + projection.
     bootstrap_phased_count : int or None
         The phase index this checkpoint was trained at (from its
         training-time env_kwargs). The composite rollout uses this on
@@ -235,12 +246,14 @@ class Phase:
 
     def __init__(self, agent: SingleModelAgent, trigger: Trigger, name: str = "",
                  action_mask: Optional[torch.Tensor] = None,
-                 bootstrap_phased_count: Optional[int] = None):
+                 bootstrap_phased_count: Optional[int] = None,
+                 output_adapter=None):
         self.agent = agent
         self.trigger = trigger
         self.name = name
         self.action_mask = action_mask
         self.bootstrap_phased_count = bootstrap_phased_count
+        self.output_adapter = output_adapter
 
 
 class CompositeAgent(BaseAgent):
@@ -300,11 +313,23 @@ class CompositeAgent(BaseAgent):
         return action, hidden
 
     def apply_action_mask(self, action: torch.Tensor) -> torch.Tensor:
-        """Multiply action by the current phase's DOF mask (if any)."""
+        """Convert the active phase's native action into the env-facing
+        action vector.
+
+        Order of operations (matches training):
+          1. Multiply by the phase's native-space DOF mask if any
+             (bootstrap_mask_nontarget enforcement).
+          2. Run the phase's output adapter if any (slice placement or
+             Zernike->DM projection). Without an adapter the action
+             is returned as-is and the caller is responsible for the
+             env-side action_dim match.
+        """
         phase = self._phases[self._active]
-        if phase.action_mask is None:
-            return action
-        return action * phase.action_mask.to(action.device)
+        if phase.action_mask is not None:
+            action = action * phase.action_mask.to(action.device)
+        if phase.output_adapter is not None:
+            action = phase.output_adapter(action)
+        return action
 
     def notify_step(self, step_info: dict) -> None:
         self._global_step += 1
@@ -329,4 +354,28 @@ class CompositeAgent(BaseAgent):
 
     @property
     def action_dim(self) -> int:
+        """Width of the env-facing action vector after adapters run.
+
+        When any phase carries an output_adapter, the env's action
+        space is wider than any single phase's native head, and the
+        adapters' ``env_action_dim`` is the truth. We pick the
+        adapter from the first phase that has one (they must all
+        agree on the env action width by construction). When no phase
+        has an adapter, fall back to the first phase's native
+        action_dim (the legacy homogeneous-composite case)."""
+        for phase in self._phases:
+            if phase.output_adapter is not None:
+                return int(phase.output_adapter.env_action_dim)
         return self._phases[0].agent.action_dim
+
+    @property
+    def active_native_action_dim(self) -> int:
+        """Native action_dim of the currently active phase's policy
+        head. This is the width the caller's ``prior_action`` tensor
+        must have when invoking ``__call__`` -- distinct from
+        ``action_dim`` (which is the env-facing width after the
+        adapter runs). For homogeneous composites these are equal.
+        For heterogeneous composites (segment-PTT 45 + ZernikeDM 64
+        in the same run) the rollout loop must resize prior_action
+        on every phase transition."""
+        return int(self._phases[self._active].agent.action_dim)

@@ -74,23 +74,65 @@ _DEFAULT_OUTPUT_DIR = os.path.join(_REPO_ROOT, "test_output")
 
 
 class _EnvShim:
-    """Minimal shim to satisfy RecurrentActorCritic's envs.single_*_space API."""
+    """Minimal shim to satisfy RecurrentActorCritic's envs.single_*_space API.
 
-    def __init__(self, env):
+    Composite policies with heterogeneous heads need each phase's
+    model built at THAT phase's native action_dim, not the env's. We
+    override ``single_action_space`` with a synthesised Box[native_dim]
+    in that case; the env's real action space stays unchanged and the
+    phase's output adapter handles placement into the wider vector.
+    """
+
+    def __init__(self, env, action_dim_override: int | None = None):
         self.single_observation_space = env.observation_space
-        self.single_action_space = env.action_space
+        if action_dim_override is None:
+            self.single_action_space = env.action_space
+        else:
+            from gymnasium import spaces
+            self.single_action_space = spaces.Box(
+                low=-1.0, high=1.0,
+                shape=(int(action_dim_override),),
+                dtype=np.float32)
 
 
-def load_agent(checkpoint_path, env, device="cpu"):
+def _action_dim_from_checkpoint(ckpt: dict) -> int | None:
+    """Read the policy_head output width from a saved state_dict.
+
+    Used by composite loading so each phase's model is constructed at
+    the checkpoint's action_dim regardless of the live env's action
+    space. Returns None when the checkpoint doesn't follow the
+    standard RecurrentActorCritic key layout.
+    """
+    sd = ckpt.get("model_state_dict") or {}
+    # log_std is the smallest tensor that uniquely encodes action_dim.
+    if "log_std" in sd:
+        return int(sd["log_std"].shape[0])
+    if "policy_head.2.weight" in sd:
+        return int(sd["policy_head.2.weight"].shape[0])
+    return None
+
+
+def load_agent(checkpoint_path, env, device="cpu",
+               action_dim_override: int | None = None):
     """Load a PPO agent from a checkpoint file.
 
     Returns (agent, config, obs_ref_max).
+
+    When ``action_dim_override`` is None, the model is built at the
+    env's action_dim (legacy behaviour). When set, the model is built
+    at that explicit width -- used by composite loading so a phase's
+    head shape comes from its own checkpoint rather than the
+    (combined) env action space.
     """
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = ckpt["config"]
 
+    # Legacy contract: when no override is given, build at the env's
+    # action_dim and let load_state_dict crash loudly if it mismatches.
+    # Composite loaders supply the override explicitly to bypass that.
+
     agent = RecurrentActorCritic(
-        _EnvShim(env),
+        _EnvShim(env, action_dim_override=action_dim_override),
         device,
         lstm_hidden_dim=config.get("lstm_hidden_dim", 128),
         channel_scale=config.get("channel_scale", 32),
@@ -239,7 +281,14 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
     obs_np = normalize_obs_fixed(obs_raw[np.newaxis], obs_ref_max)
 
     hidden = agent.get_zero_hidden()
-    prior_action = torch.zeros(1, agent.action_dim, device=device)
+    # prior_action must match the ACTIVE phase's native action_dim
+    # (what the policy head emits), which can differ from
+    # agent.action_dim (the env-facing width after any adapter) in a
+    # heterogeneous composite. Single-model agents don't expose
+    # active_native_action_dim, so fall back to agent.action_dim.
+    _native_dim = int(getattr(agent, "active_native_action_dim",
+                              agent.action_dim))
+    prior_action = torch.zeros(1, _native_dim, device=device)
     prior_reward = torch.zeros(1, device=device)
 
     ep_rewards = []
@@ -292,7 +341,14 @@ def run_single_episode(agent, env, seed, obs_ref_max, device="cpu"):
         # and reward — off-distribution and a major source of the
         # train/rollout performance gap.
         if agent.just_transitioned:
-            prior_action = torch.zeros_like(prior_action)
+            # Resize prior_action to the NEW active phase's native
+            # dim, not zeros_like(old) -- a heterogeneous composite
+            # can switch action shape on transition (e.g. 45 segment
+            # PTT -> 64 ZernikeDM).
+            _new_native = int(getattr(agent, "active_native_action_dim",
+                                      agent.action_dim))
+            prior_action = torch.zeros(
+                1, _new_native, device=prior_action.device)
             prior_reward = torch.zeros_like(prior_reward)
 
             # If the env supports it, reconfigure the env to the new

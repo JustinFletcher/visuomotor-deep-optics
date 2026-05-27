@@ -149,6 +149,87 @@ def zernike_basis_on_grid(
 
 
 # ---------------------------------------------------------------------------
+# Standalone projection builder
+# ---------------------------------------------------------------------------
+
+def build_zernike_to_dm_projection(
+        dm_influence_flat: np.ndarray,
+        aperture_mask: np.ndarray,
+        n_zernike: int,
+        skip_piston: bool = False,
+        normalize: str = "wavefront_rms",
+        regularize_rcond: float = 1e-3,
+        silence: bool = True) -> np.ndarray:
+    """Build the Zernike-coefficient -> DM-actuator projection M.
+
+    This is the same math the v5 ZernikeDMVectorEnv runs at training
+    time, exposed as a free function so inference-time composites can
+    project ZernikeDM-trained policies onto a DM action vector in a
+    v4 env (or any env that exposes its DM influence basis + pupil
+    mask).
+
+    Arguments
+    ---------
+    dm_influence_flat : np.ndarray, shape [n_dm, H*W]
+        DM influence basis flattened per actuator. Each row is one
+        actuator's pupil-plane influence pattern.
+    aperture_mask : np.ndarray, shape [H, W] (bool)
+        Binary pupil mask. Defines the unit-disk extent used to
+        evaluate the Zernike basis.
+    n_zernike : int
+        Number of Noll-indexed Zernike modes the policy expects to
+        emit. Must match the checkpoint's policy_head shape.
+    skip_piston, normalize, regularize_rcond
+        Match the defaults used by ZernikeDMVectorEnv. ``normalize``
+        is one of ``inf``, ``rms``, ``wavefront_rms``, ``none``.
+
+    Returns
+    -------
+    M : np.ndarray, shape [n_dm, n_zernike], float32
+        Action-space projection so that ``a_dm = clamp(M @ a_z,
+        -1, 1)`` reproduces the same DM commands the policy
+        emitted at training time.
+    """
+    H, W = aperture_mask.shape
+    Z = zernike_basis_on_grid(H, W, aperture_mask, n_zernike,
+                              skip_piston=skip_piston)        # [H*W, n_z]
+    flat_mask = aperture_mask.reshape(-1)
+    Phi_in = dm_influence_flat[:, flat_mask]                  # [n_dm, n_pix]
+    Z_in = Z[flat_mask, :]                                    # [n_pix, n_z]
+    n_pupil = int(flat_mask.sum())
+
+    M, _resid, rank, svals = np.linalg.lstsq(
+        Phi_in.T, Z_in, rcond=regularize_rcond)
+    M = M.astype(np.float64)
+
+    if not silence:
+        print(f"[zernike-dm projection] LS rank={rank}/{Phi_in.shape[0]} "
+              f"(rcond={regularize_rcond:g}, "
+              f"sigma_max={svals[0]:.3g}, "
+              f"sigma_min_kept={svals[min(rank, len(svals)) - 1]:.3g})")
+
+    if normalize == "inf":
+        norms = np.max(np.abs(M), axis=0)
+    elif normalize == "rms":
+        norms = np.sqrt((M * M).mean(axis=0))
+    elif normalize == "wavefront_rms":
+        wf = Phi_in.T @ M                                     # [n_pix, n_z]
+        norms = np.sqrt((wf * wf).sum(axis=0) / max(n_pupil, 1))
+    else:
+        norms = np.ones(n_zernike, dtype=np.float64)
+    norms = np.where(norms > 0, norms, 1.0)
+    M = M / norms[None, :]
+
+    # Cap so a unit Zernike action never drives any actuator beyond
+    # ±1 (matches ZernikeDMVectorEnv's clamp-safety guarantee).
+    max_per_col = np.max(np.abs(M), axis=0)
+    cap = np.where(max_per_col > 1.0, max_per_col, 1.0)
+    M = M / cap[None, :]
+
+    return M.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
 # The wrapper
 # ---------------------------------------------------------------------------
 
