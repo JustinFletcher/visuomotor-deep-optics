@@ -79,6 +79,12 @@ def main():
                    help="SLURM --time for the master sbatch.")
     p.add_argument("--slurm-time", type=str, default=None,
                    help="SLURM --time for worker sbatches.")
+    p.add_argument("--max-retries", type=int, default=5,
+                   help="Per-phase retry budget on worker failure. "
+                        "Default 5 (vs the upstream default of 1) -- "
+                        "trades a few wasted submissions for "
+                        "resilience to transient OOM / GPFS / node-"
+                        "health hiccups overnight.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print the launch_finetune_agent.py command "
                         "without invoking it.")
@@ -112,6 +118,7 @@ def main():
         cmd += ["--master-time", args.master_time]
     if args.slurm_time:
         cmd += ["--slurm-time", args.slurm_time]
+    cmd += ["--max-retries", str(args.max_retries)]
     if args.dry_run:
         cmd += ["--dry-run"]
 
