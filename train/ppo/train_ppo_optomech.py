@@ -392,6 +392,14 @@ def evaluate_with_visualization(
                 skip_piston=config.get("zernike_skip_piston", False),
                 freeze_segments=config.get("zernike_freeze_segments", True),
                 normalize=config.get("zernike_normalize", "inf"))
+        elif config.get("segment_zernike_dm", False):
+            from train.ppo.zernike_dm import SegmentZernikeDMVectorEnv
+            eval_envs = SegmentZernikeDMVectorEnv(
+                eval_envs,
+                n_zernike=config.get("zernike_n_modes", 32),
+                dm_action_scale=config.get("zernike_dm_action_scale", 1.0),
+                skip_piston=config.get("zernike_skip_piston", False),
+                normalize=config.get("zernike_normalize", "wavefront_rms"))
     else:
         eval_envs = gym.vector.SyncVectorEnv([
             make_optomech_env(env_kwargs, max_episode_steps=max_steps, idx=i)
@@ -1180,6 +1188,14 @@ def _make_eval_env(config):
                 skip_piston=config.get("zernike_skip_piston", False),
                 freeze_segments=config.get("zernike_freeze_segments", True),
                 normalize=config.get("zernike_normalize", "inf"))
+        elif config.get("segment_zernike_dm", False):
+            from train.ppo.zernike_dm import SegmentZernikeDMVectorEnv
+            env = SegmentZernikeDMVectorEnv(
+                env,
+                n_zernike=config.get("zernike_n_modes", 32),
+                dm_action_scale=config.get("zernike_dm_action_scale", 1.0),
+                skip_piston=config.get("zernike_skip_piston", False),
+                normalize=config.get("zernike_normalize", "wavefront_rms"))
         return env
     else:
         env = gym.make(_ENV_ID, **env_kwargs)
@@ -1421,6 +1437,18 @@ def run_ppo_training(config: dict, run_dir: str):
             print(f"  Wrapped with ZernikeDMVectorEnv: "
                   f"action_dim={envs.single_action_space.shape[0]} "
                   f"Zernike modes")
+        elif config.get("segment_zernike_dm", False):
+            from train.ppo.zernike_dm import SegmentZernikeDMVectorEnv
+            envs = SegmentZernikeDMVectorEnv(
+                envs,
+                n_zernike=config.get("zernike_n_modes", 32),
+                dm_action_scale=config.get("zernike_dm_action_scale", 1.0),
+                skip_piston=config.get("zernike_skip_piston", False),
+                normalize=config.get("zernike_normalize", "wavefront_rms"))
+            print(f"  Wrapped with SegmentZernikeDMVectorEnv: "
+                  f"action_dim={envs.single_action_space.shape[0]} "
+                  f"(segments + zernike modes), "
+                  f"dm_action_scale={config.get('zernike_dm_action_scale', 1.0)}")
     else:
         # V3/V4: individual envs wrapped in Sync/AsyncVectorEnv.
         env_fns = [

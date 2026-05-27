@@ -211,19 +211,63 @@ class KolmogorovAtmosphere:
         self.device = device
         self.n_layers = len(self.spec.r0_per_layer_m)
 
+        # Optional per-episode r0 randomisation. When cfg sets
+        # ``r0_total_m_range: [low, high]``, reset() draws a fresh r0
+        # for each masked env from that uniform distribution and
+        # rebuilds the per-layer PSD amplitudes for those envs before
+        # sampling screens. ``cfg.r0_sampling`` chooses the family:
+        # ``uniform`` (default; linear in r0_m) or ``log_uniform``
+        # (uniform in log r0; gives a more even distribution of
+        # disturbance strength since seeing varies as r0^(-5/6)).
+        rng = cfg.get("r0_total_m_range") if cfg else None
+        self._r0_range: Optional[tuple[float, float]] = None
+        if rng is not None:
+            if not (hasattr(rng, "__len__") and len(rng) == 2):
+                raise ValueError(
+                    "atmosphere.r0_total_m_range must be a [low, high] pair, "
+                    f"got {rng!r}")
+            lo, hi = float(rng[0]), float(rng[1])
+            if not (0 < lo <= hi):
+                raise ValueError(
+                    f"atmosphere.r0_total_m_range must satisfy 0 < low <= "
+                    f"high, got [{lo}, {hi}]")
+            self._r0_range = (lo, hi)
+        self._r0_sampling = (cfg.get("r0_sampling", "uniform")
+                             if cfg else "uniform")
+        if self._r0_sampling not in ("uniform", "log_uniform"):
+            raise ValueError(
+                f"atmosphere.r0_sampling must be 'uniform' or "
+                f"'log_uniform', got {self._r0_sampling!r}")
+
         # Dedicated CUDA generator so atmosphere randomness is reproducible
         # independent of other RNG (DM noise, init perturbations, ...).
         self._gen = torch.Generator(device=device)
         if seed is not None:
             self._gen.manual_seed(int(seed))
 
-        # Precompute per-layer PSD amplitudes. These are independent of
-        # which env is being sampled, so they're shared across N.
+        # Precompute per-layer PSD amplitudes for the spec's nominal
+        # r0. In randomised mode these are still kept as a fallback /
+        # warmup baseline but per-reset amps override them.
         self._amp_per_layer = [
             _von_karman_psd(self.H, self.W, self.dx_m,
                             r0, L0, device)
             for r0, L0 in zip(self.spec.r0_per_layer_m,
                               self.spec.L0_per_layer_m)]
+        # Per-env current r0 (logged for diagnostics; rolled forward
+        # by reset()). All envs start at the nominal total r0 from
+        # the spec.
+        self._r0_per_env = torch.full(
+            (self.N,),
+            float(sum(r ** (-5.0 / 3.0)
+                      for r in self.spec.r0_per_layer_m)) ** (-3.0 / 5.0),
+            dtype=torch.float32, device=device)
+        # Cached per-layer fractional weights -- per-layer r0 scales
+        # by the same proportions when total r0 changes (since
+        # r0_l = r0_total * w_l^(-3/5)).
+        nominal_r0 = float(self._r0_per_env[0])
+        self._r0_layer_ratios = [
+            float(self.spec.r0_per_layer_m[li] / nominal_r0)
+            for li in range(self.n_layers)]
 
         # OPD storage: [N, H, W] in meters. Filled by reset().
         self._opd_m = torch.zeros(self.N, self.H, self.W,
@@ -256,6 +300,12 @@ class KolmogorovAtmosphere:
         """Sample a fresh atmosphere realization for the masked envs.
 
         env_mask: bool [N] tensor. None means all envs.
+
+        When ``r0_total_m_range`` is configured, draws a fresh r0
+        per masked env from that distribution before rebuilding the
+        PSD amps for those envs and sampling the phase screens.
+        Without a range, uses the cached fixed-r0 amps -- same as
+        before.
         """
         if env_mask is None:
             env_mask = torch.ones(self.N, dtype=torch.bool, device=self.device)
@@ -263,12 +313,50 @@ class KolmogorovAtmosphere:
         if n_reset == 0:
             return
 
-        # Accumulate layers' phase contributions on the masked envs.
+        if self._r0_range is None:
+            # Fixed-r0 fast path: one shared amp set across all envs.
+            new_opd = torch.zeros(n_reset, self.H, self.W,
+                                  dtype=torch.float32, device=self.device)
+            for amp in self._amp_per_layer:
+                phase = _sample_screen_batch(
+                    amp, n_reset, self._gen, self.device)
+                new_opd = new_opd + phase * self._phase_to_opd_m
+            self._opd_m[env_mask] = new_opd
+            return
+
+        # Randomised-r0 path: draw a fresh r0 per masked env, rebuild
+        # per-layer amps individually, sample each env's screen against
+        # its own amps. Slower per reset (PSD recomputed per env) but
+        # the work is FFT-grid sized (typically 256x256) and trivial
+        # next to the actual training step.
+        lo, hi = self._r0_range
+        if self._r0_sampling == "uniform":
+            u = torch.rand(n_reset, generator=self._gen, device=self.device)
+            r0_totals = lo + (hi - lo) * u
+        else:                                       # log_uniform
+            log_lo, log_hi = math.log(lo), math.log(hi)
+            u = torch.rand(n_reset, generator=self._gen, device=self.device)
+            r0_totals = torch.exp(log_lo + (log_hi - log_lo) * u)
+
+        # Update bookkeeping so callers can read the current r0 per env.
+        self._r0_per_env[env_mask] = r0_totals
+
         new_opd = torch.zeros(n_reset, self.H, self.W,
                               dtype=torch.float32, device=self.device)
-        for amp in self._amp_per_layer:
-            phase = _sample_screen_batch(amp, n_reset, self._gen, self.device)
-            new_opd = new_opd + phase * self._phase_to_opd_m
+        for li in range(self.n_layers):
+            L0 = self.spec.L0_per_layer_m[li]
+            ratio = self._r0_layer_ratios[li]
+            # For each reset env build the amp at its sampled total r0,
+            # then sample one screen. Cheap loop -- n_reset is at most
+            # num_envs (e.g. 64).
+            for k in range(n_reset):
+                r0_total_k = float(r0_totals[k])
+                r0_layer_k = r0_total_k * ratio
+                amp = _von_karman_psd(self.H, self.W, self.dx_m,
+                                      r0_layer_k, L0, self.device)
+                phase = _sample_screen_batch(
+                    amp, 1, self._gen, self.device).squeeze(0)
+                new_opd[k] = new_opd[k] + phase * self._phase_to_opd_m
         self._opd_m[env_mask] = new_opd
 
     @torch.no_grad()

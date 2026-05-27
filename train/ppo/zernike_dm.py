@@ -465,3 +465,113 @@ class ZernikeDMVectorEnv(vector.VectorEnv):
         # __getattr__ is only invoked for missing attrs, so this won't
         # recurse on _env / wrapper internals.
         return getattr(self._env, item)
+
+
+# ---------------------------------------------------------------------------
+# Segment-passthrough + Zernike-DM wrapper
+# ---------------------------------------------------------------------------
+
+class SegmentZernikeDMVectorEnv(vector.VectorEnv):
+    """Segment-passthrough variant of ZernikeDMVectorEnv.
+
+    Exposes ``[n_seg_actions + n_zernike]`` to the policy. The first
+    ``n_seg_actions`` channels pass through unchanged to the env's
+    segment slots; the remaining ``n_zernike`` channels are projected
+    via the same ``M [n_dm, n_zernike]`` matrix as
+    ``ZernikeDMVectorEnv``, scaled by ``dm_action_scale``, and clamped
+    to ``[-1, 1]`` before being passed to the env's DM slots.
+
+    Why a separate class? ZernikeDMVectorEnv is DM-only (zeros the
+    segment slots regardless of ``freeze_segments``). We need an
+    env that lets a *single* policy emit segment PTT corrections
+    AND DM corrections in the same step -- the segment_dm_agent
+    transfer-learning setup (15 bootstrap phases, each fine-tuned
+    to also drive 32 Zernike DM modes under a Kolmogorov atmosphere).
+
+    ``dm_action_scale`` is applied to the DM block only; the env's
+    own ``env_action_scale`` still applies uniformly to whatever this
+    wrapper hands over (so segment magnitudes can be left at 1.0 while
+    the DM block gets the per-step delta cap, e.g. 0.01, that the
+    dm_atmos training pipeline used).
+    """
+
+    def __init__(self, env, n_zernike: int = 32,
+                 dm_action_scale: float = 1.0,
+                 skip_piston: bool = False,
+                 normalize: Literal[
+                     "inf", "rms", "wavefront_rms", "none"] = "wavefront_rms",
+                 regularize_rcond: float = 1e-3):
+        if not hasattr(env, "_dm_basis_t_flat") or env._dm_basis_t_flat is None:
+            raise ValueError(
+                "SegmentZernikeDMVectorEnv requires a v5 env with "
+                "command_dm=True; the wrapped env has no DM influence "
+                "basis.")
+        if not getattr(env, "_n_seg_actions", 0):
+            raise ValueError(
+                "SegmentZernikeDMVectorEnv requires a v5 env with "
+                "command_secondaries=True (n_seg_actions > 0); the "
+                "wrapped env has no segment action slots.")
+
+        self._env = env
+        self._dev = env.dev
+        self._N = env._num_envs
+        self._n_dm = int(env._n_dm_acts)
+        self._n_seg_actions = int(env._n_seg_actions)
+        self._n_zernike = int(n_zernike)
+        self._skip_piston = bool(skip_piston)
+        self._normalize = normalize
+        self._regularize_rcond = float(regularize_rcond)
+        self._dm_action_scale = float(dm_action_scale)
+
+        # Build the projection matrix using the standalone helper
+        # (same math as ZernikeDMVectorEnv._build_projection).
+        H, W = env._H, env._W
+        aperture = np.asarray(env._aperture_t.cpu().numpy())
+        mask = (np.abs(aperture) > 0).reshape(H, W)
+        dm_flat = np.asarray(env._dm_basis_t_flat.cpu().numpy())
+        M_np = build_zernike_to_dm_projection(
+            dm_flat, mask, n_zernike,
+            skip_piston=skip_piston,
+            normalize=normalize,
+            regularize_rcond=regularize_rcond,
+            silence=getattr(env, "_silence", False))
+        self._M_t = torch.tensor(
+            M_np, dtype=torch.float32, device=self._dev)        # [n_dm, n_z]
+
+        # Action space exposed to the policy: [segments | zernikes].
+        single_action_space = spaces.Box(
+            low=-1.0, high=1.0,
+            shape=(self._n_seg_actions + self._n_zernike,),
+            dtype=np.float32)
+        super().__init__(
+            num_envs=self._N,
+            observation_space=env.single_observation_space,
+            action_space=single_action_space)
+
+    def projection_matrix(self) -> np.ndarray:
+        """[n_dm, n_zernike] projection (CPU numpy). For bench export."""
+        return self._M_t.detach().cpu().numpy()
+
+    def expand_action(self, agent_action: np.ndarray) -> np.ndarray:
+        """Map ``[N, n_seg + n_z]`` -> ``[N, n_seg + n_dm]`` env action."""
+        a = torch.as_tensor(agent_action, dtype=torch.float32, device=self._dev)
+        seg = a[:, : self._n_seg_actions]
+        zer = a[:, self._n_seg_actions:]
+        dm = zer @ self._M_t.T                                  # [N, n_dm]
+        if self._dm_action_scale != 1.0:
+            dm = dm * self._dm_action_scale
+        dm = dm.clamp(-1.0, 1.0)
+        full = torch.cat([seg, dm], dim=1)
+        return full.cpu().numpy()
+
+    def reset(self, *, seed=None, options=None):
+        return self._env.reset(seed=seed, options=options)
+
+    def step(self, agent_action):
+        return self._env.step(self.expand_action(agent_action))
+
+    def close(self):
+        return self._env.close()
+
+    def __getattr__(self, item):
+        return getattr(self._env, item)
