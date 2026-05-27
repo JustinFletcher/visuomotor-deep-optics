@@ -535,8 +535,26 @@ def _schedule_pending(state: MasterState, run_id: str) -> None:
     # 0..14 happens in order, regardless of how we pack them.
     pending = [j for j in state.phases if j.status == "pending"]
 
-    # Fill local slots first.
-    while pending:
+    # Cap the master node's local phases by the per-node thin-spread
+    # heuristic so we don't greedily fill all gpus_per_node slots and
+    # leave nothing for the remote nodes in the budget. For 15 phases
+    # / max_nodes=6 / 4-GPU master, this caps master at 3 local
+    # phases (not 4) so all 6 nodes actually get used.
+    #
+    # When the caller explicitly sets max_phases_per_node, honour that
+    # uniformly; otherwise compute the spread from total work / total
+    # node budget.
+    if state.max_phases_per_node is not None:
+        local_cap = max(1, int(state.max_phases_per_node))
+    else:
+        local_cap = max(
+            1,
+            (len(state.phases) + state.max_nodes - 1) // state.max_nodes)
+    local_cap = min(local_cap, state.gpus_per_node)
+    local_filled = sum(1 for b in local_busy if b)
+
+    # Fill local slots up to local_cap.
+    while pending and local_filled < local_cap:
         free_local = next(
             (i for i, busy in enumerate(local_busy) if not busy), None)
         if free_local is None:
@@ -544,6 +562,7 @@ def _schedule_pending(state: MasterState, run_id: str) -> None:
         job = pending.pop(0)
         _start_local_phase(state, job, gpu_idx=free_local)
         local_busy[free_local] = True
+        local_filled += 1
 
     # --- SLURM node-block slots ---
     # Budget is on TOTAL NODES, not jobs. The master's own node counts
@@ -578,24 +597,30 @@ def _schedule_pending(state: MasterState, run_id: str) -> None:
         exclude_self=True,
     )
 
-    # Walk best-to-worst nodes, packing up to per_node phases each.
-    # Default per_node is ceil(num_pending_or_total / max_nodes) so
-    # phases are spread as thinly as the node budget allows; an
-    # explicit state.max_phases_per_node overrides. The final cap is
-    # min(per_node, node.gpu_count, len(pending)) so we don't
-    # over-pack a small-GPU node.
-    if state.max_phases_per_node is not None:
-        per_node_cap = max(1, int(state.max_phases_per_node))
-    else:
-        # Use the total phase count (not just current pending) so the
-        # per-node cap stays stable across scheduling ticks as phases
-        # complete.
-        per_node_cap = max(
-            1,
-            (len(state.phases) + state.max_nodes - 1) // state.max_nodes)
+    # Walk best-to-worst nodes, packing each one with a *dynamic*
+    # per-node cap so the remaining phases get spread as evenly as
+    # possible across the remaining node budget. For 15 phases across
+    # 6 nodes (1 master + 5 remote) this yields [3,3,3,2,2,2] = 15,
+    # actually using all 6 nodes -- instead of [4,3,3,3,2] which fits
+    # in just 5 nodes (the symptom Fletcher saw when one node sat
+    # idle despite --max-nodes 6).
+    #
+    # Explicit state.max_phases_per_node overrides the dynamic
+    # calculation and applies uniformly to every node; final cap is
+    # min(per_node, node.gpu_count, len(pending)) so we don't over-
+    # pack a small-GPU node.
     for node in candidates:
         if not pending or nodes_budget_remaining <= 0:
             break
+        if state.max_phases_per_node is not None:
+            per_node_cap = max(1, int(state.max_phases_per_node))
+        else:
+            # Dynamic: spread remaining pending across the remaining
+            # node budget. ceil(pending / budget).
+            per_node_cap = max(
+                1,
+                (len(pending) + nodes_budget_remaining - 1)
+                // nodes_budget_remaining)
         take = min(per_node_cap, node.gpu_count, len(pending))
         if take <= 0:
             continue
