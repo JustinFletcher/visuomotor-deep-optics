@@ -82,9 +82,22 @@ DEFAULT_SPEC = "train/ppo/specs/bootstrap_composed.yaml"
 def _count_phases_and_steps(spec_path: str, override_steps: int | None):
     """Inspect a composite spec to decide max_episode_steps.
 
-    Returns (num_phases, steps_per_phase, max_episode_steps). If
-    override_steps is given it replaces the per-phase step count
-    everywhere; otherwise the per-phase count is read from the spec.
+    Returns (num_phases, steps_per_phase, max_episode_steps).
+
+    For HOMOGENEOUS specs (every phase shares the same step trigger)
+    ``steps_per_phase`` is that shared value and max_episode_steps is
+    ``steps_per_phase * num_phases``. For HETEROGENEOUS specs (e.g.
+    segment_dm_agent with 16-step segment phases interleaved with
+    32-step dm_atmos phases) we sum each phase's own ``until.step``
+    so the episode actually has room to run every phase. The terminal
+    phase usually has no ``until`` -- we give it the median per-phase
+    budget so it runs for a reasonable tail.
+
+    ``override_steps`` replaces every per-phase count uniformly when
+    set (legacy --steps-per-phase behaviour). Use of --steps-per-phase
+    on a heterogeneous spec will collapse every phase to the same
+    budget, which probably isn't what the user wants -- log a warning
+    in that case.
     """
     with open(spec_path, "r") as f:
         spec = yaml.safe_load(f)
@@ -94,14 +107,45 @@ def _count_phases_and_steps(spec_path: str, override_steps: int | None):
         return 1, override_steps or 256, override_steps or 256
 
     phases = spec["phases"]
-    spec_steps = None
+    n = len(phases)
+
+    # Collect each phase's explicit step budget; None marks phases
+    # with non-step triggers (metric, fraction, missing). Final phase
+    # frequently has no `until` block (terminal "runs to end").
+    per_phase_steps: list[int | None] = []
     for ph in phases:
         until = ph.get("until") or {}
         if "step" in until:
-            spec_steps = int(until["step"])
-            break
-    per_phase = override_steps if override_steps is not None else (spec_steps or 256)
-    return len(phases), per_phase, per_phase * len(phases)
+            per_phase_steps.append(int(until["step"]))
+        else:
+            per_phase_steps.append(None)
+
+    # Resolve a per-phase summary (used for printing and legacy
+    # callers that want a single number). Prefer the median of
+    # explicit step values; fall back to 256.
+    explicit = [s for s in per_phase_steps if s is not None]
+    median_steps = (sorted(explicit)[len(explicit) // 2]
+                    if explicit else 256)
+
+    if override_steps is not None:
+        # Uniform override -- collapse every phase to this width.
+        if len(set(explicit)) > 1:
+            print(f"  [warn] --steps-per-phase {override_steps} "
+                  f"collapses {sorted(set(explicit))} into a uniform "
+                  f"budget; per-phase variation in the spec is lost.")
+        per_phase_steps = [override_steps] * n
+        median_steps = override_steps
+
+    # max_episode_steps is the SUM of every phase's budget. Phases
+    # with no explicit step trigger (typically the terminal "runs to
+    # end" phase) get the MAX explicit step value -- preserves the
+    # rhythm of the longest cadence so e.g. a terminal dm_atmos
+    # phase in a 32-step-cadence spec gets a full 32 steps rather
+    # than something shorter from a different cadence.
+    max_explicit = max(explicit) if explicit else median_steps
+    total = sum((s if s is not None else max_explicit)
+                for s in per_phase_steps)
+    return n, median_steps, total
 
 
 def _maybe_rewrite_spec(spec_path: str,
@@ -292,7 +336,7 @@ def main():
 
     # Figure out how long an episode needs to be (size against the
     # ORIGINAL spec; slicing flags are applied below).
-    num_phases, per_phase, _ = _count_phases_and_steps(
+    num_phases, per_phase, spec_total_steps = _count_phases_and_steps(
         args.policy_spec, args.steps_per_phase)
     lo = 0 if args.start_at_phase is None else args.start_at_phase
     hi = (num_phases - 1 if args.run_through_phase is None
@@ -301,7 +345,28 @@ def main():
     if effective_phases <= 0:
         parser.error(
             f"--start-at-phase ({lo}) must be <= --run-through-phase ({hi})")
-    max_steps = per_phase * effective_phases
+    # Heterogeneous specs (e.g. segment_dm_agent: 16-step segment
+    # phases interleaved with 32-step dm_atmos phases) need
+    # max_episode_steps = sum of every active phase's budget, not
+    # per_phase * effective_phases. _count_phases_and_steps returned
+    # the SUM across all phases; when --start-at-phase or
+    # --run-through-phase trims the spec, recompute on the trimmed
+    # range. For full-spec runs the trimming branch is a no-op and
+    # max_steps equals spec_total_steps verbatim.
+    if (args.start_at_phase is None
+            and args.run_through_phase is None):
+        max_steps = spec_total_steps
+    else:
+        # Recompute the sum on the active slice [lo, hi+1).
+        import yaml as _yaml
+        with open(args.policy_spec) as _f:
+            _all_phases = _yaml.safe_load(_f).get("phases", [])
+        max_steps = 0
+        for _ph in _all_phases[lo:hi + 1]:
+            _u = (_ph.get("until") or {})
+            max_steps += int(_u.get("step",
+                args.steps_per_phase
+                if args.steps_per_phase is not None else per_phase))
 
     # Env starts in phase ``lo``'s training-time condition. With
     # bootstrap_phased_count = lo: segs 0..lo-1 already aligned, seg lo
