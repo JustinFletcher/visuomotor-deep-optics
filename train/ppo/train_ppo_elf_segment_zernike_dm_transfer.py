@@ -114,6 +114,12 @@ def _patch(cfg):
     cfg["zernike_dm_action_scale"] = 0.01
     cfg["zernike_normalize"] = "wavefront_rms"
     cfg["init_from_skip_prefixes"] = list(_TRANSFER_SKIP_PREFIXES)
+    # Effectively indefinite per Fletcher's standing preference:
+    # runs are bounded by SLURM --time, not by step count. 10B steps
+    # at typical fine-tune SPS is weeks of wall clock, so the loop
+    # never finishes on its own; the master cancels / SLURM kills it
+    # eventually.
+    cfg["total_timesteps"] = 10_000_000_000
     return cfg
 
 
