@@ -253,6 +253,12 @@ def main():
         help="Render GIFs at lower resolution and tighter layout. ~5-10x "
              "smaller files and ~5-8x faster rendering. Keeps every frame.")
     parser.add_argument(
+        "--frame-stride", type=int, default=1, metavar="N",
+        help="Keep every Nth frame in the GIF (default 1 = every "
+             "frame). First and last frames are always retained so "
+             "the start and end states are visible. Combine with "
+             "--lowres-gifs for the smallest, fastest renders.")
+    parser.add_argument(
         "--phase-checkpoint", action="append", default=[], metavar="N=PATH",
         help="Override the checkpoint for phase N (0-based, original "
              "spec index). May be passed multiple times to override "
@@ -401,7 +407,8 @@ def main():
 
     if not args.no_gifs:
         save_episode_gifs(episodes, os.path.join(test_dir, "gifs"),
-                          lowres=args.lowres_gifs)
+                          lowres=args.lowres_gifs,
+                          frame_stride=args.frame_stride)
 
     save_summary_figures(episodes, metrics, os.path.join(test_dir, "figures"))
 
