@@ -95,8 +95,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str,
             --gpus-per-node {gpus_per_node} \\
             --poll-interval-s {args.poll_interval_s} \\
             --max-retries {args.max_retries} \\
-            --slurm-time {args.slurm_time}\\
-{train_script_flag}{extra_args_flag}{max_per_node_flag}{resume_flag}
+            --slurm-time {args.slurm_time}{train_script_flag}{extra_args_flag}{max_per_node_flag}{resume_flag}
     """)
 
 
