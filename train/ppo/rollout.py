@@ -166,6 +166,27 @@ def _capture_pupil_opd(env):
         H, W = surface.shape
         surface = surface + torch.matmul(d, dm_inf_flat).reshape(H, W)
 
+    # GPU-native Kolmogorov atmosphere (matches the wavefront physics
+    # in OpticalSystem.simulate(): surface + 0.5 * atmosphere.opd, so
+    # the reflective 2x scaling lands on the actual physical OPD).
+    # Without this, the OPD panel under-represents what the agent's
+    # observation actually sees -- a real bug for diagnostic clarity
+    # when an atmosphere kwarg is supplied.
+    atm = getattr(base, "_kolmogorov_atmosphere", None)
+    if atm is None:
+        opt = getattr(base, "optical_system", None)
+        if opt is not None:
+            atm = (getattr(opt, "_kolmogorov_atmosphere", None)
+                   or getattr(opt, "_atmosphere", None))
+    # v5 keeps the atmosphere directly on the env as ``_atmosphere``.
+    if atm is None:
+        atm = getattr(base, "_atmosphere", None)
+    if atm is not None:
+        opd = atm.opd_meters()
+        # [N, H, W] for v5 batched; take env 0. v4's single-env build
+        # is shaped the same way (num_envs=1) so the index works.
+        surface = surface + 0.5 * (opd[0] if opd.dim() == 3 else opd)
+
     return surface.detach().cpu().numpy()
 
 
