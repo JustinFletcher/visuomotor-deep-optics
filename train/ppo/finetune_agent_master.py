@@ -278,6 +278,13 @@ def _slurm_node_block_script(state: MasterState, jobs: list[PhaseJob],
     """
     phases_label = "-".join(f"p{j.phase:02d}" for j in jobs)
     name = f"ft-{run_id[-8:]}-{node_name[-6:]}-{phases_label}"
+    # Recipe is optional in train-script mode. Only emit --recipe when
+    # we have a path; without this guard the rendered sbatch reads
+    # "--recipe  --block-dir ..." and argparse swallows the
+    # next flag as --recipe's value, killing the worker before it
+    # starts.
+    recipe_flag = (f" --recipe {state.recipe_path}"
+                   if state.recipe_path else "")
     return textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={name}
@@ -295,8 +302,7 @@ def _slurm_node_block_script(state: MasterState, jobs: list[PhaseJob],
 
         cd {HPC_CODE_DIR}
         poetry run python -u train/ppo/finetune_node_block_worker.py \\
-            --manifest {manifest_path} \\
-            --recipe {state.recipe_path} \\
+            --manifest {manifest_path}{recipe_flag} \\
             --block-dir {block_dir}
     """)
 
@@ -404,10 +410,15 @@ def _start_local_phase(state: MasterState, job: PhaseJob,
                      "finetune_agent_worker.py"),
         "--source-checkpoint", job.source_ckpt,
         "--phase", str(job.phase),
-        "--recipe", state.recipe_path,
         "--output-dir", job.output_dir,
         "--hpc",
     ]
+    if state.recipe_path:
+        cmd += ["--recipe", state.recipe_path]
+    if state.train_script:
+        cmd += ["--train-script", state.train_script]
+    if state.extra_args:
+        cmd += ["--extra-args", state.extra_args]
     if job.resume_ckpt:
         # Full resume: model + optimizer + global_step from the prior
         # run's latest.pt. Source checkpoint stays in the cmd line for
