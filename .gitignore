@@ -1,6 +1,13 @@
 # OS
 .DS_Store
 
+# Packed-agent checkpoints. Each is ~94 MB and would push past
+# GitHub's 100 MB per-file cap; the .pt files are reproducible from
+# the segment_dm_finetuning / agent_finetuning sync sources, so we
+# only version the bundle metadata (composed.yaml, manifest.json,
+# README.md) here.
+agents/*/checkpoints/*.pt
+
 # Private docs
 hpc.md
 CORAL_ACCESS.md

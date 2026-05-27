@@ -1,0 +1,143 @@
+{
+  "agent_name": "segment_dm_agent_v2",
+  "created_utc": "2026-05-27T18:51:02Z",
+  "description": "15-phase composite. Each phase emits 45 segment-PTT DOFs + 32 Zernike modes; rollout-side projects Zernikes to 1225 DM actuator commands and places into the env action vector. Trained under a random Kolmogorov atmosphere with r0 ~ U(0.10, 0.25) m.",
+  "source_agent": "agent_20260419T211137Z_e3b7",
+  "source_training_run": "segment_dm_finetuning/agent_20260419T211137Z_e3b7__train_ppo_elf_segment_zernike_dm_transfer__1779853646",
+  "num_phases": 15,
+  "phases": [
+    {
+      "phase": 0,
+      "name": "phase-00",
+      "bundle_path": "checkpoints/phase_00.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 1,
+      "name": "phase-01",
+      "bundle_path": "checkpoints/phase_01.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 2,
+      "name": "phase-02",
+      "bundle_path": "checkpoints/phase_02.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 3,
+      "name": "phase-03",
+      "bundle_path": "checkpoints/phase_03.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 4,
+      "name": "phase-04",
+      "bundle_path": "checkpoints/phase_04.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 5,
+      "name": "phase-05",
+      "bundle_path": "checkpoints/phase_05.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 6,
+      "name": "phase-06",
+      "bundle_path": "checkpoints/phase_06.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 7,
+      "name": "phase-07",
+      "bundle_path": "checkpoints/phase_07.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 8,
+      "name": "phase-08",
+      "bundle_path": "checkpoints/phase_08.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 9,
+      "name": "phase-09",
+      "bundle_path": "checkpoints/phase_09.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 10,
+      "name": "phase-10",
+      "bundle_path": "checkpoints/phase_10.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 11,
+      "name": "phase-11",
+      "bundle_path": "checkpoints/phase_11.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 12,
+      "name": "phase-12",
+      "bundle_path": "checkpoints/phase_12.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 13,
+      "name": "phase-13",
+      "bundle_path": "checkpoints/phase_13.pt",
+      "size_bytes": 98425350,
+      "until": {
+        "step": 32
+      }
+    },
+    {
+      "phase": 14,
+      "name": "phase-14",
+      "bundle_path": "checkpoints/phase_14.pt",
+      "size_bytes": 98425350,
+      "until": null
+    }
+  ]
+}

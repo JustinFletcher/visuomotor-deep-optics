@@ -271,3 +271,94 @@ class ZernikeToDMAdapter(OutputAdapter):
                 f"n_dm={self.n_dm}, dm_slice="
                 f"[{self.dm_start}, {self.dm_stop}), "
                 f"env_action_dim={self.env_action_dim})")
+
+
+# ---------------------------------------------------------------------------
+# SegmentZernikePassthroughAdapter
+# ---------------------------------------------------------------------------
+
+class SegmentZernikePassthroughAdapter(OutputAdapter):
+    """Map a policy's combined ``[seg_PTT_45 | zernike_32]`` native action
+    into the env's combined ``[seg_PTT_45 | dm_1225]`` action vector.
+
+    This is the rollout-time mirror of training-time
+    ``SegmentZernikeDMVectorEnv``: same Zernike->DM projection M, same
+    DM-only ``action_scale`` cap, same clamp. The segment block passes
+    through unchanged; the Zernike block is projected, scaled, clamped,
+    and placed at the env's DM slot.
+
+    Native input width:  n_seg_actions + n_zernike    (e.g. 45 + 32 = 77)
+    Env-facing width:    n_seg_actions + n_dm         (e.g. 45 + 1225 = 1270)
+    """
+
+    def __init__(self, M: torch.Tensor,
+                 n_seg_actions: int,
+                 env_action_dim: int,
+                 dm_action_scale: float = 1.0):
+        self.M = M                                  # [n_dm, n_z]
+        self.n_dm, self.n_zernike = M.shape
+        self.n_seg_actions = int(n_seg_actions)
+        self.env_action_dim = int(env_action_dim)
+        self.dm_action_scale = float(dm_action_scale)
+        if self.n_seg_actions + self.n_dm != self.env_action_dim:
+            raise ValueError(
+                f"SegmentZernikePassthroughAdapter: n_seg_actions "
+                f"({self.n_seg_actions}) + n_dm ({self.n_dm}) "
+                f"!= env_action_dim ({self.env_action_dim})")
+        self.native_dim = self.n_seg_actions + self.n_zernike
+
+    def __call__(self, native_action: torch.Tensor) -> torch.Tensor:
+        if native_action.shape[-1] != self.native_dim:
+            raise ValueError(
+                f"SegmentZernikePassthroughAdapter expects "
+                f"native_action of width {self.native_dim}, got "
+                f"{native_action.shape[-1]}")
+        seg = native_action[..., : self.n_seg_actions]
+        zer = native_action[..., self.n_seg_actions:]
+        dm = zer @ self.M.t()
+        if self.dm_action_scale != 1.0:
+            dm = dm * self.dm_action_scale
+        dm = torch.clamp(dm, -1.0, 1.0)
+        full = torch.cat([seg, dm], dim=-1)
+        return full
+
+    @classmethod
+    def from_env(cls, env, n_zernike: int,
+                 n_seg_actions: Optional[int] = None,
+                 env_action_dim: Optional[int] = None,
+                 dm_action_scale: float = 1.0,
+                 skip_piston: bool = False,
+                 normalize: str = "wavefront_rms",
+                 regularize_rcond: float = 1e-3,
+                 device: Optional[torch.device] = None,
+                 silence: bool = True) -> "SegmentZernikePassthroughAdapter":
+        """Build for ``env`` (v4 or v5). DM block sits at the tail of
+        the env action vector; segment block (``n_seg_actions``)
+        sits up front. Both are auto-derived from the env when not
+        explicitly supplied."""
+        # Reuse ZernikeToDMAdapter.from_env for the M-projection build
+        # path -- it already handles both v4 and v5 envs. Then unpack
+        # its M + slice and recombine into the passthrough shape.
+        zd = ZernikeToDMAdapter.from_env(
+            env, n_zernike=n_zernike,
+            env_action_dim=env_action_dim,
+            action_scale=1.0,           # scale applied here, not there
+            skip_piston=skip_piston,
+            normalize=normalize,
+            regularize_rcond=regularize_rcond,
+            device=device,
+            silence=silence)
+        if env_action_dim is None:
+            env_action_dim = zd.env_action_dim
+        if n_seg_actions is None:
+            n_seg_actions = env_action_dim - zd.n_dm
+        return cls(zd.M, n_seg_actions=n_seg_actions,
+                   env_action_dim=env_action_dim,
+                   dm_action_scale=dm_action_scale)
+
+    def __repr__(self) -> str:
+        return (f"SegmentZernikePassthroughAdapter(n_seg="
+                f"{self.n_seg_actions}, n_z={self.n_zernike}, "
+                f"n_dm={self.n_dm}, env_action_dim="
+                f"{self.env_action_dim}, dm_scale="
+                f"{self.dm_action_scale})")

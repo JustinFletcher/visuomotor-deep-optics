@@ -119,7 +119,8 @@ def _build_output_adapter(adapter_spec: Optional[dict], env, device):
     if adapter_spec is None:
         return None
     from train.ppo.output_adapters import (
-        SliceAdapter, ZernikeToDMAdapter)
+        SliceAdapter, ZernikeToDMAdapter,
+        SegmentZernikePassthroughAdapter)
 
     a_type = adapter_spec.get("type")
     env_action_dim = int(env.action_space.shape[0])
@@ -147,6 +148,24 @@ def _build_output_adapter(adapter_spec: Optional[dict], env, device):
             dm_slice=dm_slice,
             env_action_dim=env_action_dim,
             action_scale=float(adapter_spec.get("action_scale", 1.0)),
+            skip_piston=bool(adapter_spec.get("skip_piston", False)),
+            normalize=str(adapter_spec.get("normalize", "wavefront_rms")),
+            regularize_rcond=float(
+                adapter_spec.get("regularize_rcond", 1e-3)),
+            device=device,
+            silence=False)
+
+    if a_type == "segment_zernike_passthrough":
+        n_modes = int(adapter_spec["n_zernike"])
+        n_seg = adapter_spec.get("n_seg_actions")
+        if n_seg is not None:
+            n_seg = int(n_seg)
+        return SegmentZernikePassthroughAdapter.from_env(
+            env, n_zernike=n_modes,
+            n_seg_actions=n_seg,
+            env_action_dim=env_action_dim,
+            dm_action_scale=float(
+                adapter_spec.get("dm_action_scale", 1.0)),
             skip_piston=bool(adapter_spec.get("skip_piston", False)),
             normalize=str(adapter_spec.get("normalize", "wavefront_rms")),
             regularize_rcond=float(
