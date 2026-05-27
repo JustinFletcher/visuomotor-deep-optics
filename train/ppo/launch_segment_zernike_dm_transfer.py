@@ -145,8 +145,13 @@ def main():
                         "(default: all 15 phases of the source agent).")
     p.add_argument("--output-root", type=str, default=None,
                    help="Output root dir. Default: $HPC_WORKDIR/"
-                        "agent_finetuning/<run_id>/. On --resume this "
-                        "must point at the existing run root.")
+                        "segment_dm_finetuning/<src_base>__<run_id>/. "
+                        "Distinct from agent_finetuning/ (bootstrap "
+                        "fine-tunes) and atmos_finetuning/ (atmos "
+                        "Zernike transfer) so this experiment's runs "
+                        "don't mingle with the other families' "
+                        "output trees. On --resume this must point "
+                        "at the existing run root.")
     p.add_argument("--run-id", type=str, default=None,
                    help=f"Unique run id (default: {_RUN_PREFIX}_<ts>).")
     p.add_argument("--slurm-time", type=str, default=SLURM_TIME,
@@ -190,11 +195,14 @@ def main():
     else:
         target_indices = all_phase_indices
 
-    # Resolve run id + output root.
+    # Resolve run id + output root. Default output tree is a NEW
+    # top-level sibling of agent_finetuning/ and atmos_finetuning/
+    # so this experiment's runs are clearly distinct from the
+    # bootstrap fine-tune and atmos Zernike transfer trees.
     args.run_id = args.run_id or f"{_RUN_PREFIX}_{int(time.time())}"
     src_base = os.path.basename(os.path.normpath(args.source_agent))
     output_root = (args.output_root
-                   or os.path.join(HPC_WORKDIR, "agent_finetuning",
+                   or os.path.join(HPC_WORKDIR, "segment_dm_finetuning",
                                    f"{src_base}__{args.run_id}"))
 
     if args.resume:

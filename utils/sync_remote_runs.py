@@ -50,6 +50,12 @@ REMOTES = {
         "test_output": "/p/work/fletch/test_output/",
         "agent_finetuning": "/p/work/fletch/agent_finetuning/",
         "atmos_finetuning": "/p/work/fletch/atmos_finetuning/",
+        # segment_dm_finetuning: per-phase transfer runs that grow the
+        # bootstrap action head from 45 (seg PTT) to 45 + n_zernike
+        # (seg PTT + DM via Zernike projection), trained under a
+        # random Kolmogorov atmosphere. Produced by
+        # launch_segment_zernike_dm_transfer.py.
+        "segment_dm_finetuning": "/p/work/fletch/segment_dm_finetuning/",
         # Inputs -- read-only source agents, stay in /p/home with the
         # repo since jobs only read from them.
         "agents": "/p/home/fletch/visuomotor-deep-optics/agents/",
@@ -63,6 +69,7 @@ REMOTES = {
         "agents": "/wdata/home/fletch/visuomotor-deep-optics/agents/",
         "agent_finetuning": "/wdata/home/fletch/visuomotor-deep-optics/agent_finetuning/",
         "atmos_finetuning": "/wdata/home/fletch/visuomotor-deep-optics/atmos_finetuning/",
+        "segment_dm_finetuning": "/wdata/home/fletch/visuomotor-deep-optics/segment_dm_finetuning/",
     },
 }
 DEFAULT_REMOTE = "makau"
@@ -74,6 +81,7 @@ LOCAL_TEST_OUTPUT = _REPO_ROOT / "test_output"
 LOCAL_AGENTS = _REPO_ROOT / "agents"
 LOCAL_AGENT_FINETUNING = _REPO_ROOT / "agent_finetuning"
 LOCAL_ATMOS_FINETUNING = _REPO_ROOT / "atmos_finetuning"
+LOCAL_SEGMENT_DM_FINETUNING = _REPO_ROOT / "segment_dm_finetuning"
 
 # SSH: fresh connection per rsync invocation. We previously used
 # ControlMaster multiplexing to avoid repeated auth, but stale/broken
@@ -442,13 +450,15 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
               dark_hole: bool = False,
               agent_finetuning: bool = False,
               atmos_finetuning: bool = False,
+              segment_dm_finetuning: bool = False,
               best_only: bool = False,
               tb_only: bool = False) -> bool:
     """Run a single sync cycle. Returns True on success.
 
     Exactly one of ``bootstrap`` / ``test_output`` / ``agents`` /
-    ``dark_hole`` / ``agent_finetuning`` / ``atmos_finetuning`` should
-    be True; if none are set we sync the regular ``runs/`` tree.
+    ``dark_hole`` / ``agent_finetuning`` / ``atmos_finetuning`` /
+    ``segment_dm_finetuning`` should be True; if none are set we sync
+    the regular ``runs/`` tree.
 
     - ``bootstrap=True`` syncs the full ``bootstrap_runs/`` tree (or a
       specific bootstrap run id when ``run_name`` is given). Preserves
@@ -465,11 +475,13 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
       bundles (composed.yaml + checkpoints/ + manifest.json + README).
     """
     sources = sum([bootstrap, test_output, agents, dark_hole,
-                   agent_finetuning, atmos_finetuning])
+                   agent_finetuning, atmos_finetuning,
+                   segment_dm_finetuning])
     if sources > 1:
         raise ValueError(
             "Choose at most one of bootstrap/test_output/agents/"
-            "dark_hole/agent_finetuning/atmos_finetuning")
+            "dark_hole/agent_finetuning/atmos_finetuning/"
+            "segment_dm_finetuning")
     # Wipe any stale multiplexing sockets left over from earlier
     # versions of this script — they can silently stall new rsyncs.
     if SSH_CONTROL_DIR.exists():
@@ -503,6 +515,9 @@ def sync_once(run_name: str | None = None, dry_run: bool = False,
     elif atmos_finetuning:
         remote_base = remote_cfg["atmos_finetuning"]
         local_base = LOCAL_ATMOS_FINETUNING
+    elif segment_dm_finetuning:
+        remote_base = remote_cfg["segment_dm_finetuning"]
+        local_base = LOCAL_SEGMENT_DM_FINETUNING
     else:
         remote_base = remote_cfg["runs"]
         local_base = LOCAL_RUNS
@@ -599,6 +614,16 @@ def main():
              "train/ppo/launch_zernike_atm_transfer.py (per-target "
              "n_zernike training runs). Combine with --tb-only.",
     )
+    source_group.add_argument(
+        "--segment-dm-finetuning",
+        action="store_true",
+        help="Sync the segment_dm_finetuning/ tree produced by "
+             "train/ppo/launch_segment_zernike_dm_transfer.py "
+             "(per-phase transfer runs that grow the bootstrap "
+             "action head to also command the DM via Zernike modes, "
+             "trained under a random Kolmogorov atmosphere). Combine "
+             "with --tb-only for cheap progress monitoring.",
+    )
     parser.add_argument(
         "--best-only",
         action="store_true",
@@ -635,6 +660,8 @@ def main():
         remote_path = remote_cfg["agent_finetuning"]
     elif args.atmos_finetuning:
         remote_path = remote_cfg["atmos_finetuning"]
+    elif args.segment_dm_finetuning:
+        remote_path = remote_cfg["segment_dm_finetuning"]
     else:
         remote_path = remote_cfg["runs"]
     print(f"Remote: {args.remote} ({remote_cfg['host']})")
@@ -667,6 +694,7 @@ def main():
                           dark_hole=args.dark_hole,
                           agent_finetuning=args.agent_finetuning,
                           atmos_finetuning=args.atmos_finetuning,
+                          segment_dm_finetuning=args.segment_dm_finetuning,
                           best_only=args.best_only,
                           tb_only=args.tb_only)
                 print(f"\nSleeping {args.interval}s until next sync...")
@@ -683,6 +711,7 @@ def main():
                        dark_hole=args.dark_hole,
                        agent_finetuning=args.agent_finetuning,
                        atmos_finetuning=args.atmos_finetuning,
+                       segment_dm_finetuning=args.segment_dm_finetuning,
                        best_only=args.best_only,
                        tb_only=args.tb_only)
         sys.exit(0 if ok else 1)
