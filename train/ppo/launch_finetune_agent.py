@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -61,6 +62,16 @@ def _build_master_sbatch(args, run_id: str, output_root: str,
     gres_str = f"gpu:{gpus_per_node}" if gpus_per_node > 1 else SLURM_GRES
     nodelist_line = f"#SBATCH --nodelist={node_name}\n        " if node_name else ""
     resume_flag = " --resume" if args.resume else ""
+    recipe_flag = (f" --recipe {args.recipe}" if args.recipe else "")
+    train_script_flag = (f" --train-script {args.train_script}"
+                         if args.train_script else "")
+    # --extra-args is a single string with embedded spaces; quote it.
+    extra_args_flag = (
+        f" --extra-args {shlex.quote(args.extra_args)}"
+        if args.extra_args else "")
+    max_per_node_flag = (
+        f" --max-phases-per-node {args.max_phases_per_node}"
+        if args.max_phases_per_node is not None else "")
     return textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={job_name}
@@ -78,14 +89,14 @@ def _build_master_sbatch(args, run_id: str, output_root: str,
         mkdir -p {log_root}
         cd {HPC_CODE_DIR}
         poetry run python -u train/ppo/finetune_agent_master.py \\
-            --source-agent {args.source_agent} \\
-            --recipe {args.recipe} \\
+            --source-agent {args.source_agent}{recipe_flag} \\
             --output-root {output_root} \\
             --max-nodes {args.max_nodes} \\
             --gpus-per-node {gpus_per_node} \\
             --poll-interval-s {args.poll_interval_s} \\
             --max-retries {args.max_retries} \\
-            --slurm-time {args.slurm_time}{resume_flag}
+            --slurm-time {args.slurm_time}\\
+{train_script_flag}{extra_args_flag}{max_per_node_flag}{resume_flag}
     """)
 
 
@@ -96,9 +107,32 @@ def main():
     parser.add_argument("--source-agent", required=True,
                         help="Source agent dir, e.g. "
                              "agents/agent_20260419T211137Z_e3b7.")
-    parser.add_argument("--recipe", required=True,
+    parser.add_argument("--recipe", default=None,
                         help="Recipe YAML, e.g. "
-                             "train/ppo/finetune_recipes/piston_1mm.yaml.")
+                             "train/ppo/finetune_recipes/piston_1mm.yaml. "
+                             "Required for the legacy in-process "
+                             "bootstrap path; optional when "
+                             "--train-script is set (the named "
+                             "training script owns env + config).")
+    parser.add_argument("--train-script", default=None,
+                        help="Alternative training-script path. When "
+                             "set, every worker exec's that script "
+                             "as a subprocess (with --hpc --phased-"
+                             "count --source-checkpoint / --resume-"
+                             "from --run-dir + --extra-args). Lets "
+                             "non-bootstrap pipelines (segment_dm_v2 "
+                             "etc.) ride this master/worker "
+                             "scheduling machinery.")
+    parser.add_argument("--extra-args", default="",
+                        help="Extra CLI flags forwarded to every "
+                             "--train-script subprocess.")
+    parser.add_argument("--max-phases-per-node", type=int, default=None,
+                        metavar="N",
+                        help="Cap on phases packed onto one node. "
+                             "Default: auto = ceil(num_phases / "
+                             "max_nodes), so phases spread as thinly "
+                             "as the node budget allows. Set "
+                             "explicitly to override.")
     parser.add_argument("--output-root", default=None,
                         help="Output dir for the master + per-phase runs. "
                              "Default: agent_finetuning/"
@@ -156,7 +190,10 @@ def main():
     if not os.path.isdir(args.source_agent):
         print(f"ERROR: --source-agent not a directory: {args.source_agent}")
         sys.exit(1)
-    if not os.path.isfile(args.recipe):
+    if not args.train_script and not args.recipe:
+        print("ERROR: --recipe is required when --train-script is not set.")
+        sys.exit(1)
+    if args.recipe and not os.path.isfile(args.recipe):
         print(f"ERROR: --recipe not a file: {args.recipe}")
         sys.exit(1)
 
@@ -177,17 +214,25 @@ def main():
                   f"{phases_dir}. Is this a finetune_agent run root?")
             sys.exit(1)
     else:
-        # Default output dir name: <source>_<recipe>_<timestamp>.
-        # Anchored at HPC_CODE_DIR (work filesystem) so SLURM jobs
+        # Default output dir name: <source>_<recipe-or-script>_<ts>.
+        # Anchored at HPC_WORKDIR (work filesystem) so SLURM jobs
         # writing into it satisfy the "must live under /p/work"
         # cluster policy regardless of where you launch from.
         if args.output_root is None:
             src_base = os.path.basename(os.path.normpath(args.source_agent))
-            recipe_base = os.path.basename(args.recipe).rsplit(".", 1)[0]
+            if args.recipe:
+                tag = os.path.basename(args.recipe).rsplit(".", 1)[0]
+                parent = "agent_finetuning"
+            else:
+                # train-script-only: tag by the script's basename
+                # (sans .py) and stash under a tree distinct from
+                # the bootstrap recipe runs.
+                tag = os.path.basename(args.train_script).rsplit(".", 1)[0]
+                parent = "segment_dm_finetuning"
             ts = int(time.time())
             args.output_root = os.path.join(
-                HPC_CODE_DIR, "agent_finetuning",
-                f"{src_base}__{recipe_base}__{ts}")
+                HPC_WORKDIR, parent,
+                f"{src_base}__{tag}__{ts}")
 
     # Read-only invariant: refuse to clobber the source agent.
     if os.path.abspath(args.output_root).startswith(

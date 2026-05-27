@@ -62,8 +62,11 @@ def main():
         description="Run K parallel per-phase fine-tunes on one node.")
     parser.add_argument("--manifest", required=True,
                         help="JSON file listing phases to run in parallel.")
-    parser.add_argument("--recipe", required=True,
-                        help="Recipe YAML forwarded to every sub-worker.")
+    parser.add_argument("--recipe", default=None,
+                        help="Recipe YAML forwarded to every sub-worker. "
+                             "Required for the legacy in-process "
+                             "bootstrap path; optional when manifest "
+                             "entries carry their own train_script.")
     parser.add_argument("--block-dir", required=True,
                         help="Per-block log + sentinel dir.")
     args = parser.parse_args()
@@ -90,6 +93,14 @@ def main():
         src = entry["source_checkpoint"]
         outdir = entry["output_dir"]
         resume_ckpt = entry.get("resume_checkpoint") or None
+        # Optional per-entry train-script override + extra args. When
+        # set, the inner worker exec's that script as a subprocess
+        # instead of running the legacy in-process bootstrap path.
+        # Used by non-bootstrap transfer pipelines (segment_dm_v2,
+        # etc.) so they can ride the same master/worker scheduling
+        # machinery without reinventing it.
+        train_script = entry.get("train_script") or None
+        extra_args = entry.get("extra_args") or ""
         os.makedirs(outdir, exist_ok=True)
 
         out_log = open(os.path.join(outdir, "slurm_inner.out"), "w")
@@ -100,10 +111,15 @@ def main():
                          "finetune_agent_worker.py"),
             "--source-checkpoint", src,
             "--phase", str(phase),
-            "--recipe", args.recipe,
             "--output-dir", outdir,
             "--hpc",
         ]
+        if args.recipe:
+            cmd += ["--recipe", args.recipe]
+        if train_script:
+            cmd += ["--train-script", train_script]
+        if extra_args:
+            cmd += ["--extra-args", extra_args]
         if resume_ckpt:
             # Full resume mode: model + optimizer + global_step from
             # the prior run's latest.pt. Source checkpoint stays in

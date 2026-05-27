@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -110,22 +111,110 @@ def main():
                              "latest.pt.")
     parser.add_argument("--phase", type=int, required=True,
                         help="0-based phase index (sets bootstrap_phased_count).")
-    parser.add_argument("--recipe", required=True,
-                        help="YAML recipe (env_kwarg + ppo overrides).")
+    parser.add_argument("--recipe", default=None,
+                        help="YAML recipe (env_kwarg + ppo overrides). "
+                             "Required for the legacy in-process "
+                             "bootstrap fine-tune path. Ignored when "
+                             "--train-script is set (the named "
+                             "training script owns env+config).")
+    parser.add_argument("--train-script", default=None,
+                        help="Optional path to an alternative training "
+                             "script. When set, this worker exec's "
+                             "that script as a subprocess with --hpc "
+                             "--phased-count <N> --source-checkpoint "
+                             "<ckpt> (or --resume-from <r>) --run-dir "
+                             "<dir>, plus any --extra-args. Default "
+                             "behaviour (unset) imports run_main and "
+                             "runs the bootstrap fine-tune in-process "
+                             "with the recipe overlays.")
+    parser.add_argument("--extra-args", default="",
+                        help="Extra CLI flags appended to the "
+                             "--train-script subprocess command. "
+                             "Ignored when --train-script is unset.")
     parser.add_argument("--output-dir", required=True,
                         help="Per-phase output dir (master-owned).")
     parser.add_argument("-h", "--help", action="help")
     cli, remaining = parser.parse_known_args()
+
+    if not cli.train_script and not cli.recipe:
+        parser.error("--recipe is required when --train-script is not set.")
 
     os.makedirs(cli.output_dir, exist_ok=True)
     _write_status(cli.output_dir, "starting",
                   source_checkpoint=cli.source_checkpoint,
                   resume_from=cli.resume_from,
                   phase=cli.phase,
-                  recipe=cli.recipe)
+                  recipe=cli.recipe,
+                  train_script=cli.train_script,
+                  extra_args=cli.extra_args)
 
     # ----------------------------------------------------------------
-    # Load recipe and build configs
+    # Train-script (subprocess) path. When --train-script is set, we
+    # delegate everything to the named script: env_kwargs, PPO config,
+    # transfer skip-prefixes, atmosphere, etc. all live in the script
+    # itself. We just feed it the per-phase args and the right
+    # init/resume checkpoint. status.json sentinels are written by
+    # this wrapper around the subprocess. On success, locate the
+    # resulting ppo_optomech_*/checkpoints/best.pt for the packer.
+    # ----------------------------------------------------------------
+    if cli.train_script:
+        import shlex
+        cmd = [
+            sys.executable, "-u",
+            os.path.join(_REPO_ROOT, cli.train_script),
+            "--hpc",
+            "--phased-count", str(cli.phase),
+            "--run-dir", cli.output_dir,
+        ]
+        if cli.resume_from:
+            cmd += ["--resume-from", cli.resume_from]
+        else:
+            cmd += ["--source-checkpoint", cli.source_checkpoint]
+        if cli.extra_args.strip():
+            cmd += shlex.split(cli.extra_args)
+        # Forward any unparsed args from our own CLI -- gives the
+        # master a way to add per-node knobs without changing this
+        # script (e.g. --seed comes through here when set via the
+        # node-block fan-out).
+        cmd += remaining
+
+        _write_status(cli.output_dir, "running",
+                      source_checkpoint=cli.source_checkpoint,
+                      resume_from=cli.resume_from,
+                      phase=cli.phase,
+                      train_script=cli.train_script,
+                      cmd=" ".join(cmd))
+        try:
+            rc = subprocess.call(cmd, cwd=_REPO_ROOT)
+        except Exception as e:
+            _write_status(cli.output_dir, "failed",
+                          phase=cli.phase,
+                          error=str(e),
+                          traceback=traceback.format_exc())
+            raise
+        if rc != 0:
+            _write_status(cli.output_dir, "failed",
+                          phase=cli.phase,
+                          error=f"train-script exited rc={rc}")
+            sys.exit(rc)
+
+        run_dirs = sorted(Path(cli.output_dir).glob("ppo_optomech_*"))
+        best_ckpt = None
+        if run_dirs:
+            ck_dir = run_dirs[-1] / "checkpoints"
+            for candidate in ("best.pt", "latest.pt"):
+                p = ck_dir / candidate
+                if p.is_file():
+                    best_ckpt = str(p)
+                    break
+        _write_status(cli.output_dir, "completed",
+                      phase=cli.phase,
+                      best_checkpoint=best_ckpt or "",
+                      run_dir=str(run_dirs[-1]) if run_dirs else "")
+        return
+
+    # ----------------------------------------------------------------
+    # Legacy in-process bootstrap path.
     # ----------------------------------------------------------------
     with open(cli.recipe) as f:
         recipe = yaml.safe_load(f)

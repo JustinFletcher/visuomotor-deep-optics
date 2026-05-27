@@ -126,6 +126,20 @@ class MasterState:
     # doesn't immediately mark phases "completed" before the new
     # worker has had a chance to overwrite the sentinel.
     resume: bool = False
+    # Optional alternative training-script path. When set, every
+    # worker exec's that script as a subprocess instead of the
+    # legacy in-process bootstrap path. Master forwards via the
+    # node-block manifest. Used by non-bootstrap pipelines
+    # (segment_dm_v2 etc.) to ride this scheduling machinery.
+    train_script: Optional[str] = None
+    # Extra args string passed through to the train-script subprocess.
+    extra_args: str = ""
+    # Per-node phase packing cap. None = auto, computed from
+    # num_phases / max_nodes so phases are spread as thinly as
+    # possible while still fitting on the node budget. An explicit
+    # int overrides the auto-default. Final per-node pack count is
+    # min(max_phases_per_node, node.gpu_count, len(pending)).
+    max_phases_per_node: Optional[int] = None
 
 
 # --------------------------------------------------------------------------
@@ -315,7 +329,13 @@ def _submit_slurm_node_block(state: MasterState, jobs: list[PhaseJob],
          # Optional: when set, the inner per-phase worker runs in
          # --resume-from mode (full model + optimizer + step resume)
          # instead of --init-from. None means "fresh init from source".
-         "resume_checkpoint": j.resume_ckpt}
+         "resume_checkpoint": j.resume_ckpt,
+         # Optional: alternative train-script path + extra args
+         # forwarded by the master. When None the inner worker uses
+         # the legacy in-process bootstrap path; when set the inner
+         # worker subprocesses the named script with extra-args.
+         "train_script": state.train_script,
+         "extra_args": state.extra_args}
         for j in jobs]
     manifest_path = os.path.join(block_dir, "manifest.json")
     with open(manifest_path, "w") as f:
@@ -547,12 +567,25 @@ def _schedule_pending(state: MasterState, run_id: str) -> None:
         exclude_self=True,
     )
 
-    # Walk best-to-worst nodes, packing up to min(node_gpu_count,
-    # pending) phases per node. Stop when the node budget is full.
+    # Walk best-to-worst nodes, packing up to per_node phases each.
+    # Default per_node is ceil(num_pending_or_total / max_nodes) so
+    # phases are spread as thinly as the node budget allows; an
+    # explicit state.max_phases_per_node overrides. The final cap is
+    # min(per_node, node.gpu_count, len(pending)) so we don't
+    # over-pack a small-GPU node.
+    if state.max_phases_per_node is not None:
+        per_node_cap = max(1, int(state.max_phases_per_node))
+    else:
+        # Use the total phase count (not just current pending) so the
+        # per-node cap stays stable across scheduling ticks as phases
+        # complete.
+        per_node_cap = max(
+            1,
+            (len(state.phases) + state.max_nodes - 1) // state.max_nodes)
     for node in candidates:
         if not pending or nodes_budget_remaining <= 0:
             break
-        take = min(node.gpu_count, len(pending))
+        take = min(per_node_cap, node.gpu_count, len(pending))
         if take <= 0:
             continue
         batch = pending[:take]
@@ -705,8 +738,17 @@ def run_master(args) -> int:
     os.makedirs(output_root, exist_ok=True)
 
     source_agent = _read_source_agent(args.source_agent)
-    with open(args.recipe) as f:
-        recipe = yaml.safe_load(f)
+    # Recipe is optional when --train-script is set: the named
+    # training script owns env+config and the recipe overlays don't
+    # apply. Load when present so the master still records it for
+    # provenance.
+    recipe = {}
+    if args.recipe and os.path.isfile(args.recipe):
+        with open(args.recipe) as f:
+            recipe = yaml.safe_load(f) or {}
+    elif args.recipe:
+        print(f"  WARN: --recipe {args.recipe} not found; continuing "
+              f"with empty recipe.")
 
     # Resolve local GPU count: explicit --gpus-per-node wins, otherwise
     # auto-detect on the compute node we're running on.
@@ -722,7 +764,8 @@ def run_master(args) -> int:
         output_root=output_root,
         source_agent=source_agent,
         source_agent_dir=os.path.abspath(args.source_agent),
-        recipe_path=os.path.abspath(args.recipe),
+        recipe_path=(os.path.abspath(args.recipe)
+                     if args.recipe else ""),
         recipe=recipe,
         max_nodes=args.max_nodes,
         gpus_per_node=gpus_per_node,
@@ -730,6 +773,9 @@ def run_master(args) -> int:
         max_retries=args.max_retries,
         slurm_time=args.slurm_time,
         resume=bool(args.resume),
+        train_script=(args.train_script or None),
+        extra_args=(args.extra_args or ""),
+        max_phases_per_node=args.max_phases_per_node,
     )
 
     # Save the resolved config alongside the runs.
@@ -819,8 +865,30 @@ def main():
     parser.add_argument("--source-agent", required=True,
                         help="Path to source agent dir "
                              "(agents/agent_*).")
-    parser.add_argument("--recipe", required=True,
-                        help="Fine-tune recipe YAML.")
+    parser.add_argument("--recipe", default=None,
+                        help="Fine-tune recipe YAML. Required for the "
+                             "legacy in-process bootstrap path; "
+                             "optional when --train-script is set "
+                             "(the named training script owns env + "
+                             "config).")
+    parser.add_argument("--train-script", default=None,
+                        help="Alternative training-script path. When "
+                             "set, every worker exec's that script "
+                             "as a subprocess (with --hpc --phased-"
+                             "count --source-checkpoint / --resume-"
+                             "from --run-dir + --extra-args). Lets "
+                             "non-bootstrap pipelines (segment_dm_v2 "
+                             "etc.) ride this scheduling machinery.")
+    parser.add_argument("--extra-args", default="",
+                        help="Extra CLI flags forwarded to every "
+                             "--train-script subprocess.")
+    parser.add_argument("--max-phases-per-node", type=int, default=None,
+                        metavar="N",
+                        help="Cap on phases packed onto one node. "
+                             "Default: auto = ceil(num_phases / "
+                             "max_nodes), so phases spread as thinly "
+                             "as the node budget allows. Set "
+                             "explicitly to force a different pack.")
     parser.add_argument("--output-root", required=True,
                         help="New dir under agent_finetuning/...; "
                              "must NOT be inside --source-agent.")
@@ -857,6 +925,9 @@ def main():
                              "to init-from-source. Stale status.json "
                              "files are moved aside.")
     args = parser.parse_args()
+
+    if not args.train_script and not args.recipe:
+        parser.error("--recipe is required when --train-script is not set.")
 
     # Read-only invariant: refuse to clobber the source agent.
     source_abs = os.path.abspath(args.source_agent)
