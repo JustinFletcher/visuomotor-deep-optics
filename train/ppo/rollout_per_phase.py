@@ -150,6 +150,11 @@ def _build_per_phase_agent(ckpt_path: str, env, device: str,
         env, n_zernike=n_zernike,
         n_seg_actions=n_seg_actions,
         dm_action_scale=dm_action_scale,
+        # Force the projection matrix onto the SAME device as the
+        # loaded agent. Without this, .from_env auto-picks the env's
+        # tensor device (CUDA on a GPU host), which mismatches a
+        # CPU-loaded agent's action tensor and crashes at the matmul.
+        device=torch.device(device),
         silence=True)
 
     # Override bootstrap_phased_count in the checkpoint's stored
