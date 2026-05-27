@@ -806,6 +806,32 @@ class OpticalSystem(object):
         self._torch_device = _resolve_device(cfg.get("device", "auto"))
         _v3("GPU device: %s" % self._torch_device)
 
+        # --- GPU-native Kolmogorov atmosphere (matches v5) ----------
+        # When env_kwargs["atmosphere"] is a dict, build a single-env
+        # KolmogorovAtmosphere mirroring v5's wiring so rollouts in v4
+        # see the same disturbance the agent was trained against. The
+        # legacy HCIPy multi-layer machinery earlier ("num_atmosphere
+        # _layers" / Cn^2 sheets) is a different concept and is left
+        # untouched. Absence or None of the "atmosphere" key disables
+        # this path -- v4 is otherwise atmosphere-free as before.
+        # Built here (after _torch_device is resolved) so the OPD
+        # tensor lives on the same device as the rest of the GPU
+        # pipeline.
+        self._kolmogorov_atmosphere = None
+        atm_cfg = cfg.get("atmosphere")
+        if atm_cfg:
+            from optomech.optomech.atmosphere import KolmogorovAtmosphere
+            dx_m = float(self.pupil_grid.delta[0])
+            self._kolmogorov_atmosphere = KolmogorovAtmosphere(
+                num_envs=1, H=int(num_px), W=int(num_px), dx_m=dx_m,
+                device=self._torch_device,
+                cfg=atm_cfg,
+                seed=cfg.get("atmosphere_seed"),
+                silence=cfg.get("silence", False))
+            # OpticalSystem is rebuilt each env.reset() in v4, so a
+            # single reset() here gives this episode its realization.
+            self._kolmogorov_atmosphere.reset()
+
         num_px_2d = num_px  # save for reshape
 
         # Aperture field → complex tensor (num_px, num_px)
@@ -1301,6 +1327,14 @@ class OpticalSystem(object):
         # Segmented mirror: surface = sum(actuators_i * influence_i)
         # then E *= exp(2j * k * surface)
         surface = torch.einsum('i,ihw->hw', self._actuators_t, self._influence_t)
+
+        # GPU-native Kolmogorov atmosphere (matches v5). The 0.5 factor
+        # compensates for the 2x reflective scaling applied below
+        # (surface * 2k), so the atmospheric OPD enters the wavefront
+        # at its true physical magnitude. atmosphere.opd_meters() is
+        # [N=1, H, W]; drop the batch dim to match `surface`'s [H, W].
+        if self._kolmogorov_atmosphere is not None:
+            surface = surface + 0.5 * self._kolmogorov_atmosphere.opd_meters()[0]
 
         # Additive whole-structure vibration OPD (default-off). A rigid-
         # body tilt of the entire aperture oscillating at a fixed
