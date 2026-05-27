@@ -10,6 +10,11 @@ type: composite
 env_kwarg_overrides:
   command_secondaries: true
   command_dm: true
+  # dm_atmos was trained with deltas (per-step add, NOT absolute
+  # overwrite). Without this flag, every segment phase's zero-DM
+  # block wipes the accumulated DM correction and the dm_atmos
+  # phases get misinterpreted as full-stroke absolute commands.
+  dm_incremental_control: true
 
 phases:
 - name: segment-phase-00
@@ -24,6 +29,7 @@ phases:
   adapter:
     type: zernike_to_dm
     n_modes: 64              # matches the dm_atmos checkpoint head
+    action_scale: 0.01       # matches training-time env_action_scale
     # dm_slice / env_action_dim auto-derived from the env (DM block
     # sits at the tail of the action vector).
 
@@ -34,7 +40,7 @@ phases:
 - name: dm-atmos-after-01
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-02
   checkpoint: checkpoints/phase_02.pt
@@ -43,7 +49,7 @@ phases:
 - name: dm-atmos-after-02
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-03
   checkpoint: checkpoints/phase_03.pt
@@ -52,7 +58,7 @@ phases:
 - name: dm-atmos-after-03
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-04
   checkpoint: checkpoints/phase_04.pt
@@ -61,7 +67,7 @@ phases:
 - name: dm-atmos-after-04
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-05
   checkpoint: checkpoints/phase_05.pt
@@ -70,7 +76,7 @@ phases:
 - name: dm-atmos-after-05
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-06
   checkpoint: checkpoints/phase_06.pt
@@ -79,7 +85,7 @@ phases:
 - name: dm-atmos-after-06
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-07
   checkpoint: checkpoints/phase_07.pt
@@ -88,7 +94,7 @@ phases:
 - name: dm-atmos-after-07
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-08
   checkpoint: checkpoints/phase_08.pt
@@ -97,7 +103,7 @@ phases:
 - name: dm-atmos-after-08
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-09
   checkpoint: checkpoints/phase_09.pt
@@ -106,7 +112,7 @@ phases:
 - name: dm-atmos-after-09
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-10
   checkpoint: checkpoints/phase_10.pt
@@ -115,7 +121,7 @@ phases:
 - name: dm-atmos-after-10
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-11
   checkpoint: checkpoints/phase_11.pt
@@ -124,7 +130,7 @@ phases:
 - name: dm-atmos-after-11
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-12
   checkpoint: checkpoints/phase_12.pt
@@ -133,7 +139,7 @@ phases:
 - name: dm-atmos-after-12
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-13
   checkpoint: checkpoints/phase_13.pt
@@ -142,7 +148,7 @@ phases:
 - name: dm-atmos-after-13
   checkpoint: checkpoints/dm_atmos_phase.pt
   until: *id_atm
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}
 
 - name: segment-phase-14
   checkpoint: checkpoints/phase_14.pt
@@ -151,4 +157,4 @@ phases:
 - name: dm-atmos-after-14
   checkpoint: checkpoints/dm_atmos_phase.pt
   # Final phase has no `until` -- runs to end of episode.
-  adapter: {type: zernike_to_dm, n_modes: 64}
+  adapter: {type: zernike_to_dm, n_modes: 64, action_scale: 0.01}

@@ -146,6 +146,7 @@ def _build_output_adapter(adapter_spec: Optional[dict], env, device):
             env, n_zernike=n_modes,
             dm_slice=dm_slice,
             env_action_dim=env_action_dim,
+            action_scale=float(adapter_spec.get("action_scale", 1.0)),
             skip_piston=bool(adapter_spec.get("skip_piston", False)),
             normalize=str(adapter_spec.get("normalize", "wavefront_rms")),
             regularize_rcond=float(

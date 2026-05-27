@@ -126,11 +126,22 @@ class ZernikeToDMAdapter(OutputAdapter):
     """
 
     def __init__(self, M: torch.Tensor, dm_slice: Tuple[int, int],
-                 env_action_dim: int):
+                 env_action_dim: int,
+                 action_scale: float = 1.0):
         self.M = M                                  # [n_dm, n_z]
         self.n_dm, self.n_zernike = M.shape
         self.dm_start, self.dm_stop = dm_slice
         self.env_action_dim = int(env_action_dim)
+        # Per-adapter action scaling. Applied to the projected DM
+        # vector before clamping into [-1, 1]. Matches the
+        # training-time env_action_scale that was applied uniformly
+        # to the env's action vector by v5 -- since the env in a
+        # heterogeneous composite cannot apply a different scale
+        # per phase, we apply it inside the adapter so the segment
+        # phases keep their original magnitude. The dm_atmos
+        # checkpoint trained with env_action_scale=0.01 should pass
+        # action_scale=0.01 here.
+        self.action_scale = float(action_scale)
         if (self.dm_stop - self.dm_start) != self.n_dm:
             raise ValueError(
                 f"ZernikeToDMAdapter: dm_slice "
@@ -145,6 +156,8 @@ class ZernikeToDMAdapter(OutputAdapter):
                 f"{self.n_zernike}, got {native_action.shape[-1]}")
         # native_action [B, n_z]; matmul with M.T -> [B, n_dm].
         dm = native_action @ self.M.t()
+        if self.action_scale != 1.0:
+            dm = dm * self.action_scale
         dm = torch.clamp(dm, -1.0, 1.0)
         batch_shape = native_action.shape[:-1]
         full = torch.zeros(*batch_shape, self.env_action_dim,
@@ -159,6 +172,7 @@ class ZernikeToDMAdapter(OutputAdapter):
     def from_env(cls, env, n_zernike: int,
                  dm_slice: Optional[Tuple[int, int]] = None,
                  env_action_dim: Optional[int] = None,
+                 action_scale: float = 1.0,
                  skip_piston: bool = False,
                  normalize: str = "wavefront_rms",
                  regularize_rcond: float = 1e-3,
@@ -249,7 +263,8 @@ class ZernikeToDMAdapter(OutputAdapter):
                 device = (getattr(opt, "_torch_device", torch.device("cpu"))
                           if opt is not None else torch.device("cpu"))
         M = torch.tensor(M_np, dtype=torch.float32, device=device)
-        return cls(M, dm_slice, env_action_dim)
+        return cls(M, dm_slice, env_action_dim,
+                   action_scale=action_scale)
 
     def __repr__(self) -> str:
         return (f"ZernikeToDMAdapter(n_z={self.n_zernike}, "

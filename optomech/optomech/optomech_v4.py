@@ -184,6 +184,12 @@ DEFAULT_CONFIG = {
     "command_secondaries": False,
     "command_tensioners": False,
     "command_dm": False,
+    # When True, DM commands are treated as per-step deltas and
+    # accumulated into a clipped DM-state buffer; when False (default)
+    # each command overwrites the DM state with command * stroke_limit.
+    # Mirrors v5's dm_incremental_control. Required for any policy
+    # trained with deltas (zernike-atm-transfer / dm_atmos).
+    "dm_incremental_control": False,
     "command_tip_tilt": False,
 
     # --- Action parameterization -------------------------------------
@@ -573,6 +579,12 @@ class OpticalSystem(object):
         self.model_gravity_diff_motion = cfg["model_gravity_diff_motion"]
         self.model_temp_diff_motion = cfg["model_temp_diff_motion"]
         self.incremental_control = cfg["incremental_control"]
+        # Separate flag for the DM accumulator (mirrors v5's
+        # dm_incremental_control). Required for any policy trained
+        # with deltas (e.g. the dm_atmos / zernike-atm-transfer
+        # family). Defaults False to preserve historic v4 behaviour.
+        self._dm_incremental_control = bool(
+            cfg.get("dm_incremental_control", False))
         self.command_tip_tilt = cfg["command_tip_tilt"]
         self.report_time = cfg["report_time"]
         self.num_tensioners = cfg["num_tensioners"]
@@ -1273,7 +1285,22 @@ class OpticalSystem(object):
     # ================================================================
 
     def command_dm(self, dm_command):
-        """Apply a normalised [-1, 1] DM command vector."""
+        """Apply a normalised [-1, 1] DM command vector.
+
+        Two modes, mirroring v5:
+          - Absolute (default): each call overwrites the DM state
+            with command * stroke_limit. Matches the historic v4
+            behaviour.
+          - Incremental (when cfg["dm_incremental_control"]=True):
+            the command is interpreted as a per-step DELTA, scaled
+            by stroke_limit, added to the accumulator, and clipped
+            to +/- stroke_limit. Required for any policy trained
+            with dm_incremental_control=True (e.g. the dm_atmos /
+            zernike-atm-transfer family). Without it those policies'
+            outputs get misinterpreted as full-stroke absolute
+            commands and the DM oscillates at full amplitude each
+            step.
+        """
         # [v3-opt] Use pre-computed stroke limit instead of recomputing
         dm_stroke_meters = self._dm_stroke_limit_m * 2.0
         command_vector = np.array([x[0] for x in dm_command])
@@ -1282,16 +1309,33 @@ class OpticalSystem(object):
             dm_command_meters += np.random.normal(
                 0.0, self._actuator_noise_fraction * dm_stroke_meters,
                 size=dm_command_meters.shape)
-        self.dm.actuators = dm_command_meters
-        # Mirror to torch so the GPU simulate() path can see it. The
-        # CPU sim path uses self.dm.forward(...) directly; the GPU
-        # path sums _dm_actuators_t @ _dm_basis_t_flat into the
-        # pupil OPD instead (set up at __init__ when command_dm /
-        # model_ao is on).
-        if self._dm_actuators_t is not None:
-            self._dm_actuators_t = torch.tensor(
+
+        if self._dm_incremental_control:
+            # Treat as a delta on top of the existing state and clip
+            # to +/- stroke. self._dm_actuators_t is the source of
+            # truth in incremental mode; HCIPy's self.dm.actuators
+            # gets the integrated value so CPU sim paths see the
+            # same state.
+            if self._dm_actuators_t is None:
+                # Defensive: caller wired incremental_control without
+                # the GPU tensors. Initialise from HCIPy state once.
+                self._dm_actuators_t = torch.tensor(
+                    self.dm.actuators, dtype=torch.float32,
+                    device=self._torch_device)
+            delta = torch.tensor(
                 dm_command_meters, dtype=torch.float32,
                 device=self._torch_device)
+            self._dm_actuators_t = torch.clamp(
+                self._dm_actuators_t + delta,
+                -self._dm_stroke_limit_m,
+                self._dm_stroke_limit_m)
+            self.dm.actuators = self._dm_actuators_t.detach().cpu().numpy()
+        else:
+            self.dm.actuators = dm_command_meters
+            if self._dm_actuators_t is not None:
+                self._dm_actuators_t = torch.tensor(
+                    dm_command_meters, dtype=torch.float32,
+                    device=self._torch_device)
 
     # ================================================================
     # Optical simulation
