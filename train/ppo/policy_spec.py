@@ -191,12 +191,20 @@ def read_env_kwarg_overrides(spec_path: str) -> dict:
 
 
 def _build_bootstrap_action_mask(config: dict, action_dim: int,
-                                 num_apertures_hint: int = 15):
+                                 num_apertures_hint: int = 15,
+                                 adapter=None):
     """Return a torch float mask [action_dim] if this checkpoint's env
     config has bootstrap_mask_nontarget (or equivalent bootstrap-phase
     markers) set; otherwise None.
 
-    Action layout is per-segment grouped: [p0, t0, tl0, p1, t1, tl1, ...].
+    Action layout: when ``adapter`` is a
+    ``SegmentZernikePassthroughAdapter``, the native action vector is
+    ``[seg_PTT (n_seg_actions) | zernike (n_zernike)]`` and the mask
+    is built per-segment for the first block, all-ones for the
+    Zernike block (DM head is exploration-free, mirroring training).
+    Without that adapter, action_dim is assumed to tile evenly into
+    ``dof_per_seg``-DOF segment blocks (the legacy homogeneous-
+    composite case).
     """
     env_kwargs = (config or {}).get("env_kwargs", {}) or {}
     if not env_kwargs.get("bootstrap_phase", False):
@@ -210,9 +218,27 @@ def _build_bootstrap_action_mask(config: dict, action_dim: int,
     if dof_per_seg <= 0 or action_dim <= 0:
         return None
 
-    n_seg = action_dim // dof_per_seg
-    if n_seg * dof_per_seg != action_dim:
-        # Action dim doesn't evenly tile segments — skip masking to be safe.
+    # Determine the segment-PTT block width. When a passthrough adapter
+    # is in scope it tells us exactly (n_seg_actions); else infer from
+    # action_dim (and bail if it doesn't tile cleanly).
+    n_seg_actions = None
+    n_tail = 0
+    if adapter is not None:
+        # Lazy import; output_adapters is a sibling module.
+        from train.ppo.output_adapters import (
+            SegmentZernikePassthroughAdapter)
+        if isinstance(adapter, SegmentZernikePassthroughAdapter):
+            n_seg_actions = int(adapter.n_seg_actions)
+            n_tail = int(adapter.n_zernike)
+    if n_seg_actions is None:
+        n_seg = action_dim // dof_per_seg
+        if n_seg * dof_per_seg != action_dim:
+            # Doesn't tile -- skip masking to be safe.
+            return None
+        n_seg_actions = action_dim
+
+    n_seg = n_seg_actions // dof_per_seg
+    if n_seg * dof_per_seg != n_seg_actions:
         return None
 
     mask = np.zeros(action_dim, dtype=np.float32)
@@ -221,6 +247,12 @@ def _build_bootstrap_action_mask(config: dict, action_dim: int,
         if command_tip_tilt:
             mask[target * dof_per_seg + 1] = 1.0
             mask[target * dof_per_seg + 2] = 1.0
+    # Tail (DM / Zernike head): pass through unmasked. The DM head
+    # was trained with bootstrap_mask_nontarget=True restricting only
+    # the segment block; the Zernike outputs are free to fire from
+    # step 0 of every phase.
+    if n_tail > 0:
+        mask[n_seg_actions: n_seg_actions + n_tail] = 1.0
     return torch.from_numpy(mask)
 
 
@@ -320,19 +352,26 @@ def load_policy_spec(
             name = ps.get("name", os.path.basename(ckpt))
 
             # Build a hard DOF mask from this checkpoint's training env
+            # Per-phase output adapter (slice or zernike_to_dm /
+            # segment_zernike_passthrough). None in the legacy
+            # homogeneous-composite case; required when phases have
+            # heterogeneous heads. Built BEFORE the action mask so
+            # the mask builder can ask the adapter where the segment
+            # block ends and the DM (Zernike) block begins.
+            adapter = _build_output_adapter(ps.get("adapter"), env, device)
+
+            # Build a hard DOF mask from this checkpoint's training env
             # config so the composite rollout enforces the same
             # structural constraint that training did (only the target
             # segment's 3 DOFs can actuate for this phase). Sized to
             # the phase's NATIVE action dim -- the adapter is what
             # places the masked native vector into the wider env
-            # action space.
+            # action space. When the adapter is a
+            # SegmentZernikePassthroughAdapter, the mask builder is
+            # told where the segment block ends so the Zernike-DM
+            # tail is left unmasked (matches training).
             action_mask = _build_bootstrap_action_mask(
-                ckpt_cfg, model.action_dim)
-
-            # Per-phase output adapter (slice or zernike_to_dm). None
-            # in the legacy homogeneous-composite case; required when
-            # phases have heterogeneous heads.
-            adapter = _build_output_adapter(ps.get("adapter"), env, device)
+                ckpt_cfg, model.action_dim, adapter=adapter)
 
             if adapter is not None and adapter.env_action_dim != int(
                     env.action_space.shape[0]):
