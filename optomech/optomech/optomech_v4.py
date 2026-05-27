@@ -806,6 +806,38 @@ class OpticalSystem(object):
         self._torch_device = _resolve_device(cfg.get("device", "auto"))
         _v3("GPU device: %s" % self._torch_device)
 
+        # --- DM tensors for the GPU simulate() path ------------------
+        # v4's GPU simulate() previously summed ONLY the segmented-
+        # mirror surface, so command_dm() updated self.dm.actuators
+        # (HCIPy state) but the propagation never saw it. That bug
+        # was invisible while the DM was unused; surfaces here with
+        # the heterogeneous-composite rollout because the dm_atmos
+        # phase actually drives the DM. Stage a flat influence-basis
+        # tensor + actuator vector once; command_dm mirrors itself
+        # to the actuator tensor; simulate() adds dm_basis @ dm_act
+        # to the surface alongside the segment contribution.
+        self._dm_basis_t_flat = None
+        self._dm_actuators_t = None
+        if hasattr(self, "dm") and self.dm is not None:
+            try:
+                inf_list = [np.asarray(m) for m in self.dm.influence_functions]
+                n_dm = len(inf_list)
+                dm_basis = np.stack(
+                    [m.reshape(-1) for m in inf_list], axis=0)  # [n_dm, H*W]
+                self._dm_basis_t_flat = torch.tensor(
+                    dm_basis, dtype=torch.float32,
+                    device=self._torch_device)
+                self._dm_actuators_t = torch.zeros(
+                    n_dm, dtype=torch.float32,
+                    device=self._torch_device)
+                _v3(f"DM tensors staged: n_dm={n_dm}, basis "
+                    f"{self._dm_basis_t_flat.shape}")
+            except Exception as e:
+                _v3(f"DM tensor staging failed ({e}); GPU simulate "
+                    f"won't include DM surface.")
+                self._dm_basis_t_flat = None
+                self._dm_actuators_t = None
+
         # --- GPU-native Kolmogorov atmosphere (matches v5) ----------
         # When env_kwargs["atmosphere"] is a dict, build a single-env
         # KolmogorovAtmosphere mirroring v5's wiring so rollouts in v4
@@ -1251,6 +1283,15 @@ class OpticalSystem(object):
                 0.0, self._actuator_noise_fraction * dm_stroke_meters,
                 size=dm_command_meters.shape)
         self.dm.actuators = dm_command_meters
+        # Mirror to torch so the GPU simulate() path can see it. The
+        # CPU sim path uses self.dm.forward(...) directly; the GPU
+        # path sums _dm_actuators_t @ _dm_basis_t_flat into the
+        # pupil OPD instead (set up at __init__ when command_dm /
+        # model_ao is on).
+        if self._dm_actuators_t is not None:
+            self._dm_actuators_t = torch.tensor(
+                dm_command_meters, dtype=torch.float32,
+                device=self._torch_device)
 
     # ================================================================
     # Optical simulation
@@ -1327,6 +1368,18 @@ class OpticalSystem(object):
         # Segmented mirror: surface = sum(actuators_i * influence_i)
         # then E *= exp(2j * k * surface)
         surface = torch.einsum('i,ihw->hw', self._actuators_t, self._influence_t)
+
+        # DM contribution (HCIPy DeformableMirror modelled via its
+        # flat influence basis on GPU). Mirrors v5's wiring; without
+        # this, command_dm updates HCIPy state but the GPU sim path
+        # ignores it.
+        if (self._dm_actuators_t is not None
+                and self._dm_basis_t_flat is not None):
+            H, W = surface.shape
+            dm_surface = torch.matmul(
+                self._dm_actuators_t, self._dm_basis_t_flat
+            ).reshape(H, W)
+            surface = surface + dm_surface
 
         # GPU-native Kolmogorov atmosphere (matches v5). The 0.5 factor
         # compensates for the 2x reflective scaling applied below
