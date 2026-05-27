@@ -514,16 +514,38 @@ class BatchedOptomechEnv(gym.vector.VectorEnv):
         if self._bootstrap and self._bootstrap_mask_nontarget:
             n_seg = self._num_apertures
             dof_per_seg = self._n_dof_per_seg
-            n_dof = n_seg * dof_per_seg
-            mask = np.zeros(n_dof, dtype=np.float32)
+            n_seg_dof = n_seg * dof_per_seg
+            # Build the segment-block portion of the mask: only the
+            # target segment's piston (and tip/tilt when commanded)
+            # gets a 1; everything else in the segment block is zero.
+            seg_mask = np.zeros(n_seg_dof, dtype=np.float32)
             target = self._phased_count
             if target < n_seg:
-                mask[target * dof_per_seg] = 1.0           # piston
+                seg_mask[target * dof_per_seg] = 1.0       # piston
                 if self._command_tip_tilt:
-                    mask[target * dof_per_seg + 1] = 1.0   # tip
-                    mask[target * dof_per_seg + 2] = 1.0   # tilt
+                    seg_mask[target * dof_per_seg + 1] = 1.0   # tip
+                    seg_mask[target * dof_per_seg + 2] = 1.0   # tilt
+            # Pad the mask to the full env action_dim. The env's action
+            # layout is [seg_actions | dm_actions] (n_seg_actions +
+            # n_dm_acts). When command_dm is on but n_seg_actions == 0
+            # (segment-disabled / DM-only), the seg block is empty;
+            # otherwise the seg block sits up front. The DM block, when
+            # present, gets all 1's -- bootstrap_mask_nontarget is a
+            # constraint on segment-PTT exploration only; the DM head
+            # (when commanded separately) should pass through unmasked.
+            # Without this padding the mask is 45-wide but actions are
+            # 1270-wide and the multiply broadcasts incorrectly /
+            # errors.
+            mask_parts = []
+            if self._n_seg_actions > 0:
+                mask_parts.append(seg_mask[:self._n_seg_actions])
+            if self._n_dm_acts > 0:
+                mask_parts.append(np.ones(self._n_dm_acts, dtype=np.float32))
+            full_mask = (np.concatenate(mask_parts)
+                         if mask_parts else seg_mask)
             self._bootstrap_action_mask_t = torch.tensor(
-                mask, dtype=torch.float32, device=self.dev).unsqueeze(0)  # [1, n_dof]
+                full_mask, dtype=torch.float32,
+                device=self.dev).unsqueeze(0)              # [1, action_dim]
 
         # Per-DOF action penalty weights (bootstrap mode)
         # Action layout is per-segment grouped: [p0,t0,tl0, p1,t1,tl1, ...]
