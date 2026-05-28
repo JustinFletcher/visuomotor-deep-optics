@@ -193,6 +193,57 @@ def _submit_seed(node_name: str, phase: int, src_ckpt: str,
         "node": node_name,
         "out_dir": out_dir,
         "job_id": job_id,
+        "proc": None,
+        "runner": "sbatch",
+        "submitted_at": time.time(),
+    }
+
+
+def _submit_seed_local(phase: int, src_ckpt: str,
+                       phase_root: Path, extra_args: str,
+                       total_timesteps: int,
+                       gpu_idx: int = 0) -> Optional[dict]:
+    """Spawn a worker as a local subprocess on the master's own node,
+    pinned to a single local GPU via CUDA_VISIBLE_DEVICES. Uses the
+    GPU the master's sbatch was already allocated -- otherwise idle
+    -- so we don't lose a node slot to the orchestrator. Mirrors
+    finetune_agent_master._start_local_phase."""
+    seed = secrets.randbelow(_MAX_SEED)
+    out_dir = phase_root / f"seed_{seed}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = out_dir / "_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_log = open(log_dir / "local.out", "w")
+    err_log = open(log_dir / "local.err", "w")
+    cmd = [
+        sys.executable, "-u",
+        os.path.join(_REPO_ROOT, _TRAIN_SCRIPT),
+        "--hpc",
+        "--phased-count", str(phase),
+        "--source-checkpoint", str(src_ckpt),
+        "--seed", str(seed),
+        "--total-timesteps", str(total_timesteps),
+        "--run-dir", str(out_dir),
+    ] + shlex.split(extra_args)
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=HPC_CODE_DIR,
+            stdout=out_log, stderr=err_log, env=env)
+    except Exception as e:
+        print(f"  [submit-local] spawn FAILED: {e}")
+        return None
+    node_name = os.environ.get("HOSTNAME") or "localhost"
+    print(f"  [submit-local] phase {phase:02d} seed {seed} on "
+          f"{node_name} (GPU {gpu_idx}) -> pid {proc.pid}")
+    return {
+        "seed": seed,
+        "node": node_name,
+        "out_dir": out_dir,
+        "job_id": None,
+        "proc": proc,
+        "runner": "local",
         "submitted_at": time.time(),
     }
 
@@ -214,7 +265,16 @@ def _pick_nodes(n: int, exclude: set[str]) -> list:
 # Job liveness check
 # --------------------------------------------------------------------------
 
-def _is_alive(job_id: str) -> bool:
+def _slot_is_alive(slot: dict) -> bool:
+    """Liveness check that branches on runner type."""
+    if slot.get("runner") == "local":
+        proc = slot.get("proc")
+        if proc is None:
+            return False
+        return proc.poll() is None
+    job_id = slot.get("job_id")
+    if not job_id:
+        return False
     try:
         out = subprocess.run(
             ["squeue", "-h", "-j", job_id, "-o", "%T"],
@@ -230,8 +290,19 @@ def _is_alive(job_id: str) -> bool:
         "COMPLETED", "CANCELLED", "FAILED", "TIMEOUT", "OUT_OF_MEMORY"}
 
 
-def _scancel(job_id: str) -> None:
-    subprocess.run(["scancel", job_id], capture_output=True, text=True)
+def _slot_cancel(slot: dict) -> None:
+    """Cancellation that branches on runner type."""
+    if slot.get("runner") == "local":
+        proc = slot.get("proc")
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        return
+    job_id = slot.get("job_id")
+    if job_id:
+        subprocess.run(["scancel", job_id], capture_output=True, text=True)
 
 
 # --------------------------------------------------------------------------
@@ -458,18 +529,43 @@ def main():
         active: dict[int, dict] = {}    # seed -> slot
         nodes_in_use = set()
 
-        # Initial fill.
-        nodes = _pick_nodes(args.max_nodes, exclude=nodes_in_use)
-        if len(nodes) < args.max_nodes:
-            print(f"  [sinfo] WARNING: only {len(nodes)}/{args.max_nodes} "
-                  f"idle nodes available; starting with that.")
-        for n in nodes:
-            slot = _submit_seed(
-                n.name, phase, str(src_ckpt), phase_root, extra_args,
-                args.slurm_time, args.max_steps_per_run)
+        # Initial fill. The master node always counts as one of the
+        # max_nodes slots: it runs one worker as a local subprocess
+        # on its already-allocated GPU (CUDA_VISIBLE_DEVICES=0) so we
+        # don't lose a node slot to the orchestrator. The remaining
+        # max_nodes-1 slots go to sbatch workers on other nodes.
+        master_node = (os.environ.get("SLURMD_NODENAME")
+                       or os.environ.get("HOSTNAME")
+                       or "localhost")
+        # Reserve master's node so sinfo doesn't try to submit a
+        # second sbatch onto it (which the cluster would reject).
+        nodes_in_use.add(master_node)
+
+        # Local worker on the master node.
+        if args.max_nodes >= 1:
+            slot = _submit_seed_local(
+                phase, str(src_ckpt), phase_root, extra_args,
+                args.max_steps_per_run, gpu_idx=0)
             if slot:
+                slot["node"] = master_node
                 active[slot["seed"]] = slot
-                nodes_in_use.add(n.name)
+
+        # Remote workers on the other max_nodes-1 nodes.
+        n_remote = max(0, args.max_nodes - 1)
+        if n_remote > 0:
+            nodes = _pick_nodes(n_remote, exclude=nodes_in_use)
+            if len(nodes) < n_remote:
+                print(f"  [sinfo] WARNING: only {len(nodes)}/{n_remote} "
+                      f"idle remote nodes available "
+                      f"(+1 local on {master_node}).")
+            for n in nodes:
+                slot = _submit_seed(
+                    n.name, phase, str(src_ckpt), phase_root,
+                    extra_args, args.slurm_time,
+                    args.max_steps_per_run)
+                if slot:
+                    active[slot["seed"]] = slot
+                    nodes_in_use.add(n.name)
 
         # Eval loop.
         winner = None
@@ -479,17 +575,23 @@ def main():
             except KeyboardInterrupt:
                 print(f"\nInterrupted -- cancelling phase {phase} runs.")
                 for sl in active.values():
-                    _scancel(sl["job_id"])
+                    _slot_cancel(sl)
                 sys.exit(130)
 
-            # Sync liveness from squeue.
+            # Sync liveness: branch on runner type (local subprocess
+            # vs sbatch).
             dead = [s for s, sl in active.items()
-                    if not _is_alive(sl["job_id"])]
+                    if not _slot_is_alive(sl)]
             for s in dead:
                 sl = active.pop(s)
-                nodes_in_use.discard(sl["node"])
+                # Only free a remote node slot; the master's local
+                # subprocess can be re-spawned on the same node.
+                if sl["runner"] != "local":
+                    nodes_in_use.discard(sl["node"])
+                ident = (f"pid {sl['proc'].pid}" if sl.get("proc")
+                         else f"job {sl.get('job_id')}")
                 print(f"  [reap] phase {phase} seed {s} on "
-                      f"{sl['node']} (job {sl['job_id']}) gone")
+                      f"{sl['node']} ({ident}) gone")
 
             # Eval each live slot.
             print(f"\n  [tick] phase {phase}: {len(active)} alive")
@@ -513,21 +615,34 @@ def main():
                 seed, sl, ck, m = winner
                 print(f"\n  *** WINNER: phase {phase} seed {seed} "
                       f"strehl={m:.4f} ***")
-                # Promote best.pt if available; else latest.pt.
                 best = _find_best_checkpoint(sl["out_dir"]) or ck
                 _record_winner(winners_dir, phase, best, seed,
                                sl["out_dir"])
                 # Cancel all other runs for this phase.
                 for sd, other in active.items():
                     if sd != seed:
-                        _scancel(other["job_id"])
-                        print(f"    cancelled seed {sd} (job "
-                              f"{other['job_id']})")
+                        _slot_cancel(other)
+                        ident = (f"pid {other['proc'].pid}"
+                                 if other.get("proc")
+                                 else f"job {other.get('job_id')}")
+                        print(f"    cancelled seed {sd} ({ident})")
                 break
 
-            # Replace dead slots with fresh seeds on freshly-idle
-            # nodes.
-            shortfall = args.max_nodes - len(active)
+            # Replace dead slots with fresh seeds. The local slot
+            # gets refilled in-place on the master node; remote
+            # slots get fresh sinfo picks.
+            has_local = any(sl["runner"] == "local"
+                            for sl in active.values())
+            if not has_local:
+                slot = _submit_seed_local(
+                    phase, str(src_ckpt), phase_root, extra_args,
+                    args.max_steps_per_run, gpu_idx=0)
+                if slot:
+                    slot["node"] = master_node
+                    active[slot["seed"]] = slot
+
+            shortfall = (args.max_nodes
+                         - sum(1 for _ in active.values()))
             if shortfall > 0:
                 fresh = _pick_nodes(shortfall, exclude=nodes_in_use)
                 for n in fresh:
