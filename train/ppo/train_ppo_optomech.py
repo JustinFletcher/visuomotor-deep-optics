@@ -2498,6 +2498,14 @@ def run_main(local_config: dict, hpc_config: dict):
         help="L1 action penalty weight (overrides env config)",
     )
     parser.add_argument(
+        "--total-timesteps",
+        type=int,
+        default=None,
+        help="Cap on total training timesteps (overrides config). "
+             "Used by the autotrainer to bound per-seed runtime at "
+             "50M when running parallel seed sweeps.",
+    )
+    parser.add_argument(
         "--model-save-interval",
         type=int,
         default=None,
@@ -2595,6 +2603,9 @@ def run_main(local_config: dict, hpc_config: dict):
     # Override learning rate if specified on command line
     if cli.learning_rate is not None:
         config["learning_rate"] = cli.learning_rate
+
+    if cli.total_timesteps is not None:
+        config["total_timesteps"] = cli.total_timesteps
 
     # Pretrained encoder
     config["pretrained_encoder"] = cli.pretrained_encoder
