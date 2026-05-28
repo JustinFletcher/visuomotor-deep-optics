@@ -85,6 +85,13 @@ def main():
                         "trades a few wasted submissions for "
                         "resilience to transient OOM / GPFS / node-"
                         "health hiccups overnight.")
+    p.add_argument("--phases", type=str, default=None,
+                   metavar="LIST",
+                   help="Comma-separated phase indices to schedule "
+                        "(e.g. '1,4,11'). Default: all 15 phases. "
+                        "Use to retrain only the failed phases from "
+                        "a previous run -- pair with the "
+                        "failed_phases output of rollout_per_phase.py.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print the launch_finetune_agent.py command "
                         "without invoking it.")
@@ -119,6 +126,8 @@ def main():
     if args.slurm_time:
         cmd += ["--slurm-time", args.slurm_time]
     cmd += ["--max-retries", str(args.max_retries)]
+    if args.phases:
+        cmd += ["--phases", args.phases]
     if args.dry_run:
         cmd += ["--dry-run"]
 

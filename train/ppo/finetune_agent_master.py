@@ -140,6 +140,11 @@ class MasterState:
     # int overrides the auto-default. Final per-node pack count is
     # min(max_phases_per_node, node.gpu_count, len(pending)).
     max_phases_per_node: Optional[int] = None
+    # Optional phase-index filter. When set to a frozenset of ints,
+    # only those phases are scheduled (all others silently skipped).
+    # None means "every phase in the source agent manifest" (legacy).
+    # Used to retrain just the failed phases from a per-phase eval.
+    phases_filter: Optional[frozenset] = None
 
 
 # --------------------------------------------------------------------------
@@ -216,6 +221,13 @@ def _build_phase_jobs(state: MasterState) -> list[PhaseJob]:
     out = []
     for ph in state.source_agent["phases"]:
         idx = int(ph["phase"])
+        # Optional phase-index filter (retry mode): when state.phases
+        # is a non-None set, only schedule those phase indices. All
+        # other phases are silently skipped. Used to retrain just the
+        # failed phases from a per-phase eval without disturbing the
+        # already-passing ones.
+        if state.phases_filter is not None and idx not in state.phases_filter:
+            continue
         src = os.path.join(state.source_agent_dir, ph["bundle_path"])
         if not os.path.isfile(src):
             raise FileNotFoundError(
@@ -812,6 +824,9 @@ def run_master(args) -> int:
         train_script=(args.train_script or None),
         extra_args=(args.extra_args or ""),
         max_phases_per_node=args.max_phases_per_node,
+        phases_filter=(
+            frozenset(int(x) for x in args.phases.split(","))
+            if args.phases else None),
     )
 
     # Save the resolved config alongside the runs.
@@ -925,6 +940,15 @@ def main():
                              "max_nodes), so phases spread as thinly "
                              "as the node budget allows. Set "
                              "explicitly to force a different pack.")
+    parser.add_argument("--phases", type=str, default=None,
+                        metavar="LIST",
+                        help="Comma-separated list of phase indices to "
+                             "include (e.g. '1,4,11'). Default: all "
+                             "phases from the source agent manifest. "
+                             "Use this to retry only the failed phases "
+                             "from a previous run -- pair with the "
+                             "failed_phases output of "
+                             "rollout_per_phase.py's summary.json.")
     parser.add_argument("--output-root", required=True,
                         help="New dir under agent_finetuning/...; "
                              "must NOT be inside --source-agent.")

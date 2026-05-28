@@ -72,6 +72,8 @@ def _build_master_sbatch(args, run_id: str, output_root: str,
     max_per_node_flag = (
         f" --max-phases-per-node {args.max_phases_per_node}"
         if args.max_phases_per_node is not None else "")
+    phases_flag = (f" --phases {args.phases}"
+                   if args.phases else "")
     return textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={job_name}
@@ -95,7 +97,7 @@ def _build_master_sbatch(args, run_id: str, output_root: str,
             --gpus-per-node {gpus_per_node} \\
             --poll-interval-s {args.poll_interval_s} \\
             --max-retries {args.max_retries} \\
-            --slurm-time {args.slurm_time}{train_script_flag}{extra_args_flag}{max_per_node_flag}{resume_flag}
+            --slurm-time {args.slurm_time}{train_script_flag}{extra_args_flag}{max_per_node_flag}{phases_flag}{resume_flag}
     """)
 
 
@@ -132,6 +134,12 @@ def main():
                              "max_nodes), so phases spread as thinly "
                              "as the node budget allows. Set "
                              "explicitly to override.")
+    parser.add_argument("--phases", type=str, default=None,
+                        metavar="LIST",
+                        help="Comma-separated phase indices to "
+                             "schedule (e.g. '1,4,11'). Default: all "
+                             "phases from the source agent manifest. "
+                             "Use to retry only the failed phases.")
     parser.add_argument("--output-root", default=None,
                         help="Output dir for the master + per-phase runs. "
                              "Default: agent_finetuning/"
