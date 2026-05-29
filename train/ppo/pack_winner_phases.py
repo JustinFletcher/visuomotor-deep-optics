@@ -238,6 +238,117 @@ def _promote_one_seed(seed_dir: Path, dst_dir: Path,
     print(f"  phases missing: {manifest['phases_missing']}")
 
 
+def _dir_size_bytes(path: Path) -> int:
+    """Recursive byte total of a directory. Used for the cleanup
+    summary so the user knows what they're about to free."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            fp = os.path.join(root, f)
+            try:
+                total += os.path.getsize(fp)
+            except OSError:
+                pass
+    return total
+
+
+def _fmt_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def _clean_promoted(scan_dir: Path, winners_dir: Path,
+                    dry_run: bool) -> None:
+    """Delete every ``<scan_dir>/phase_NN/`` whose NN appears in
+    ``<winners_dir>/manifest.json`` phases_present.
+
+    Defensive: refuses to run if winners_dir's manifest can't be
+    read, since the safest interpretation of "no manifest" is "no
+    phases promoted" -- which would delete nothing -- but we'd
+    rather fail loudly than silently no-op.
+    """
+    scan_dir = scan_dir.resolve()
+    winners_dir = winners_dir.resolve()
+
+    if not scan_dir.is_dir():
+        print(f"ERROR: --clean-promoted dir not a directory: {scan_dir}")
+        sys.exit(1)
+
+    manifest_path = winners_dir / "manifest.json"
+    if not manifest_path.is_file():
+        print(f"ERROR: winners manifest not found at {manifest_path}. "
+              f"Refusing to clean -- without the manifest we don't "
+              f"know which phases are safe to delete.")
+        sys.exit(1)
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    present = set(int(x) for x in manifest.get("phases_present", []))
+    if not present:
+        print(f"Winners agent has no phases promoted yet "
+              f"(phases_present empty). Nothing to clean.")
+        return
+
+    print(f"Cleanup mode  ({'DRY-RUN' if dry_run else 'LIVE'})")
+    print(f"  scan dir:          {scan_dir}")
+    print(f"  winners manifest:  {manifest_path}")
+    print(f"  phases_present:    {sorted(present)}")
+    print()
+
+    # Iterate over every phase_NN dir under the scan dir. Match by
+    # numeric suffix; ignore non-conforming entries.
+    candidates: list[tuple[int, Path, int]] = []
+    skipped: list[Path] = []
+    for entry in sorted(scan_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if not name.startswith("phase_"):
+            continue
+        try:
+            idx = int(name.split("_", 1)[1])
+        except ValueError:
+            continue
+        if idx not in present:
+            skipped.append(entry)
+            continue
+        size = _dir_size_bytes(entry)
+        candidates.append((idx, entry, size))
+
+    if skipped:
+        print(f"  Skipped (not yet promoted):")
+        for s in skipped:
+            print(f"    {s.name}")
+        print()
+
+    if not candidates:
+        print("  No promoted-phase dirs found under scan dir. "
+              "Nothing to do.")
+        return
+
+    total = sum(s for _, _, s in candidates)
+    print(f"  Candidates to remove ({len(candidates)}):")
+    for idx, path, size in candidates:
+        print(f"    phase_{idx:02d}   {_fmt_size(size):>10}   {path}")
+    print(f"  TOTAL would free: {_fmt_size(total)}")
+    print()
+
+    if dry_run:
+        print("  --dry-run set; not deleting. Re-run without "
+              "--dry-run to apply.")
+        return
+
+    for idx, path, _ in candidates:
+        print(f"  rm -rf {path}")
+        try:
+            shutil.rmtree(path)
+        except OSError as e:
+            print(f"    FAILED: {e}")
+    print(f"\n  Done. Reclaimed ~{_fmt_size(total)}.")
+
+
 def main():
     p = argparse.ArgumentParser(
         description="Snapshot per-phase checkpoints into a winner-"
@@ -282,10 +393,28 @@ def main():
                         "phases already present unless --force).")
     p.add_argument("--force", action="store_true",
                    help="Overwrite phase checkpoints already in --dst.")
+    p.add_argument("--clean-promoted", default=None, metavar="DIR",
+                   help="Cleanup mode: scan DIR (an autotrain run "
+                        "root with phase_NN/ subdirs) and delete each "
+                        "phase subdir whose index is already in the "
+                        "--dst winners agent's phases_present list. "
+                        "Reclaims the disk used by losing seeds + "
+                        "stale checkpoints once a phase is locked "
+                        "in. Combine with --dry-run to preview.")
+    p.add_argument("--dry-run", action="store_true",
+                   help="In --clean-promoted mode, list what would be "
+                        "removed without actually removing.")
     args = p.parse_args()
 
-    # Mode dispatch: --seed-dir takes precedence; --eval-summary +
-    # --source for bulk mode; exactly one required.
+    # Mode dispatch: cleanup mode is exclusive (no promotion);
+    # --seed-dir takes precedence over bulk mode for promotions.
+    if args.clean_promoted:
+        _clean_promoted(
+            scan_dir=Path(args.clean_promoted),
+            winners_dir=Path(args.dst),
+            dry_run=args.dry_run)
+        return
+
     if args.seed_dir:
         if args.eval_summary or args.source:
             print("WARN: --eval-summary / --source ignored in "
@@ -300,8 +429,8 @@ def main():
         return
 
     if not args.eval_summary or not args.source:
-        p.error("either --seed-dir, or both --eval-summary and "
-                "--source, must be provided.")
+        p.error("either --seed-dir, --clean-promoted, or both "
+                "--eval-summary and --source, must be provided.")
 
     with open(args.eval_summary) as f:
         summary = json.load(f)
