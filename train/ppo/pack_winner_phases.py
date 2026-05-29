@@ -38,6 +38,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 
 _NUM_PHASES = 15
@@ -71,22 +72,236 @@ def _find_source_checkpoint(source: str, phase_idx: int) -> Path | None:
     return None
 
 
+def _phase_from_seed_dir(seed_dir: Path) -> int:
+    """Infer the phase index from an autotrain seed-dir path. Expects
+    the layout ``.../phase_NN/seed_SSSS/``. Returns the int NN."""
+    parent = seed_dir.parent.name
+    if not parent.startswith("phase_"):
+        raise ValueError(
+            f"--seed-dir parent must be named phase_NN, got "
+            f"{parent!r} (full path: {seed_dir})")
+    try:
+        return int(parent.split("_", 1)[1])
+    except ValueError as e:
+        raise ValueError(
+            f"could not parse phase index from {parent!r}: {e}")
+
+
+def _seed_from_seed_dir(seed_dir: Path) -> Optional[int]:
+    """Pull the seed value out of ``seed_SSSS`` for manifest
+    bookkeeping. None when the dir isn't named that way."""
+    name = seed_dir.name
+    if not name.startswith("seed_"):
+        return None
+    try:
+        return int(name.split("_", 1)[1])
+    except ValueError:
+        return None
+
+
+def _best_or_latest_in_seed_dir(seed_dir: Path,
+                                prefer: str = "best") -> Optional[Path]:
+    """Find the most-recently-modified ``best.pt`` (or ``latest.pt``)
+    under ``<seed_dir>/ppo_optomech_*/checkpoints/``. Returns None if
+    the dir layout is unexpected or no candidates exist."""
+    cands = []
+    primary = prefer
+    fallback = "latest" if prefer == "best" else "best"
+    for rd in seed_dir.glob("ppo_optomech_*"):
+        for name in (f"{primary}.pt", f"{fallback}.pt"):
+            ck = rd / "checkpoints" / name
+            if ck.is_file():
+                cands.append(ck)
+                break
+    if not cands:
+        return None
+    cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return cands[0]
+
+
+def _update_manifest_for_phase(manifest_path: Path, dst_dir: Path,
+                               phase: int,
+                               src_ckpt: Path,
+                               history_entry: dict) -> dict:
+    """Read (or seed) the manifest, mark ``phase`` as present, append
+    a history entry, write back. Returns the updated manifest dict."""
+    if manifest_path.is_file():
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+    else:
+        manifest = {
+            "agent_name": dst_dir.name,
+            "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                          time.gmtime()),
+            "description": (
+                "Winner-only segment_dm_v2 agent. Contains only the "
+                "per-phase checkpoints that passed evaluation, "
+                "incrementally merged."),
+            "num_phases_target": _NUM_PHASES,
+            "phases_present": [],
+            "phases_missing": list(range(_NUM_PHASES)),
+            "pack_history": [],
+        }
+    present = set(int(x) for x in manifest.get("phases_present", []))
+    missing = set(int(x) for x in manifest.get("phases_missing", []))
+    present.add(phase)
+    missing.discard(phase)
+    manifest["phases_present"] = sorted(present)
+    manifest["phases_missing"] = sorted(missing)
+    manifest.setdefault("pack_history", []).append(history_entry)
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    return manifest
+
+
+def _write_readme(dst_dir: Path, manifest: dict) -> None:
+    """Refresh the dst README with the current present/missing
+    counts. Called after every successful promote."""
+    present = manifest.get("phases_present", [])
+    missing = manifest.get("phases_missing", [])
+    readme = f"""# {dst_dir.name}
+
+Winner-only segment_dm_v2 agent (incrementally merged).
+
+phases present ({len(present)}/{_NUM_PHASES}): {sorted(present)}
+phases missing ({len(missing)}/{_NUM_PHASES}): {sorted(missing)}
+
+This agent is INCOMPLETE while phases are missing. Rollouts via
+the standard composite spec will fail on any missing phase. Use
+only after every phase is present, or run rollout_per_phase.py
+against this dir to test the present ones individually.
+
+To complete: re-train the missing phases (e.g. via the autotrainer)
+and promote the winning seed for each with::
+
+    poetry run python train/ppo/pack_winner_phases.py \\
+        --seed-dir <autotrain_run>/phase_NN/seed_SSSS/ \\
+        --dst {dst_dir} \\
+        --reason "<why this seed was accepted>"
+"""
+    with open(dst_dir / "README.md", "w") as f:
+        f.write(readme)
+
+
+def _promote_one_seed(seed_dir: Path, dst_dir: Path,
+                      phase_override: Optional[int],
+                      prefer: str, reason: Optional[str],
+                      force: bool) -> None:
+    """One-seed promote: copy <seed_dir>/ppo_optomech_*/checkpoints/
+    {best,latest}.pt into the dst's checkpoints/phase_NN.pt and
+    update the manifest. Phase is inferred from the seed_dir's
+    parent dir name unless ``phase_override`` is set."""
+    seed_dir = seed_dir.resolve()
+    if not seed_dir.is_dir():
+        print(f"ERROR: --seed-dir not a directory: {seed_dir}")
+        sys.exit(1)
+    phase = (phase_override if phase_override is not None
+             else _phase_from_seed_dir(seed_dir))
+    seed_val = _seed_from_seed_dir(seed_dir)
+    src_ckpt = _best_or_latest_in_seed_dir(seed_dir, prefer=prefer)
+    if src_ckpt is None:
+        print(f"ERROR: no {prefer}.pt or fallback in "
+              f"{seed_dir}/ppo_optomech_*/checkpoints/")
+        sys.exit(1)
+
+    dst_dir = dst_dir.resolve()
+    ck_dir = dst_dir / "checkpoints"
+    ck_dir.mkdir(parents=True, exist_ok=True)
+    dst_ck = ck_dir / f"phase_{phase:02d}.pt"
+    if dst_ck.is_file() and not force:
+        print(f"ERROR: phase {phase} already promoted in {dst_dir} "
+              f"({dst_ck}). Pass --force to overwrite.")
+        sys.exit(1)
+    shutil.copyfile(src_ckpt, dst_ck)
+    size_mb = dst_ck.stat().st_size / 1024 / 1024
+    print(f"  copied {src_ckpt} -> {dst_ck} ({size_mb:.1f} MB)")
+
+    history_entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "source": "promote_seed",
+        "phase_winners": [{
+            "phase": phase,
+            "seed": seed_val,
+            "source_checkpoint": str(src_ckpt),
+            "source_seed_dir": str(seed_dir),
+            "reason": reason or "(not provided)",
+        }],
+    }
+    manifest = _update_manifest_for_phase(
+        dst_dir / "manifest.json", dst_dir, phase, src_ckpt,
+        history_entry)
+    _write_readme(dst_dir, manifest)
+
+    print()
+    print(f"  phase {phase} promoted (seed {seed_val}).")
+    print(f"  phases present: {manifest['phases_present']}")
+    print(f"  phases missing: {manifest['phases_missing']}")
+
+
 def main():
     p = argparse.ArgumentParser(
-        description="Snapshot passing per-phase checkpoints into a "
-                    "winner-only agent dir.")
-    p.add_argument("--eval-summary", required=True,
-                   help="Path to summary.json from rollout_per_phase.py.")
-    p.add_argument("--source", required=True,
-                   help="Directory to pull checkpoints from "
+        description="Snapshot per-phase checkpoints into a winner-"
+                    "only agent dir.\n\n"
+                    "Two modes:\n"
+                    "  1. Bulk promote from an eval summary (default).\n"
+                    "  2. Single-seed promote via --seed-dir (for one-"
+                    "off accepts after a fail-but-close autotrain "
+                    "run).",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--eval-summary", default=None,
+                   help="Path to summary.json from rollout_per_phase.py "
+                        "(bulk mode). Use with --source.")
+    p.add_argument("--source", default=None,
+                   help="Bulk mode: dir to pull checkpoints from "
                         "(agent-dir or run-dir layout, auto-detected).")
+    p.add_argument("--seed-dir", default=None,
+                   help="Single-seed promote mode: path to one "
+                        "autotrain seed dir, e.g. <autotrain_run>/"
+                        "phase_03/seed_167681808/. Phase index is "
+                        "auto-detected from the parent dir name "
+                        "(override with --phase). The most recently "
+                        "modified best.pt under <seed-dir>/ppo_"
+                        "optomech_*/checkpoints/ is promoted; falls "
+                        "back to latest.pt if best.pt isn't there.")
+    p.add_argument("--phase", type=int, default=None,
+                   help="Explicit phase index for --seed-dir mode. "
+                        "Default: inferred from seed-dir parent.")
+    p.add_argument("--prefer", choices=["best", "latest"],
+                   default="best",
+                   help="Which checkpoint flavour to prefer in "
+                        "--seed-dir mode (default: best, fall back "
+                        "to latest if missing).")
+    p.add_argument("--reason", default=None,
+                   help="Optional one-line note logged into the "
+                        "manifest's pack_history for this promotion. "
+                        "Use it to record why a sub-threshold seed "
+                        "was accepted.")
     p.add_argument("--dst", required=True,
                    help="Destination agent dir. Created if missing; "
-                        "merged into if it already exists (skip phases "
-                        "already present unless --force).")
+                        "merged into if it already exists (skip "
+                        "phases already present unless --force).")
     p.add_argument("--force", action="store_true",
                    help="Overwrite phase checkpoints already in --dst.")
     args = p.parse_args()
+
+    # Mode dispatch: --seed-dir takes precedence; --eval-summary +
+    # --source for bulk mode; exactly one required.
+    if args.seed_dir:
+        if args.eval_summary or args.source:
+            print("WARN: --eval-summary / --source ignored in "
+                  "--seed-dir mode.")
+        _promote_one_seed(
+            Path(args.seed_dir),
+            Path(args.dst),
+            phase_override=args.phase,
+            prefer=args.prefer,
+            reason=args.reason,
+            force=args.force)
+        return
+
+    if not args.eval_summary or not args.source:
+        p.error("either --seed-dir, or both --eval-summary and "
+                "--source, must be provided.")
 
     with open(args.eval_summary) as f:
         summary = json.load(f)
