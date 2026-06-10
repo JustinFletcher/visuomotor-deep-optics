@@ -20,9 +20,9 @@ matplotlib.rcParams.update({
     "font.family": "serif",
     "font.serif": ["cmr10"],
     "axes.formatter.use_mathtext": True,
-    "axes.labelsize": 11,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
+    "axes.labelsize": 13,
+    "xtick.labelsize": 11,
+    "ytick.labelsize": 11,
 })
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, TwoSlopeNorm
@@ -165,20 +165,17 @@ def extract(env, seed=42, force_perfect=False, integration_seconds=0.1,
 
     strehl = info.get("strehl", 0.0) if isinstance(info, dict) else 0.0
 
-    # Physical extents — pupil from grid, focal in λ/D
+    # Physical extents — pupil from grid, focal in λ/D. Both focal
+    # values come from the optical system itself (set by the aperture
+    # branch in _build_aperture) so the figure can never drift out of
+    # sync with the sim geometry. Previously these were hardcoded
+    # per-aperture lookup tables here, which went stale when the
+    # nanoelfplus design changed (4-mirror bench update) and silently
+    # mislabeled its focal axes by 14x.
     pupil_diameter_mm = float(osys.pupil_grid.x.max() - osys.pupil_grid.x.min()) * 1e3
     pupil_diameter_m = pupil_diameter_mm * 1e-3
-    _FOCAL_SIZE_M = {
-        "nanoelf": 8.192e-5, "nanoelfplus": 8.192e-5,
-        "elf": 3.611e-4, "circular": 8.192e-4,
-    }
-    _FOCAL_LENGTH_M = {
-        "nanoelf": 1.018, "nanoelfplus": 1.018,
-        "elf": 32.5, "circular": 200.0,
-    }
-    ap_key = osys._cfg["aperture_type"]
-    focal_size_m = _FOCAL_SIZE_M.get(ap_key, 8.192e-5)
-    focal_length_m = _FOCAL_LENGTH_M.get(ap_key, 1.018)
+    focal_size_m = osys._focal_plane_image_size_meters
+    focal_length_m = osys._focal_length
     wavelength_m = osys.wavelength
     # λ/D in meters at the focal plane = λ * f / D
     lam_over_d_m = wavelength_m * focal_length_m / pupil_diameter_m
