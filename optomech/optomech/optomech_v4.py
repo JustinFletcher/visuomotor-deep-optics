@@ -1172,14 +1172,26 @@ class OpticalSystem(object):
                 num_apertures=self.num_apertures,
                 segment_diameter=0.0254 * 2)
 
-        elif aperture_type == "nanoelfplus":
-            # Bench-design update (Auxi, 2026-05): 4-mirror layout with
-            # explicit (measured) mirror centers rather than a symmetric
-            # ring. 1-inch mirrors, 1 m focal length, 0.18 m pupil
-            # envelope. Sensor: 512 px at 2.2 um/px -> 1.1264 mm focal-
-            # plane extent (extent is fixed here; px count comes from
-            # cfg['focal_plane_image_size_pixels'], which must be 512
-            # for the physical pixel pitch to be correct).
+        elif aperture_type in ("nanoelfplus", "nanoelfpluscanonical"):
+            # Bench design (Auxi, 2026-05): 4-mirror layout with
+            # explicit (measured) mirror centers rather than a
+            # symmetric ring. 1-inch mirrors, 1 m focal length, 0.18 m
+            # pupil envelope. Sensor: 512 px at 2.2 um/px.
+            #
+            # Two variants sharing ALL physical mirror geometry:
+            #   nanoelfpluscanonical -- the as-built bench truth. Full
+            #     sensor: 1.1264 mm focal extent (= +/-101 lambda/D).
+            #     cfg['focal_plane_image_size_pixels'] must be 512 for
+            #     the 2.2 um physical pitch to be exact. Reserved for
+            #     bench-fidelity work; not exercised by default.
+            #   nanoelfplus -- the RL-training variant. Identical
+            #     optics; the ONLY difference is the modeled sensor
+            #     extent: a centered 64-pixel ROI of the same camera
+            #     (64 x 2.2 um = 140.8 um = +/-12.7 lambda/D), placing
+            #     its FOV between nanoelf (+/-5.7) and elf (+/-20) so
+            #     focal-plane imagery has comparable apparent scale
+            #     without cropping. Windowing the camera is a bench-
+            #     realizable readout choice, not a counterfactual.
             #
             # Bench wavelength is 1.0 um (matches DEFAULT_CONFIG) with
             # 0.01 um bandwidth -- the 10 nm bandwidth must be set per-
@@ -1194,7 +1206,10 @@ class OpticalSystem(object):
             self.num_apertures = 4
             focal_length = 1.0
             pupil_diameter = 0.18
-            focal_plane_image_size_meters = 512 * 2.2e-6   # 1.1264e-3
+            if aperture_type == "nanoelfpluscanonical":
+                focal_plane_image_size_meters = 512 * 2.2e-6  # 1.1264e-3
+            else:
+                focal_plane_image_size_meters = 64 * 2.2e-6   # 1.408e-4
 
             x_mirrors = np.array([-0.074, -0.035, 0.012, 0.059])
             y_mirrors = np.array([-0.021, 0.034, 0.032, -0.019])
@@ -1206,7 +1221,8 @@ class OpticalSystem(object):
         else:
             raise NotImplementedError(
                 "aperture_type was '%s', but only 'elf', 'circular', "
-                "'nanoelf', and 'nanoelfplus' are implemented." % aperture_type)
+                "'nanoelf', 'nanoelfplus', and 'nanoelfpluscanonical' "
+                "are implemented." % aperture_type)
 
         return (aperture, segments, focal_length,
                 pupil_diameter, focal_plane_image_size_meters)

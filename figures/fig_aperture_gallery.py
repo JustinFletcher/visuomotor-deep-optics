@@ -237,12 +237,11 @@ def crop_lod(img, full_extent_lod, half_width_lod):
 
 # Per-aperture focal crop (lambda/D half-width) for a second,
 # zoomed set of focal/PSF panels. The full-FOV panels are still
-# emitted; the cropped ones get a _crop<N> suffix. Motivated by the
-# nanoelfplus 4-mirror bench sensor whose full FOV is ~±101 lambda/D
-# -- the fringe core is illegible at print size without a crop.
-FOCAL_CROP_LOD = {
-    "nanoelfplus": 20.0,
-}
+# emitted; the cropped ones get a _crop<N> suffix. Empty now that
+# nanoelfplus models a 64-px sensor ROI (FOV +/-12.7 lambda/D,
+# between nanoelf and elf); add e.g. "nanoelfpluscanonical": 20.0
+# if the full-sensor bench variant is ever added to the gallery.
+FOCAL_CROP_LOD = {}
 
 
 def main():
