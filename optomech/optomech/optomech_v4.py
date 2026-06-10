@@ -1173,15 +1173,35 @@ class OpticalSystem(object):
                 segment_diameter=0.0254 * 2)
 
         elif aperture_type == "nanoelfplus":
-            self.num_apertures = 3
-            focal_length = 1.018
-            pupil_diameter = 0.1408
-            focal_plane_image_size_meters = 8.192e-5
+            # Bench-design update (Auxi, 2026-05): 4-mirror layout with
+            # explicit (measured) mirror centers rather than a symmetric
+            # ring. 1-inch mirrors, 1 m focal length, 0.18 m pupil
+            # envelope. Sensor: 512 px at 2.2 um/px -> 1.1264 mm focal-
+            # plane extent (extent is fixed here; px count comes from
+            # cfg['focal_plane_image_size_pixels'], which must be 512
+            # for the physical pixel pitch to be correct).
+            #
+            # Bench wavelength is 1.0 um (matches DEFAULT_CONFIG) with
+            # 0.01 um bandwidth -- the 10 nm bandwidth must be set per-
+            # experiment via env_kwargs (bandwidth_nanometers: 10.0);
+            # DEFAULT_CONFIG's 200 nm does not match the bench source.
+            #
+            # NOTE: the bench beam is Gaussian (SMF-fed, w0 = 3 um), so
+            # the pupil-plane intensity is NOT homogeneous. We are NOT
+            # modelling that here yet -- this aperture is the uniform-
+            # illumination approximation. See Auxi's note for the
+            # hcipy Gaussian-field overlay when fidelity matters.
+            self.num_apertures = 4
+            focal_length = 1.0
+            pupil_diameter = 0.18
+            focal_plane_image_size_meters = 512 * 2.2e-6   # 1.1264e-3
 
-            aperture, segments = self._make_ring_aperture(
-                pupil_diameter=pupil_diameter / 2.0,
-                num_apertures=self.num_apertures,
-                segment_diameter=0.0254 * 2)
+            x_mirrors = np.array([-0.074, -0.035, 0.012, 0.059])
+            y_mirrors = np.array([-0.021, 0.034, 0.032, -0.019])
+            aperture, segments = self._make_positioned_aperture(
+                x_centers_m=x_mirrors,
+                y_centers_m=y_mirrors,
+                segment_diameter=0.0254)
 
         else:
             raise NotImplementedError(
@@ -1200,6 +1220,25 @@ class OpticalSystem(object):
         aper_coords = hcipy.SeparatedCoords(
             (np.array([pupil_radius]), segment_angles))
         segment_centers = hcipy.PolarGrid(aper_coords).as_('cartesian')
+        circ = hcipy.make_circular_aperture(segment_diameter)
+        aperture, segments = hcipy.make_segmented_aperture(
+            circ, segment_centers, return_segments=return_segments)
+        return aperture, segments
+
+    @staticmethod
+    def _make_positioned_aperture(x_centers_m, y_centers_m,
+                                  segment_diameter,
+                                  return_segments=True):
+        """Create circular sub-apertures at explicit cartesian centers.
+
+        For bench-measured layouts (nanoelfplus 4-mirror design) where
+        the mirrors are NOT on a symmetric ring. Coordinates are
+        meters in the pupil plane, same convention as the ring
+        builder's output.
+        """
+        segment_centers = hcipy.CartesianGrid(hcipy.UnstructuredCoords(
+            (np.asarray(x_centers_m, dtype=float),
+             np.asarray(y_centers_m, dtype=float))))
         circ = hcipy.make_circular_aperture(segment_diameter)
         aperture, segments = hcipy.make_segmented_aperture(
             circ, segment_centers, return_segments=return_segments)
