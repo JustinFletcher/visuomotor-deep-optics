@@ -218,10 +218,37 @@ def save_img(data, path, cmap="gray", vmin=None, vmax=None,
     print(f"  {path}")
 
 
+def crop_lod(img, full_extent_lod, half_width_lod):
+    """Crop the central +/- half_width_lod region of a focal-plane
+    image whose full extent is full_extent_lod (lambda/D). Returns
+    (cropped_image, new_extent_list). No-op (returns input) when the
+    requested crop is at least the full frame."""
+    if 2 * half_width_lod >= full_extent_lod:
+        f = full_extent_lod
+        return img, [-f / 2, f / 2, -f / 2, f / 2]
+    n = img.shape[0]
+    frac = (2 * half_width_lod) / full_extent_lod
+    half_px = max(1, int(round(n * frac / 2)))
+    c = n // 2
+    cropped = img[c - half_px: c + half_px, c - half_px: c + half_px]
+    w = half_width_lod
+    return cropped, [-w, w, -w, w]
+
+
+# Per-aperture focal crop (lambda/D half-width) for a second,
+# zoomed set of focal/PSF panels. The full-FOV panels are still
+# emitted; the cropped ones get a _crop<N> suffix. Motivated by the
+# nanoelfplus 4-mirror bench sensor whose full FOV is ~±101 lambda/D
+# -- the fringe core is illegible at print size without a crop.
+FOCAL_CROP_LOD = {
+    "nanoelfplus": 20.0,
+}
+
+
 def main():
     aperture_types = [
         ("nanoelf", "NanoELF (2 seg)"),
-        ("nanoelfplus", "NanoELF+ (3 seg)"),
+        ("nanoelfplus", "NanoELF+ (4 seg)"),
         ("elf", "ELF (15 seg)"),
     ]
 
@@ -292,6 +319,26 @@ def main():
                  cmap="viridis", extent=foc_ext,
                  xlabel=foc_xl, ylabel=foc_yl,
                  cb_label="Detector (DN)")
+
+        # --- Cropped focal/PSF panels (where configured) ---
+        crop_hw = FOCAL_CROP_LOD.get(ap_type)
+        if crop_hw is not None:
+            tag = f"crop{int(crop_hw)}"
+            print(f"  Cropped panels (±{crop_hw:g} λ/D)...")
+            for img, name in [
+                    (art["psf"], f"{ap_type}_psf_perfect_{tag}.png"),
+                    (art["focal_obs"], f"{ap_type}_focal_perfect_{tag}.png"),
+                    (art_ab["psf"], f"{ap_type}_psf_aberrated_{tag}.png"),
+                    (art_ab["focal_obs"],
+                     f"{ap_type}_focal_aberrated_{tag}.png")]:
+                cimg, cext = crop_lod(img, f_lod, crop_hw)
+                is_psf = "psf" in name
+                save_img(cimg, os.path.join(OUT_DIR, name),
+                         cmap="inferno" if is_psf else "viridis",
+                         log_scale=is_psf, extent=cext,
+                         xlabel=foc_xl, ylabel=foc_yl,
+                         cb_label=(r"$\log_{10}$ intensity (arb.)"
+                                   if is_psf else "Detector (DN)"))
 
     print(f"\nAll images saved to {OUT_DIR}/")
 
